@@ -15,6 +15,8 @@ interface FeedCardProps {
   consumerId?: string;
   /** Stable feed id — drives shared-element layout morph across layout modes. */
   layoutId?: string;
+  /** Focused/spotlight feed — always request the top spatial layer (sharper). */
+  priority?: boolean;
   className?: string;
   onClick?: () => void;
 }
@@ -28,12 +30,13 @@ export const FeedCard = memo(function FeedCard({
   isScreen,
   consumerId,
   layoutId,
+  priority,
   className = '',
   onClick,
 }: FeedCardProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const quality = useAdaptiveQuality(consumerId, rootRef, !isLocal && !!consumerId && !!track);
+  const quality = useAdaptiveQuality(consumerId, rootRef, !isLocal && !!consumerId && !!track, priority);
 
   useEffect(() => {
     if (!videoRef.current || !track) return;

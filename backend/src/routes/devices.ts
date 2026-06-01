@@ -59,8 +59,11 @@ router.post('/devices', authMiddleware, async (req, res) => {
 });
 
 router.get('/devices', authMiddleware, async (req, res) => {
+  // Only currently-connected devices: a device row persists across sessions, but the
+  // list should reflect what is logged in right now (is_online is toggled on socket
+  // connect/disconnect), not every device the account ever registered.
   const devices = await Device.findAll({
-    where: { user_id: req.user!.userId, is_active: true },
+    where: { user_id: req.user!.userId, is_active: true, is_online: true },
     attributes: ['id', 'label', 'camera_name', 'device_type', 'is_online', 'last_seen_at', 'created_at'],
     order: [['last_seen_at', 'DESC']],
   });

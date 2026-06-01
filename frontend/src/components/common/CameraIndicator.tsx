@@ -2,8 +2,12 @@ import { useState, useEffect } from 'react';
 import { useAlwaysOnCamera } from '../../services/alwaysOnCamera';
 import { PermissionDeniedModal } from './PermissionDeniedModal';
 
+/**
+ * Surfaces camera errors / permission issues only. The previous "카메라 활성" green
+ * badge was removed — when the camera is running fine, nothing is rendered.
+ */
 export function CameraIndicator() {
-  const { isActive, error, errorType } = useAlwaysOnCamera();
+  const { error, errorType } = useAlwaysOnCamera();
   const [showPermModal, setShowPermModal] = useState(false);
 
   useEffect(() => {
@@ -38,14 +42,5 @@ export function CameraIndicator() {
     );
   }
 
-  if (!isActive) return null;
-
-  return (
-    <div className="fixed top-0 right-0 z-50 m-3">
-      <div className="flex items-center gap-1.5 bg-dark-800/80 backdrop-blur-sm rounded-full px-3 py-1.5">
-        <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-        <span className="text-xs text-white/70">카메라 활성</span>
-      </div>
-    </div>
-  );
+  return null;
 }

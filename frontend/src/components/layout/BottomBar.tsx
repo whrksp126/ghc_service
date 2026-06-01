@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Mic, MicOff, MonitorUp, MonitorOff, LayoutGrid, Maximize2,
-  PhoneOff, Clapperboard, MoreHorizontal, Trash2,
+  PhoneOff, MoreHorizontal, Trash2,
 } from 'lucide-react';
 import { useDeviceStore } from '../../stores/deviceStore';
 import { useUIStore } from '../../stores/uiStore';
@@ -13,8 +13,6 @@ interface BottomBarProps {
   onToggleScreen: () => void;
   onLeave: () => void;
   onSwitchLayout: () => void;
-  onOpenTheater?: () => void;
-  isTheaterActive?: boolean;
   /** Owner only — ends the room for everyone. */
   onCloseRoom?: () => void;
 }
@@ -27,10 +25,10 @@ const layoutIcons: Record<string, typeof LayoutGrid> = {
 /**
  * Simplified control bar. Camera on/off lives in MyDeviceDock now (per-device), so this
  * bar only keeps this-device essentials (mic, leave) up front; everything secondary
- * (screen share, layout, theater, room delete) is tucked into a "더보기" menu.
+ * (screen share, layout, room delete) is tucked into a "더보기" menu.
  */
 export function BottomBar({
-  onToggleMic, onToggleScreen, onLeave, onSwitchLayout, onOpenTheater, isTheaterActive, onCloseRoom,
+  onToggleMic, onToggleScreen, onLeave, onSwitchLayout, onCloseRoom,
 }: BottomBarProps) {
   const { isMicOn, isScreenSharing } = useDeviceStore();
   const { layoutMode } = useUIStore();
@@ -98,10 +96,6 @@ export function BottomBar({
                   className="absolute bottom-14 left-1/2 -translate-x-1/2 z-50 w-44 glass-strong rounded-xl overflow-hidden py-1"
                 >
                   {menuItem(<LayoutIcon size={18} />, '레이아웃 전환', onSwitchLayout)}
-                  {onOpenTheater && menuItem(
-                    <Clapperboard size={18} className={isTheaterActive ? 'text-primary' : ''} />,
-                    '함께보기', onOpenTheater,
-                  )}
                   {onCloseRoom && menuItem(<Trash2 size={18} />, '방 종료', onCloseRoom, true)}
                 </motion.div>
               </>

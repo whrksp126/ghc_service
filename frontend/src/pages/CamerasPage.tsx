@@ -4,8 +4,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Smartphone, Tablet, Monitor, Camera,
   ChevronLeft, WifiOff, Power, RefreshCw,
+  MoreHorizontal, SwitchCamera, Pencil,
 } from 'lucide-react';
 import { Button } from '../components/common/Button';
+import { BottomSheet, type SheetAction } from '../components/common/BottomSheet';
 import { showToast } from '../components/common/Toast';
 import { useCameraStore } from '../stores/cameraStore';
 import { useAuthStore } from '../stores/authStore';
@@ -28,7 +30,6 @@ function RemoteCameraPreview({
   cameraName,
   deviceType,
   isOnline,
-  isInRoom,
   isCameraActive,
   remoteCameraCount,
   remoteCameraActiveIndex,
@@ -38,7 +39,6 @@ function RemoteCameraPreview({
   cameraName: string;
   deviceType: string;
   isOnline: boolean;
-  isInRoom: boolean;
   isCameraActive: boolean;
   remoteCameraCount: number;
   remoteCameraActiveIndex: number;
@@ -49,6 +49,7 @@ function RemoteCameraPreview({
   const streamRef = useRef<MediaStream | null>(null);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>('connecting');
   const [powerToggling, setPowerToggling] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
 
   useEffect(() => {
     if (previewStatus === 'live' && videoRef.current && streamRef.current) {
@@ -165,62 +166,46 @@ function RemoteCameraPreview({
           </div>
         )}
 
-        {previewStatus === 'live' && isOnline && (
-          <div className="absolute top-2 left-2 flex items-center gap-1 bg-black/50 backdrop-blur-sm rounded-full px-2 py-0.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-            <span className="text-[10px] text-white/70">LIVE</span>
-          </div>
-        )}
-
-        {isInRoom && (
-          <div className="absolute top-2 right-12 flex items-center gap-1 bg-primary/80 backdrop-blur-sm rounded-full px-2 py-0.5">
-            <span className="text-[10px] text-white">스트리밍</span>
-          </div>
-        )}
-
-        {isOnline && isCameraActive && remoteCameraCount > 1 && (
-          <div className="absolute bottom-3 right-3 flex bg-black/60 backdrop-blur-sm rounded-full overflow-hidden">
-            {Array.from({ length: remoteCameraCount }, (_, i) => (
-              <button
-                key={i}
-                onClick={() => handleSwitchCamera(i)}
-                className={`px-2.5 py-1 text-xs font-bold transition-colors ${
-                  i === remoteCameraActiveIndex
-                    ? 'bg-primary text-white'
-                    : 'text-white/60 hover:text-white'
-                }`}
-              >
-                {i + 1}
-              </button>
-            ))}
-          </div>
-        )}
-
         {isOnline && (
           <button
-            onClick={handleTogglePower}
+            onClick={() => setSheetOpen(true)}
             disabled={powerToggling}
-            className={`absolute top-2 right-2 w-7 h-7 rounded-full flex items-center justify-center backdrop-blur-sm transition-colors disabled:opacity-50 ${
-              isCameraActive
-                ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
-                : 'bg-white/10 text-white/40 hover:bg-white/20'
-            }`}
-            title={isCameraActive ? '카메라 끄기' : '카메라 켜기'}
+            className="absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center bg-black/45 backdrop-blur-sm text-white/80 hover:text-white transition-colors disabled:opacity-50"
+            title="더보기"
           >
-            <Power size={12} />
+            <MoreHorizontal size={16} />
           </button>
         )}
       </div>
 
-      <div className="p-3 flex items-center justify-between">
-        <div className="flex items-center gap-2 text-white/60">
-          <DeviceIcon type={deviceType} />
-          <span className="font-medium text-sm text-white">{cameraName}</span>
-        </div>
-        <button onClick={onEditName} className="text-xs text-primary hover:underline">
-          이름 변경
-        </button>
+      <div className="p-3 flex items-center gap-2 text-white/60">
+        <DeviceIcon type={deviceType} />
+        <span className="font-medium text-sm text-white truncate">{cameraName}</span>
       </div>
+
+      <BottomSheet
+        isOpen={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        title={cameraName}
+        actions={[
+          {
+            icon: <Power size={18} />,
+            label: isCameraActive ? '카메라 끄기' : '카메라 켜기',
+            onClick: handleTogglePower,
+            danger: isCameraActive,
+            disabled: powerToggling,
+          },
+          ...(isCameraActive && remoteCameraCount > 1
+            ? Array.from({ length: remoteCameraCount }, (_, i): SheetAction => ({
+                icon: <SwitchCamera size={18} />,
+                label: `카메라 ${i + 1}`,
+                onClick: () => handleSwitchCamera(i),
+                active: i === remoteCameraActiveIndex,
+              }))
+            : []),
+          { icon: <Pencil size={18} />, label: '이름 변경', onClick: onEditName },
+        ]}
+      />
     </div>
   );
 }
@@ -238,6 +223,7 @@ export function CamerasPage() {
   const [editName, setEditName] = useState('');
   const [saving, setSaving] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const [currentSheetOpen, setCurrentSheetOpen] = useState(false);
   const previewRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -308,49 +294,13 @@ export function CamerasPage() {
                 </div>
               )}
 
-              {isActive && (
-                <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-black/50 backdrop-blur-sm rounded-full px-2.5 py-1">
-                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                  <span className="text-xs text-white/80">LIVE</span>
-                </div>
-              )}
-
               <button
-                onClick={() => (isActive ? stop() : start())}
-                className={`absolute top-3 right-3 w-9 h-9 rounded-full flex items-center justify-center backdrop-blur-sm transition-colors ${
-                  isActive
-                    ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
-                    : 'bg-white/10 text-white/40 hover:bg-white/20'
-                }`}
+                onClick={() => setCurrentSheetOpen(true)}
+                className="absolute top-3 right-3 w-9 h-9 rounded-full flex items-center justify-center bg-black/45 backdrop-blur-sm text-white/80 hover:text-white transition-colors"
+                title="더보기"
               >
-                <Power size={16} />
+                <MoreHorizontal size={18} />
               </button>
-
-              {availableCameras.length > 1 && isActive && (
-                <div className="absolute bottom-3 right-3 flex bg-black/60 backdrop-blur-sm rounded-full overflow-hidden">
-                  {availableCameras.map((_, i) => (
-                    <button
-                      key={i}
-                      onClick={() => {
-                        if (i !== activeLensIndex) {
-                          setSwitching(true);
-                          switchCamera(availableCameras[i].deviceId)
-                            .catch((err: any) => showToast(err.message || '전환 실패', 'error'))
-                            .finally(() => setSwitching(false));
-                        }
-                      }}
-                      disabled={switching}
-                      className={`px-2.5 py-1 text-xs font-bold transition-colors ${
-                        i === activeLensIndex
-                          ? 'bg-primary text-white'
-                          : 'text-white/60 hover:text-white'
-                      }`}
-                    >
-                      {i + 1}
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
 
             {currentDevice && (
@@ -374,22 +324,50 @@ export function CamerasPage() {
                     </Button>
                   </div>
                 ) : (
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-white/60">
-                      <DeviceIcon type={currentDevice.deviceType} />
-                      <span className="font-medium text-white">{currentDevice.cameraName}</span>
-                    </div>
-                    <button
-                      onClick={() => startEditing(currentDevice.id, currentDevice.cameraName)}
-                      className="text-xs text-primary hover:underline"
-                    >
-                      이름 변경
-                    </button>
+                  <div className="flex items-center gap-2 text-white/60">
+                    <DeviceIcon type={currentDevice.deviceType} />
+                    <span className="font-medium text-white">{currentDevice.cameraName}</span>
                   </div>
                 )}
               </div>
             )}
           </div>
+
+          <BottomSheet
+            isOpen={currentSheetOpen}
+            onClose={() => setCurrentSheetOpen(false)}
+            title={currentDevice?.cameraName || '이 기기'}
+            actions={[
+              {
+                icon: <Power size={18} />,
+                label: isActive ? '카메라 끄기' : '카메라 켜기',
+                onClick: () => (isActive ? stop() : start()),
+                danger: isActive,
+              },
+              ...(isActive && availableCameras.length > 1
+                ? availableCameras.map((_, i): SheetAction => ({
+                    icon: <SwitchCamera size={18} />,
+                    label: `카메라 ${i + 1}`,
+                    active: i === activeLensIndex,
+                    disabled: switching,
+                    onClick: () => {
+                      if (i === activeLensIndex) return;
+                      setSwitching(true);
+                      switchCamera(availableCameras[i].deviceId)
+                        .catch((err: any) => showToast(err.message || '전환 실패', 'error'))
+                        .finally(() => setSwitching(false));
+                    },
+                  }))
+                : []),
+              ...(currentDevice
+                ? [{
+                    icon: <Pencil size={18} />,
+                    label: '이름 변경',
+                    onClick: () => startEditing(currentDevice.id, currentDevice.cameraName),
+                  } as SheetAction]
+                : []),
+            ]}
+          />
         </div>
 
         {/* Other devices */}
@@ -433,7 +411,6 @@ export function CamerasPage() {
                         cameraName={cam.cameraName}
                         deviceType={cam.deviceType}
                         isOnline={cam.isOnline}
-                        isInRoom={cam.isInRoom}
                         isCameraActive={cam.isCameraActive}
                         remoteCameraCount={cam.remoteCameraCount}
                         remoteCameraActiveIndex={cam.remoteCameraActiveIndex}

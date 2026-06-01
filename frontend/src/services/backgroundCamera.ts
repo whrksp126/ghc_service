@@ -90,7 +90,7 @@ export function useBackgroundCamera() {
           encodings: [
             { maxBitrate: 150000, scaleResolutionDownBy: 4, rid: 'r0', scalabilityMode: 'L1T3' },
             { maxBitrate: 500000, scaleResolutionDownBy: 2, rid: 'r1', scalabilityMode: 'L1T3' },
-            { maxBitrate: 2500000, scaleResolutionDownBy: 1, rid: 'r2', scalabilityMode: 'L1T3' },
+            { maxBitrate: 5000000, scaleResolutionDownBy: 1, rid: 'r2', scalabilityMode: 'L1T3' },
           ],
           codecOptions: { videoGoogleStartBitrate: 1000 },
           appData: { mediaType: 'video' },

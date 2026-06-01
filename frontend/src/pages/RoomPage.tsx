@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, LayoutGroup } from 'framer-motion';
+import { LayoutGroup } from 'framer-motion';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useSocket } from '../hooks/useSocket';
 import { useMediasoup } from '../hooks/useMediasoup';
@@ -19,8 +19,6 @@ import { ReconnectingOverlay } from '../components/connection/ReconnectingOverla
 import { LoadingScreen } from '../components/common/LoadingScreen';
 import { MyDeviceDock } from '../components/room/MyDeviceDock';
 import { CameraPreviewTile } from '../components/devices/CameraPreviewTile';
-import { TheaterMode } from '../components/room/TheaterMode';
-import { useWatchSync } from '../hooks/useWatchSync';
 import { Button } from '../components/common/Button';
 import { showToast } from '../components/common/Toast';
 import { Mic, MicOff, Video, VideoOff, Users } from 'lucide-react';
@@ -28,6 +26,15 @@ import { initSounds, playSound } from '../lib/sounds';
 import type { Participant, ProducerInfo } from '../types/room';
 
 type RoomPhase = 'lobby' | 'connecting' | 'inRoom';
+
+/** Hidden sink that plays a remote participant's audio track. */
+function RemoteAudio({ track }: { track: MediaStreamTrack }) {
+  const ref = useRef<HTMLAudioElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.srcObject = new MediaStream([track]);
+  }, [track]);
+  return <audio ref={ref} autoPlay playsInline />;
+}
 
 export function RoomPage() {
   const { slug } = useParams<{ slug: string }>();
@@ -49,25 +56,6 @@ export function RoomPage() {
     produce, consume, closeProducer, cleanup: cleanupMedia,
     producersRef, consumersRef,
   } = useMediasoup();
-
-  const { theater, isHost, start: startTheater, stop: stopTheater, control: theaterControl } = useWatchSync();
-  const [theaterPanelOpen, setTheaterPanelOpen] = useState(false);
-  const [theaterHidden, setTheaterHidden] = useState(false);
-
-  // When someone starts a session, surface it for everyone.
-  useEffect(() => {
-    if (theater) {
-      setTheaterHidden(false);
-      setTheaterPanelOpen(false);
-    }
-  }, [!!theater]);
-
-  const showTheater = !theaterHidden && (!!theater || theaterPanelOpen);
-
-  const handleOpenTheater = useCallback(() => {
-    if (theater) setTheaterHidden((h) => !h);
-    else setTheaterPanelOpen(true);
-  }, [theater]);
 
   const [phase, setPhase] = useState<RoomPhase>('lobby');
   const [isOwner, setIsOwner] = useState(false);
@@ -574,6 +562,13 @@ export function RoomPage() {
     return items;
   }, [consumers, participantLookup, nickname, userId, localScreenTrack]);
 
+  // Remote audio is played through hidden <audio> sinks, not the video tiles (a video
+  // element only renders one track). My own devices' audio is skipped to avoid echo.
+  const audioConsumers = useMemo(
+    () => consumers.filter((c) => c.kind === 'audio' && c.userId !== userId && c.track),
+    [consumers, userId]
+  );
+
   // --- PIN required screen ---
   if (needsPin) {
     return (
@@ -694,6 +689,11 @@ export function RoomPage() {
     <div className="h-screen w-screen bg-dark-900 flex flex-col overflow-hidden">
       <TopBar />
 
+      {/* Remote audio sinks (hidden) — voice playback for other participants */}
+      {audioConsumers.map((c) => (
+        <RemoteAudio key={c.consumerId} track={c.track!} />
+      ))}
+
       <div className="flex-1 min-h-0 relative">
         {feeds.length > 0 ? (
           <LayoutGroup>
@@ -722,18 +722,6 @@ export function RoomPage() {
           </div>
         )}
 
-        <AnimatePresence>
-          {showTheater && (
-            <TheaterMode
-              theater={theater}
-              isHost={isHost}
-              onStart={(source) => startTheater(source).catch(() => showToast('함께보기를 시작할 수 없습니다', 'error'))}
-              onStop={() => { stopTheater(); setTheaterPanelOpen(false); }}
-              onControl={theaterControl}
-              onClose={() => (theater ? setTheaterHidden(true) : setTheaterPanelOpen(false))}
-            />
-          )}
-        </AnimatePresence>
       </div>
 
       <MyDeviceDock
@@ -749,8 +737,6 @@ export function RoomPage() {
         onToggleScreen={handleToggleScreen}
         onLeave={handleLeave}
         onSwitchLayout={handleSwitchLayout}
-        onOpenTheater={handleOpenTheater}
-        isTheaterActive={!!theater}
         onCloseRoom={isOwner ? handleCloseRoom : undefined}
       />
 

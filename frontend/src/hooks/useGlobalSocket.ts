@@ -35,12 +35,14 @@ export function useGlobalSocket() {
       }
     });
 
-    socket.on('device:online', ({ deviceId: id }) => {
-      useCameraStore.getState().updateCamera(id, { isOnline: true });
+    // The device list reflects only currently-connected devices, so resync it whenever
+    // one of my devices connects (appears) or disconnects (disappears).
+    socket.on('device:online', () => {
+      useCameraStore.getState().fetchCameras(deviceId);
     });
 
-    socket.on('device:offline', ({ deviceId: id }) => {
-      useCameraStore.getState().updateCamera(id, { isOnline: false, isInRoom: false, roomSlug: null, isCameraActive: false });
+    socket.on('device:offline', () => {
+      useCameraStore.getState().fetchCameras(deviceId);
     });
 
     socket.on('camera:statusUpdate', ({ deviceId: id, isInRoom, roomSlug }) => {

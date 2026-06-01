@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
-import { Smartphone, Tablet, Monitor, Camera, Power, SwitchCamera, Loader2 } from 'lucide-react';
+import { Smartphone, Tablet, Monitor, Camera, Power, SwitchCamera, Loader2, MoreHorizontal } from 'lucide-react';
 import { useCameraStore } from '../../stores/cameraStore';
 import { useRoomStore } from '../../stores/roomStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useAlwaysOnCamera } from '../../services/alwaysOnCamera';
 import { emitWithAck } from '../../lib/socket';
 import { showToast } from '../common/Toast';
+import { BottomSheet, type SheetAction } from '../common/BottomSheet';
 
 interface MyDeviceDockProps {
   roomSlug: string;
@@ -55,6 +55,7 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
   const isReconnecting = useRoomStore((s) => s.isReconnecting);
   const localLensCount = useAlwaysOnCamera((s) => s.availableCameras.length);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  const [sheetCamId, setSheetCamId] = useState<string | null>(null);
   // Track which devices we auto-pulled into the room, and which the user explicitly
   // stopped, so reconnecting devices re-appear but manually-off ones stay off.
   const autoStartedRef = useRef<Set<string>>(new Set());
@@ -136,6 +137,39 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
 
   const sorted = [...cameras].sort((a, b) => Number(b.isCurrentDevice) - Number(a.isCurrentDevice));
 
+  // Per-camera runtime state, reused by both the tile and its "더보기" sheet.
+  const camState = (cam: typeof cameras[number]) => {
+    const isCurrent = cam.isCurrentDevice;
+    const online = isCurrent ? true : cam.isOnline;
+    const track = trackFor(cam.id);
+    const streaming = isCurrent ? isCurrentCamOn && !!localVideoTrack : !!track;
+    const canSwitch = isCurrent ? streaming && localLensCount > 1 : online && cam.remoteCameraCount > 1;
+    return { isCurrent, online, track, streaming, canSwitch, busy: busyIds.has(cam.id) };
+  };
+
+  const sheetCam = sorted.find((c) => c.id === sheetCamId) || null;
+  const sheetActions: SheetAction[] = sheetCam
+    ? (() => {
+        const { isCurrent, online, streaming, canSwitch, busy } = camState(sheetCam);
+        const list: SheetAction[] = [{
+          icon: <Power size={18} />,
+          label: streaming ? '카메라 끄기' : '카메라 켜기',
+          onClick: () => handleToggle(sheetCam.id, isCurrent, streaming),
+          danger: streaming,
+          disabled: busy || (!online && !isCurrent),
+        }];
+        if (canSwitch) {
+          list.push({
+            icon: <SwitchCamera size={18} />,
+            label: '카메라 전환',
+            onClick: () => handleSwitch(sheetCam.id, isCurrent),
+            disabled: busy,
+          });
+        }
+        return list;
+      })()
+    : [];
+
   return (
     <div className="shrink-0 px-3 pb-1">
       <div className="flex items-center gap-1.5 mb-1.5 px-1">
@@ -143,14 +177,7 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
       </div>
       <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-none">
         {sorted.map((cam) => {
-          const isCurrent = cam.isCurrentDevice;
-          const online = isCurrent ? true : cam.isOnline;
-          const track = trackFor(cam.id);
-          const streaming = isCurrent ? isCurrentCamOn && !!localVideoTrack : !!track;
-          const busy = busyIds.has(cam.id);
-          const canSwitch = isCurrent
-            ? streaming && localLensCount > 1
-            : online && cam.remoteCameraCount > 1;
+          const { isCurrent, online, track, streaming, busy } = camState(cam);
           const reconnecting = isCurrent && isReconnecting;
 
           return (
@@ -164,49 +191,31 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
                   </div>
                 )}
 
-                {/* Status badge */}
-                <div className="absolute top-1 left-1 flex items-center gap-1 bg-black/55 backdrop-blur-sm rounded-full px-1.5 py-0.5">
-                  {reconnecting ? (
-                    <>
-                      <Loader2 size={9} className="animate-spin text-warning" />
-                      <span className="text-[9px] text-white/70">재연결</span>
-                    </>
-                  ) : !online ? (
-                    <span className="text-[9px] text-white/50">오프라인</span>
-                  ) : streaming ? (
-                    <>
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-                      <span className="text-[9px] text-white/70">송출 중</span>
-                    </>
-                  ) : (
-                    <span className="text-[9px] text-yellow-400/80">대기</span>
-                  )}
-                </div>
-
-                {/* Switch camera */}
-                {canSwitch && (
-                  <button
-                    onClick={() => handleSwitch(cam.id, isCurrent)}
-                    disabled={busy}
-                    className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/55 backdrop-blur-sm flex items-center justify-center text-white/70 hover:text-white disabled:opacity-40"
-                    title="카메라 전환"
-                  >
-                    <SwitchCamera size={12} />
-                  </button>
+                {/* Status badge — only transient states; "송출 중" is implied by the live tile. */}
+                {(reconnecting || !online || (!streaming && online)) && (
+                  <div className="absolute top-1 left-1 flex items-center gap-1 bg-black/55 backdrop-blur-sm rounded-full px-1.5 py-0.5">
+                    {reconnecting ? (
+                      <>
+                        <Loader2 size={9} className="animate-spin text-warning" />
+                        <span className="text-[9px] text-white/70">재연결</span>
+                      </>
+                    ) : !online ? (
+                      <span className="text-[9px] text-white/50">오프라인</span>
+                    ) : (
+                      <span className="text-[9px] text-yellow-400/80">대기</span>
+                    )}
+                  </div>
                 )}
 
-                {/* On/off toggle */}
-                <motion.button
-                  whileTap={{ scale: 0.9 }}
-                  onClick={() => handleToggle(cam.id, isCurrent, streaming)}
+                {/* More menu */}
+                <button
+                  onClick={() => setSheetCamId(cam.id)}
                   disabled={busy || (!online && !isCurrent)}
-                  className={`absolute bottom-1 right-1 w-7 h-7 rounded-full flex items-center justify-center transition-colors disabled:opacity-40 ${
-                    streaming ? 'bg-primary text-white' : 'bg-black/55 text-white/60 hover:text-white'
-                  }`}
-                  title={streaming ? '끄기' : '켜기'}
+                  className="absolute bottom-1 right-1 w-7 h-7 rounded-full bg-black/55 backdrop-blur-sm flex items-center justify-center text-white/70 hover:text-white disabled:opacity-40"
+                  title="더보기"
                 >
-                  {busy ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />}
-                </motion.button>
+                  {busy ? <Loader2 size={13} className="animate-spin" /> : <MoreHorizontal size={15} />}
+                </button>
               </div>
 
               <div className="flex items-center gap-1 mt-1 px-0.5">
@@ -218,6 +227,13 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
           );
         })}
       </div>
+
+      <BottomSheet
+        isOpen={!!sheetCam}
+        onClose={() => setSheetCamId(null)}
+        title={sheetCam?.cameraName}
+        actions={sheetActions}
+      />
     </div>
   );
 }

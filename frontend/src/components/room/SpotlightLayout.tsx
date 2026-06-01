@@ -36,6 +36,7 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick }: SpotlightLa
           isScreen={spotlight.isScreen}
           consumerId={spotlight.isLocal ? undefined : spotlight.id}
           layoutId={spotlight.id}
+          priority
           className="w-full h-full"
         />
       </div>

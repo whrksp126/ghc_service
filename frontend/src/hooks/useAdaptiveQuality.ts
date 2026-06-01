@@ -40,7 +40,9 @@ function emitLayer(consumerId: string, quality: FeedQuality, prev: FeedQuality |
 export function useAdaptiveQuality(
   consumerId: string | undefined,
   elementRef: RefObject<HTMLElement>,
-  enabled: boolean
+  enabled: boolean,
+  /** Focused/spotlight feed — always pull the top spatial layer while visible. */
+  priority = false
 ): FeedQuality {
   const [quality, setQuality] = useState<FeedQuality>('high');
   const lastRef = useRef<FeedQuality | null>(null);
@@ -63,11 +65,13 @@ export function useAdaptiveQuality(
     const apply = () => {
       const next: FeedQuality = !visible
         ? 'paused'
-        : width < 200
-          ? 'low'
-          : width < 480
-            ? 'mid'
-            : 'high';
+        : priority
+          ? 'high'
+          : width < 200
+            ? 'low'
+            : width < 480
+              ? 'mid'
+              : 'high';
       if (next === lastRef.current) return;
       emitLayer(consumerId, next, lastRef.current);
       lastRef.current = next;
@@ -112,7 +116,7 @@ export function useAdaptiveQuality(
         pendingUnmountPause.set(consumerId, t);
       }
     };
-  }, [consumerId, enabled, elementRef]);
+  }, [consumerId, enabled, elementRef, priority]);
 
   return quality;
 }
