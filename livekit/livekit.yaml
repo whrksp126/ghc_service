@@ -3,18 +3,20 @@
 # var (from backend/.env) and are NEVER committed in this file.
 #
 # Ports (must be forwarded on the home router):
-#   7880/tcp  signaling (WS) — proxied by nginx as wss://longdcam-livekit.ghmate.com
-#   7881/tcp  WebRTC TCP fallback (restrictive networks)
-#   7882/udp  WebRTC media (single-port UDP mux — no large range to forward)
+#   7880/tcp   signaling (WS) — proxied by nginx as longdcam-back.ghmate.com/livekit
+#   40100/udp  WebRTC media — inside the already-forwarded 40000-40100 range, so no
+#              new router rule is needed (coturn keeps 40000-40099, see turnserver.conf)
 port: 7880
 
 rtc:
   tcp_port: 7881
-  # Single UDP mux port instead of a wide range — one port to forward, scales fine.
-  udp_port: 7882
-  # The advertised IP is provided explicitly via --node-ip (LK_NODE_IP = server LAN IP)
-  # in docker-compose, so no STUN-based external-IP detection is needed.
-  use_external_ip: false
+  # Reuse the existing 40000-40100/udp port-forward (mediasoup's old range). coturn uses
+  # 40000-40099 for its relays, LiveKit takes 40100 as its single UDP mux port.
+  udp_port: 40100
+  # STUN-detect the public IP and advertise it so external (cellular) clients reach media
+  # via the port-forward. Same topology the old mediasoup used; LAN clients reach it via
+  # the router's NAT hairpin. (LiveKit can't advertise LAN + public at once — issue #1898.)
+  use_external_ip: true
 
 # Embedded TURN disabled for now: rely on host-candidate UDP (7882) + TCP fallback
 # (7881). The legacy coturn still serves the P2P device-preview path. Revisit if

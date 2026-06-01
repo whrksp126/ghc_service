@@ -36,16 +36,16 @@ services:
   livekit:
     container_name: longdcam_livekit_prod
     image: livekit/livekit-server:latest
-    # Host network: binds 7880/tcp (signaling), 7881/tcp + 7882/udp (WebRTC) directly.
+    # Host network: binds 7880/tcp (signaling) + 40100/udp (WebRTC media) directly.
     network_mode: host
     env_file:
       - ./backend/.env
     volumes:
       - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
-    # --node-ip advertises the server's LAN IP (LK_NODE_IP in ./.env) as the ICE candidate
-    # so same-WiFi clients reach media directly. Off-LAN access is a follow-up (public IP +
-    # router forward of 7881/tcp + 7882/udp).
-    command: ["--config", "/etc/livekit.yaml", "--node-ip", "${LK_NODE_IP}"]
+    # use_external_ip (livekit.yaml) STUN-detects + advertises the public IP, so external
+    # (cellular) clients reach media via the forwarded 40100/udp. No --node-ip (it's
+    # ignored when use_external_ip is true).
+    command: ["--config", "/etc/livekit.yaml"]
     restart: always
 
   turn:
