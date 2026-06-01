@@ -16,7 +16,9 @@ import { getSocket } from '../lib/socket';
 
 export type FeedQuality = 'paused' | 'low' | 'mid' | 'high';
 
-const SPATIAL: Record<Exclude<FeedQuality, 'paused'>, number> = { low: 0, mid: 1, high: 2 };
+// Two simulcast layers now (0 = thumbnail, 1 = HD): a tiny tile pulls the thumbnail,
+// anything larger pulls the full-res HD layer.
+const SPATIAL: Record<Exclude<FeedQuality, 'paused'>, number> = { low: 0, mid: 1, high: 1 };
 const APPLY_DEBOUNCE = 300;
 // When a feed unmounts (e.g. carousel paging, layout switch) we pause it shortly
 // after — but a remount within this window cancels the pause to avoid black flicker.

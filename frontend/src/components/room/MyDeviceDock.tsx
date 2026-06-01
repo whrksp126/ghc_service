@@ -7,7 +7,8 @@ import { useAlwaysOnCamera } from '../../services/alwaysOnCamera';
 import { emitWithAck } from '../../lib/socket';
 import { showToast } from '../common/Toast';
 import { BottomSheet, type SheetAction } from '../common/BottomSheet';
-import { useVoiceStore, SPEAKING_THRESHOLD } from '../../services/voiceActivity';
+import { useVoiceStore } from '../../services/voiceActivity';
+import { useAudioSettings, sensitivityToThreshold } from '../../stores/audioSettings';
 import { VoiceBars } from '../common/VoiceBars';
 
 interface MyDeviceDockProps {
@@ -57,6 +58,7 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
   const isReconnecting = useRoomStore((s) => s.isReconnecting);
   const localLensCount = useAlwaysOnCamera((s) => s.availableCameras.length);
   const voiceLevels = useVoiceStore((s) => s.levels);
+  const speakingThreshold = sensitivityToThreshold(useAudioSettings((s) => s.sensitivity));
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [sheetCamId, setSheetCamId] = useState<string | null>(null);
   // Track which devices we auto-pulled into the room, and which the user explicitly
@@ -183,7 +185,7 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
           const { isCurrent, online, track, streaming, busy } = camState(cam);
           const reconnecting = isCurrent && isReconnecting;
           const level = voiceLevels[`${userId}:${cam.id}`] ?? 0;
-          const speaking = level > SPEAKING_THRESHOLD;
+          const speaking = level > speakingThreshold;
 
           return (
             <div key={cam.id} className="relative w-28 shrink-0">

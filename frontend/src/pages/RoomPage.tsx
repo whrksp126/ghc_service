@@ -11,7 +11,8 @@ import { useCameraStore } from '../stores/cameraStore';
 import { emitWithAck, getSocket } from '../lib/socket';
 import { api } from '../lib/api';
 import { useAlwaysOnCamera } from '../services/alwaysOnCamera';
-import { attachVoice, detachVoice } from '../services/voiceActivity';
+import { attachVoice, detachVoice, useVoiceStore } from '../services/voiceActivity';
+import { useAudioSettings, micConstraints, sensitivityToThreshold } from '../stores/audioSettings';
 import { GridLayout } from '../components/room/GridLayout';
 import { SpotlightLayout } from '../components/room/SpotlightLayout';
 import { TopBar } from '../components/layout/TopBar';
@@ -313,7 +314,7 @@ export function RoomPage() {
         if (!stream && navigator.mediaDevices?.getUserMedia) {
           try {
             stream = await navigator.mediaDevices.getUserMedia({
-              audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+              audio: micConstraints(),
               video: { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' },
             });
           } catch {
@@ -394,7 +395,7 @@ export function RoomPage() {
     } else {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          audio: micConstraints(),
         });
         const newAudioTrack = stream.getAudioTracks()[0];
         if (newAudioTrack && audioProducerId) {
@@ -584,6 +585,33 @@ export function RoomPage() {
     attachVoice(myVoiceKey, localAudioTrack);
     return () => detachVoice(myVoiceKey);
   }, [myVoiceKey, localAudioTrack]);
+
+  // Noise gate (Discord "voice activity"): only transmit while my mic level is above the
+  // sensitivity threshold. We pause/resume the audio *producer* (not the track) so the
+  // local analyser keeps reading real audio and can re-open the gate when I speak again.
+  const { noiseGate, sensitivity } = useAudioSettings();
+  const myLevel = useVoiceStore((s) => (myVoiceKey ? s.levels[myVoiceKey] ?? 0 : 0));
+  const audioProducerId = useDeviceStore((s) => s.audioInput.producerId);
+  const gateOpenRef = useRef(true);
+  const gateHoldRef = useRef(0);
+  useEffect(() => {
+    if (!localAudioTrack || !audioProducerId) return;
+    if (!noiseGate) {
+      // Gate disabled → make sure we're not leaving the producer paused.
+      if (!gateOpenRef.current) {
+        gateOpenRef.current = true;
+        emitWithAck('media:resumeProducer', { producerId: audioProducerId }).catch(() => {});
+      }
+      return;
+    }
+    const now = Date.now();
+    if (myLevel >= sensitivityToThreshold(sensitivity)) gateHoldRef.current = now + 400;
+    const open = now < gateHoldRef.current;
+    if (open !== gateOpenRef.current) {
+      gateOpenRef.current = open;
+      emitWithAck(open ? 'media:resumeProducer' : 'media:pauseProducer', { producerId: audioProducerId }).catch(() => {});
+    }
+  }, [noiseGate, sensitivity, myLevel, localAudioTrack, audioProducerId]);
 
   // --- PIN required screen ---
   if (needsPin) {

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { micConstraints } from '../stores/audioSettings';
 
 export interface LocalCamera {
   deviceId: string;
@@ -83,7 +84,7 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: videoConstraints,
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: micConstraints(),
       });
 
       const videoTrack = stream.getVideoTracks()[0];

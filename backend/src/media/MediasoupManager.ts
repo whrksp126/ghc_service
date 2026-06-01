@@ -17,7 +17,7 @@ interface RoomMedia {
   producerMaxLayer: Map<string, number>;
 }
 
-const MAX_SPATIAL_LAYER = 2; // matches simulcastEncodings (r0/r1/r2)
+const MAX_SPATIAL_LAYER = 1; // matches simulcastEncodings (r0 thumbnail / r1 HD)
 
 /**
  * Emits `producerSendChange` { roomId, producerId, maxSpatialLayer } telling the

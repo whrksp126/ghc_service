@@ -2,7 +2,8 @@ import { useRef, useEffect, memo } from 'react';
 import { motion } from 'framer-motion';
 import { MicOff, Monitor, Signal, SignalLow } from 'lucide-react';
 import { useAdaptiveQuality } from '../../hooks/useAdaptiveQuality';
-import { useVoiceStore, SPEAKING_THRESHOLD } from '../../services/voiceActivity';
+import { useVoiceStore } from '../../services/voiceActivity';
+import { useAudioSettings, sensitivityToThreshold } from '../../stores/audioSettings';
 import { VoiceBars } from '../common/VoiceBars';
 import { getSocket } from '../../lib/socket';
 
@@ -43,7 +44,8 @@ export const FeedCard = memo(function FeedCard({
   const rootRef = useRef<HTMLDivElement>(null);
   const quality = useAdaptiveQuality(consumerId, rootRef, !isLocal && !!consumerId && !!track, priority);
   const level = useVoiceStore((s) => (voiceKey ? s.levels[voiceKey] ?? 0 : 0));
-  const speaking = level > SPEAKING_THRESHOLD;
+  const sensitivity = useAudioSettings((s) => s.sensitivity);
+  const speaking = level > sensitivityToThreshold(sensitivity);
 
   useEffect(() => {
     if (!videoRef.current || !track) return;

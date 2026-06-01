@@ -84,17 +84,16 @@ export function useBackgroundCamera() {
       if (videoTrack) {
         // Prefer resolution over framerate so the top simulcast layer stays sharp.
         videoTrack.contentHint = 'detail';
-        // Same simulcast ladder as the foreground path (useMediasoup) — otherwise a
-        // remotely-started device publishes a single low-bitrate layer and viewers get
-        // a blurry feed with no way to request HD.
+        // Two-layer simulcast, matching the foreground path (useMediasoup): a tiny
+        // thumbnail + a full-res HD layer, so the HD layer gets almost all the uplink
+        // and a focused feed stays sharp.
         const producer = await sendTransport.produce({
           track: videoTrack,
           encodings: [
-            { maxBitrate: 150000, scaleResolutionDownBy: 4, rid: 'r0', scalabilityMode: 'L1T3' },
-            { maxBitrate: 500000, scaleResolutionDownBy: 2, rid: 'r1', scalabilityMode: 'L1T3' },
-            { maxBitrate: 5000000, scaleResolutionDownBy: 1, rid: 'r2', scalabilityMode: 'L1T3' },
+            { maxBitrate: 250000, scaleResolutionDownBy: 4, rid: 'r0', scalabilityMode: 'L1T3' },
+            { maxBitrate: 5000000, scaleResolutionDownBy: 1, rid: 'r1', scalabilityMode: 'L1T3' },
           ],
-          codecOptions: { videoGoogleStartBitrate: 1000 },
+          codecOptions: { videoGoogleStartBitrate: 2500 },
           appData: { mediaType: 'video' },
         });
         session.producerIds.push(producer.id);

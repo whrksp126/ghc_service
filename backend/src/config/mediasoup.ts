@@ -66,8 +66,8 @@ export const mediasoupConfig = {
 };
 
 // Kept in sync with the client-side encodings in frontend/src/hooks/useMediasoup.ts.
+// Two layers: a tiny thumbnail + a full-res HD layer (the HD layer claims the uplink).
 export const simulcastEncodings = [
-  { maxBitrate: 150000, scaleResolutionDownBy: 4, rid: 'r0', scalabilityMode: 'L1T3' },
-  { maxBitrate: 500000, scaleResolutionDownBy: 2, rid: 'r1', scalabilityMode: 'L1T3' },
-  { maxBitrate: 5000000, scaleResolutionDownBy: 1, rid: 'r2', scalabilityMode: 'L1T3' },
+  { maxBitrate: 250000, scaleResolutionDownBy: 4, rid: 'r0', scalabilityMode: 'L1T3' },
+  { maxBitrate: 5000000, scaleResolutionDownBy: 1, rid: 'r1', scalabilityMode: 'L1T3' },
 ];

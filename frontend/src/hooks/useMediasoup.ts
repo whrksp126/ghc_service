@@ -110,24 +110,27 @@ export function useMediasoup() {
     // it the decoder has nothing to fall back to under loss/congestion and the top
     // layer freezes on a still frame; with it the SFU can drop temporal layers and the
     // picture keeps moving (lower fps) instead of stalling.
+    // Two simulcast layers, not three. A phone uplink is split across every layer it
+    // sends simultaneously; a third (mid) layer starves the top one, so a focused 1080p
+    // feed looks soft. Two layers — a tiny thumbnail + a full-res HD — let the HD layer
+    // claim almost all the uplink. Pinned spatial 2 on the viewer clamps to the top.
     const encodings = track.kind === 'video'
       ? [
-          { maxBitrate: 150000, scaleResolutionDownBy: 4, rid: 'r0', scalabilityMode: 'L1T3' },
-          { maxBitrate: 500000, scaleResolutionDownBy: 2, rid: 'r1', scalabilityMode: 'L1T3' },
-          { maxBitrate: 5000000, scaleResolutionDownBy: 1, rid: 'r2', scalabilityMode: 'L1T3' },
+          { maxBitrate: 250000, scaleResolutionDownBy: 4, rid: 'r0', scalabilityMode: 'L1T3' },
+          { maxBitrate: 5000000, scaleResolutionDownBy: 1, rid: 'r1', scalabilityMode: 'L1T3' },
         ]
       : undefined;
 
     // Bias the encoder toward keeping resolution (sharpness) over framerate when CPU/
-    // bandwidth is tight — without this the top simulcast layer gets downscaled on
-    // phones and the focused feed looks soft.
+    // bandwidth is tight — with 'detail' (maintain-resolution) a starved 1080p layer
+    // drops fps instead of downscaling, so it stays crisp instead of going soft.
     if (track.kind === 'video') track.contentHint = 'detail';
 
     const producer = await sendTransportRef.current.produce({
       track,
       encodings,
       codecOptions: track.kind === 'video'
-        ? { videoGoogleStartBitrate: 1000 }
+        ? { videoGoogleStartBitrate: 2500 }
         : { opusStereo: true, opusDtx: true },
       appData,
     });

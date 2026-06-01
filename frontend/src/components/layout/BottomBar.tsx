@@ -2,11 +2,12 @@ import { useState, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Mic, MicOff, MonitorUp, MonitorOff, LayoutGrid, Maximize2,
-  PhoneOff, MoreHorizontal, Trash2,
+  PhoneOff, MoreHorizontal, Trash2, SlidersHorizontal,
 } from 'lucide-react';
 import { useDeviceStore } from '../../stores/deviceStore';
 import { useUIStore } from '../../stores/uiStore';
 import { playSound } from '../../lib/sounds';
+import { AudioSettingsModal } from '../room/AudioSettingsModal';
 
 interface BottomBarProps {
   onToggleMic: () => void;
@@ -33,6 +34,7 @@ export function BottomBar({
   const { isMicOn, isScreenSharing } = useDeviceStore();
   const { layoutMode } = useUIStore();
   const [moreOpen, setMoreOpen] = useState(false);
+  const [audioOpen, setAudioOpen] = useState(false);
 
   const LayoutIcon = layoutIcons[layoutMode] || LayoutGrid;
 
@@ -96,6 +98,7 @@ export function BottomBar({
                   className="absolute bottom-14 left-1/2 -translate-x-1/2 z-50 w-44 glass-strong rounded-xl overflow-hidden py-1"
                 >
                   {menuItem(<LayoutIcon size={18} />, '레이아웃 전환', onSwitchLayout)}
+                  {menuItem(<SlidersHorizontal size={18} />, '마이크 설정', () => setAudioOpen(true))}
                   {onCloseRoom && menuItem(<Trash2 size={18} />, '방 종료', onCloseRoom, true)}
                 </motion.div>
               </>
@@ -112,6 +115,8 @@ export function BottomBar({
           <PhoneOff size={20} />
         </motion.button>
       </div>
+
+      <AudioSettingsModal isOpen={audioOpen} onClose={() => setAudioOpen(false)} />
     </motion.div>
   );
 }
