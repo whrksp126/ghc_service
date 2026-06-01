@@ -4,14 +4,15 @@
 #
 # Ports (must be forwarded on the home router):
 #   7880/tcp   signaling (WS) — proxied by nginx as longdcam-back.ghmate.com/livekit
-#   40100/udp  WebRTC media — inside the already-forwarded 40000-40100 range, so no
-#              new router rule is needed (coturn keeps 40000-40099, see turnserver.conf)
+#   40100/udp  WebRTC media — top of the already-forwarded 40000-40100 range, so no new
+#              router rule is needed. coturn shares the range but allocates from 40000 up,
+#              so it effectively never reaches 40100.
 port: 7880
 
 rtc:
   tcp_port: 7881
-  # Reuse the existing 40000-40100/udp port-forward (mediasoup's old range). coturn uses
-  # 40000-40099 for its relays, LiveKit takes 40100 as its single UDP mux port.
+  # Reuse the existing 40000-40100/udp port-forward (mediasoup's old range) as a single
+  # UDP mux port at the top of the range.
   udp_port: 40100
   # STUN-detect the public IP and advertise it so external (cellular) clients reach media
   # via the port-forward. Same topology the old mediasoup used; LAN clients reach it via
