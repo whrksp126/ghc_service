@@ -9,6 +9,7 @@ interface FeedItem {
   isMuted?: boolean;
   isLocal?: boolean;
   isScreen?: boolean;
+  voiceKey?: string;
 }
 
 interface SpotlightLayoutProps {
@@ -37,6 +38,7 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick }: SpotlightLa
           consumerId={spotlight.isLocal ? undefined : spotlight.id}
           layoutId={spotlight.id}
           priority
+          voiceKey={spotlight.voiceKey}
           className="w-full h-full"
         />
       </div>
@@ -56,6 +58,7 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick }: SpotlightLa
                 isScreen={feed.isScreen}
                 consumerId={feed.isLocal ? undefined : feed.id}
                 layoutId={feed.id}
+                voiceKey={feed.voiceKey}
                 className="w-32 h-24 sm:w-full sm:h-32 shrink-0"
                 onClick={() => onFeedClick?.(feed.id)}
               />

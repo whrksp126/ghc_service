@@ -2,6 +2,8 @@ import { useRef, useEffect, memo } from 'react';
 import { motion } from 'framer-motion';
 import { MicOff, Monitor, Signal, SignalLow } from 'lucide-react';
 import { useAdaptiveQuality } from '../../hooks/useAdaptiveQuality';
+import { useVoiceStore, SPEAKING_THRESHOLD } from '../../services/voiceActivity';
+import { VoiceBars } from '../common/VoiceBars';
 import { getSocket } from '../../lib/socket';
 
 interface FeedCardProps {
@@ -17,6 +19,8 @@ interface FeedCardProps {
   layoutId?: string;
   /** Focused/spotlight feed — always request the top spatial layer (sharper). */
   priority?: boolean;
+  /** Participant key (`${userId}:${deviceId}`) for voice-activity glow + waveform. */
+  voiceKey?: string;
   className?: string;
   onClick?: () => void;
 }
@@ -31,12 +35,15 @@ export const FeedCard = memo(function FeedCard({
   consumerId,
   layoutId,
   priority,
+  voiceKey,
   className = '',
   onClick,
 }: FeedCardProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const quality = useAdaptiveQuality(consumerId, rootRef, !isLocal && !!consumerId && !!track, priority);
+  const level = useVoiceStore((s) => (voiceKey ? s.levels[voiceKey] ?? 0 : 0));
+  const speaking = level > SPEAKING_THRESHOLD;
 
   useEffect(() => {
     if (!videoRef.current || !track) return;
@@ -79,7 +86,10 @@ export const FeedCard = memo(function FeedCard({
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
       transition={{ type: 'spring', stiffness: 350, damping: 32 }}
-      className={`feed-card relative group cursor-pointer ${className}`}
+      className={`feed-card relative group cursor-pointer transition-shadow duration-100 ${className}`}
+      style={speaking
+        ? { boxShadow: `0 0 0 3px #25F4EE, 0 0 18px 2px rgba(37,244,238,${Math.min(0.7, 0.35 + level)})` }
+        : undefined}
       onClick={onClick}
     >
       {track ? (
@@ -111,6 +121,13 @@ export const FeedCard = memo(function FeedCard({
           {quality === 'high' ? <Signal size={11} /> : <SignalLow size={11} />}
           {quality === 'high' ? 'HD' : 'SD'}
         </motion.div>
+      )}
+
+      {/* Voice activity waveform (bottom-right) */}
+      {voiceKey && speaking && (
+        <div className="absolute bottom-2 right-2 z-10 flex items-center bg-black/45 backdrop-blur-sm rounded-full px-2 py-1">
+          <VoiceBars level={level} />
+        </div>
       )}
 
       {/* Overlay */}

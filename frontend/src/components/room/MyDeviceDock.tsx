@@ -7,6 +7,8 @@ import { useAlwaysOnCamera } from '../../services/alwaysOnCamera';
 import { emitWithAck } from '../../lib/socket';
 import { showToast } from '../common/Toast';
 import { BottomSheet, type SheetAction } from '../common/BottomSheet';
+import { useVoiceStore, SPEAKING_THRESHOLD } from '../../services/voiceActivity';
+import { VoiceBars } from '../common/VoiceBars';
 
 interface MyDeviceDockProps {
   roomSlug: string;
@@ -54,6 +56,7 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
   const consumers = useRoomStore((s) => s.consumers);
   const isReconnecting = useRoomStore((s) => s.isReconnecting);
   const localLensCount = useAlwaysOnCamera((s) => s.availableCameras.length);
+  const voiceLevels = useVoiceStore((s) => s.levels);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [sheetCamId, setSheetCamId] = useState<string | null>(null);
   // Track which devices we auto-pulled into the room, and which the user explicitly
@@ -179,10 +182,15 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
         {sorted.map((cam) => {
           const { isCurrent, online, track, streaming, busy } = camState(cam);
           const reconnecting = isCurrent && isReconnecting;
+          const level = voiceLevels[`${userId}:${cam.id}`] ?? 0;
+          const speaking = level > SPEAKING_THRESHOLD;
 
           return (
             <div key={cam.id} className="relative w-28 shrink-0">
-              <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-dark-800 border border-white/10">
+              <div
+                className="relative w-full aspect-video rounded-xl overflow-hidden bg-dark-800 border border-white/10 transition-shadow duration-100"
+                style={speaking ? { boxShadow: `0 0 0 2px #25F4EE, 0 0 12px 1px rgba(37,244,238,${Math.min(0.7, 0.35 + level)})` } : undefined}
+              >
                 {track && streaming ? (
                   <DockVideo track={track} mirror={isCurrent} />
                 ) : (
@@ -216,6 +224,13 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
                 >
                   {busy ? <Loader2 size={13} className="animate-spin" /> : <MoreHorizontal size={15} />}
                 </button>
+
+                {/* Voice activity waveform */}
+                {speaking && (
+                  <div className="absolute bottom-1 left-1 flex items-center bg-black/45 backdrop-blur-sm rounded-full px-1.5 py-0.5">
+                    <VoiceBars level={level} className="h-3" />
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center gap-1 mt-1 px-0.5">

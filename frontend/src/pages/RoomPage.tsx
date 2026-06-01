@@ -11,6 +11,7 @@ import { useCameraStore } from '../stores/cameraStore';
 import { emitWithAck, getSocket } from '../lib/socket';
 import { api } from '../lib/api';
 import { useAlwaysOnCamera } from '../services/alwaysOnCamera';
+import { attachVoice, detachVoice } from '../services/voiceActivity';
 import { GridLayout } from '../components/room/GridLayout';
 import { SpotlightLayout } from '../components/room/SpotlightLayout';
 import { TopBar } from '../components/layout/TopBar';
@@ -27,12 +28,14 @@ import type { Participant, ProducerInfo } from '../types/room';
 
 type RoomPhase = 'lobby' | 'connecting' | 'inRoom';
 
-/** Hidden sink that plays a remote participant's audio track. */
-function RemoteAudio({ track }: { track: MediaStreamTrack }) {
+/** Hidden sink that plays a remote participant's audio track + taps it for voice activity. */
+function RemoteAudio({ track, voiceKey }: { track: MediaStreamTrack; voiceKey: string }) {
   const ref = useRef<HTMLAudioElement>(null);
   useEffect(() => {
     if (ref.current) ref.current.srcObject = new MediaStream([track]);
-  }, [track]);
+    attachVoice(voiceKey, track);
+    return () => detachVoice(voiceKey);
+  }, [track, voiceKey]);
   return <audio ref={ref} autoPlay playsInline />;
 }
 
@@ -556,6 +559,7 @@ export function RoomPage() {
         isMuted: false,
         isLocal: false,
         isScreen: false,
+        voiceKey: `${consumer.userId}:${consumer.deviceId}`,
       });
     }
 
@@ -568,6 +572,18 @@ export function RoomPage() {
     () => consumers.filter((c) => c.kind === 'audio' && c.userId !== userId && c.track),
     [consumers, userId]
   );
+
+  // Tap my own mic for voice activity so my dock tile glows when I speak (no playback).
+  const myVoiceKey = userId && deviceId ? `${userId}:${deviceId}` : '';
+  const localAudioTrack = useDeviceStore((s) => s.audioInput.track);
+  useEffect(() => {
+    if (!myVoiceKey || !localAudioTrack) {
+      if (myVoiceKey) detachVoice(myVoiceKey);
+      return;
+    }
+    attachVoice(myVoiceKey, localAudioTrack);
+    return () => detachVoice(myVoiceKey);
+  }, [myVoiceKey, localAudioTrack]);
 
   // --- PIN required screen ---
   if (needsPin) {
@@ -691,7 +707,7 @@ export function RoomPage() {
 
       {/* Remote audio sinks (hidden) — voice playback for other participants */}
       {audioConsumers.map((c) => (
-        <RemoteAudio key={c.consumerId} track={c.track!} />
+        <RemoteAudio key={c.consumerId} track={c.track!} voiceKey={`${c.userId}:${c.deviceId}`} />
       ))}
 
       <div className="flex-1 min-h-0 relative">

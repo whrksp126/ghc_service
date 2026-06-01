@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, useCallback, type MouseEvent as ReactMouseEvent } from 'react';
 import { motion } from 'framer-motion';
-import { Smartphone, Tablet, Monitor, Camera, WifiOff, Check, RefreshCw } from 'lucide-react';
+import { Smartphone, Tablet, Monitor, Camera, WifiOff, Check, RefreshCw, MoreHorizontal, SwitchCamera } from 'lucide-react';
 import { requestPreview, type PreviewConnection, type PreviewStatus } from '../../services/previewStream';
 import { useAlwaysOnCamera } from '../../services/alwaysOnCamera';
 import { emitWithAck } from '../../lib/socket';
+import { BottomSheet, type SheetAction } from '../common/BottomSheet';
 
 function DeviceIcon({ type, size = 16 }: { type: string; size?: number }) {
   switch (type) {
@@ -58,6 +59,7 @@ export function CameraPreviewTile({
   const connRef = useRef<PreviewConnection | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [status, setStatus] = useState<PreviewStatus>('connecting');
+  const [sheetOpen, setSheetOpen] = useState(false);
   // Bumped whenever the current device's track changes mute/ended state so the render
   // re-derives liveness from the (mutated-in-place) MediaStreamTrack.
   const [, setTick] = useState(0);
@@ -186,10 +188,8 @@ export function CameraPreviewTile({
   const lensCount = isCurrentDevice ? availableCameras.length : remoteCameraCount;
   const lensActive = isCurrentDevice ? localLensIndex : remoteCameraActiveIndex;
   const showLens = (isCurrentDevice ? currentState === 'live' : status === 'live' && isOnline) && lensCount > 1;
-  const showLiveBadge = isCurrentDevice ? currentState === 'live' : status === 'live' && isOnline;
 
-  const switchLens = (e: ReactMouseEvent, i: number) => {
-    e.stopPropagation();
+  const selectLens = (i: number) => {
     if (i === lensActive) return;
     if (isCurrentDevice) {
       useAlwaysOnCamera.getState().switchCamera(availableCameras[i].deviceId).catch(() => {});
@@ -197,6 +197,13 @@ export function CameraPreviewTile({
       emitWithAck('camera:requestSwitchCamera', { targetDeviceId: camId, cameraIndex: i }).catch(() => {});
     }
   };
+
+  const lensActions: SheetAction[] = Array.from({ length: lensCount }, (_, i) => ({
+    icon: <SwitchCamera size={18} />,
+    label: `카메라 ${i + 1}`,
+    active: i === lensActive,
+    onClick: () => selectLens(i),
+  }));
 
   const retry = (e: ReactMouseEvent) => {
     e.stopPropagation();
@@ -206,6 +213,7 @@ export function CameraPreviewTile({
   };
 
   return (
+    <div className="relative">
     <motion.button
       type="button"
       whileTap={disabled ? undefined : { scale: 0.97 }}
@@ -268,30 +276,16 @@ export function CameraPreviewTile({
         </div>
       )}
 
-      {/* LIVE badge */}
-      {showLiveBadge && (
-        <div className="absolute top-2 left-2 flex items-center gap-1 bg-black/50 backdrop-blur-sm rounded-full px-2 py-0.5">
-          <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-          <span className="text-[10px] text-white/70">LIVE</span>
-        </div>
-      )}
-
-      {/* Lens switcher */}
+      {/* More menu (lens switching) */}
       {showLens && (
-        <div className="absolute bottom-9 right-2 flex bg-black/60 backdrop-blur-sm rounded-full overflow-hidden">
-          {Array.from({ length: lensCount }, (_, i) => (
-            <span
-              key={i}
-              role="button"
-              onClick={(e) => switchLens(e, i)}
-              className={`px-2 py-0.5 text-[11px] font-bold transition-colors ${
-                i === lensActive ? 'bg-primary text-white' : 'text-white/60 hover:text-white'
-              }`}
-            >
-              {i + 1}
-            </span>
-          ))}
-        </div>
+        <span
+          role="button"
+          onClick={(e: ReactMouseEvent) => { e.stopPropagation(); setSheetOpen(true); }}
+          className="absolute bottom-9 right-2 w-7 h-7 rounded-full bg-black/55 backdrop-blur-sm flex items-center justify-center text-white/80 hover:text-white"
+          title="더보기"
+        >
+          <MoreHorizontal size={15} />
+        </span>
       )}
 
       {/* Selection check */}
@@ -310,5 +304,13 @@ export function CameraPreviewTile({
         {isCurrentDevice && <span className="text-[10px] text-primary ml-auto shrink-0">이 기기</span>}
       </div>
     </motion.button>
+
+      <BottomSheet
+        isOpen={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        title={cameraName}
+        actions={lensActions}
+      />
+    </div>
   );
 }

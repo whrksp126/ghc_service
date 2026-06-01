@@ -10,6 +10,7 @@ interface FeedItem {
   isMuted?: boolean;
   isLocal?: boolean;
   isScreen?: boolean;
+  voiceKey?: string;
 }
 
 interface GridLayoutProps {
@@ -43,6 +44,7 @@ export function GridLayout({ feeds, onFeedClick }: GridLayoutProps) {
             isScreen={feed.isScreen}
             consumerId={feed.isLocal ? undefined : feed.id}
             layoutId={feed.id}
+            voiceKey={feed.voiceKey}
             onClick={() => onFeedClick?.(feed.id)}
           />
         ))}

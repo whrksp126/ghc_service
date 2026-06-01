@@ -55,8 +55,8 @@ export const mediasoupConfig = {
         announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || undefined,
       },
     ],
-    maxIncomingBitrate: 4000000,
-    initialAvailableOutgoingBitrate: 3000000,
+    maxIncomingBitrate: 10000000,
+    initialAvailableOutgoingBitrate: 6000000,
     minimumAvailableOutgoingBitrate: 1000000,
     maxSctpMessageSize: 262144,
     enableUdp: true,
@@ -69,5 +69,5 @@ export const mediasoupConfig = {
 export const simulcastEncodings = [
   { maxBitrate: 150000, scaleResolutionDownBy: 4, rid: 'r0', scalabilityMode: 'L1T3' },
   { maxBitrate: 500000, scaleResolutionDownBy: 2, rid: 'r1', scalabilityMode: 'L1T3' },
-  { maxBitrate: 2500000, scaleResolutionDownBy: 1, rid: 'r2', scalabilityMode: 'L1T3' },
+  { maxBitrate: 5000000, scaleResolutionDownBy: 1, rid: 'r2', scalabilityMode: 'L1T3' },
 ];

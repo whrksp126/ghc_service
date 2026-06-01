@@ -82,6 +82,8 @@ export function useBackgroundCamera() {
 
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
+        // Prefer resolution over framerate so the top simulcast layer stays sharp.
+        videoTrack.contentHint = 'detail';
         // Same simulcast ladder as the foreground path (useMediasoup) — otherwise a
         // remotely-started device publishes a single low-bitrate layer and viewers get
         // a blurry feed with no way to request HD.

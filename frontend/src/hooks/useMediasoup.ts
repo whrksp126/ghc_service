@@ -118,6 +118,11 @@ export function useMediasoup() {
         ]
       : undefined;
 
+    // Bias the encoder toward keeping resolution (sharpness) over framerate when CPU/
+    // bandwidth is tight — without this the top simulcast layer gets downscaled on
+    // phones and the focused feed looks soft.
+    if (track.kind === 'video') track.contentHint = 'detail';
+
     const producer = await sendTransportRef.current.produce({
       track,
       encodings,
