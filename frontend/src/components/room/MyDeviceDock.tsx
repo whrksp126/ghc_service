@@ -74,6 +74,11 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
   // refreshed). Respects devices the user explicitly turned off; retries after a device
   // goes offline and comes back.
   useEffect(() => {
+    // Cap concurrent cameras per user. The home server's 100 Mb/s NIC can't carry
+    // unbounded HD streams, so a user brings at most MAX_DEVICES_PER_USER cameras into a
+    // room (the current device counts as one).
+    const MAX_DEVICES_PER_USER = 3;
+    let inRoom = cameras.filter((c) => c.isCurrentDevice || c.isInRoom).length;
     for (const cam of cameras) {
       if (cam.isCurrentDevice) continue;
       if (!cam.isOnline) {
@@ -81,7 +86,9 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
         continue;
       }
       if (cam.isInRoom || manualStopRef.current.has(cam.id) || autoStartedRef.current.has(cam.id)) continue;
+      if (inRoom >= MAX_DEVICES_PER_USER) break;
       autoStartedRef.current.add(cam.id);
+      inRoom++;
       emitWithAck('camera:requestStart', { targetDeviceId: cam.id, roomSlug }).catch(() => {});
     }
   }, [cameras, roomSlug]);

@@ -1,25 +1,22 @@
 import { useRef, useEffect, memo } from 'react';
 import { motion } from 'framer-motion';
-import { MicOff, Monitor, Signal, SignalLow } from 'lucide-react';
-import { useAdaptiveQuality } from '../../hooks/useAdaptiveQuality';
+import { MicOff, Monitor } from 'lucide-react';
+import type { RemoteTrack } from 'livekit-client';
 import { useVoiceStore } from '../../services/voiceActivity';
 import { useAudioSettings, sensitivityToThreshold } from '../../stores/audioSettings';
 import { VoiceBars } from '../common/VoiceBars';
-import { getSocket } from '../../lib/socket';
 
 interface FeedCardProps {
   track: MediaStreamTrack | null;
+  /** LiveKit remote track — attaching via this lets adaptiveStream size the layer. */
+  lkTrack?: RemoteTrack;
   label: string;
   deviceLabel: string;
   isMuted?: boolean;
   isLocal?: boolean;
   isScreen?: boolean;
-  /** Remote consumer id — enables adaptive quality + HD indicator. Omit for local feeds. */
-  consumerId?: string;
   /** Stable feed id — drives shared-element layout morph across layout modes. */
   layoutId?: string;
-  /** Focused/spotlight feed — always request the top spatial layer (sharper). */
-  priority?: boolean;
   /** Participant key (`${userId}:${deviceId}`) for voice-activity glow + waveform. */
   voiceKey?: string;
   className?: string;
@@ -28,56 +25,35 @@ interface FeedCardProps {
 
 export const FeedCard = memo(function FeedCard({
   track,
+  lkTrack,
   label,
   deviceLabel,
   isMuted,
   isLocal,
   isScreen,
-  consumerId,
   layoutId,
-  priority,
   voiceKey,
   className = '',
   onClick,
 }: FeedCardProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const quality = useAdaptiveQuality(consumerId, rootRef, !isLocal && !!consumerId && !!track, priority);
   const level = useVoiceStore((s) => (voiceKey ? s.levels[voiceKey] ?? 0 : 0));
   const sensitivity = useAudioSettings((s) => s.sensitivity);
   const speaking = level > sensitivityToThreshold(sensitivity);
 
+  // Remote video → attach through LiveKit so adaptiveStream observes this element's size
+  // and visibility and requests the matching simulcast layer. Local/screen → plain sink.
   useEffect(() => {
-    if (!videoRef.current || !track) return;
-    const stream = new MediaStream([track]);
-    videoRef.current.srcObject = stream;
-  }, [track]);
-
-  // Stall recovery: a remote simulcast feed can freeze on a stale frame after a layer
-  // switch (the new layer hasn't sent a keyframe yet). If the video element stops
-  // advancing while it should be playing, ask the SFU to pull a fresh keyframe.
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || isLocal || !consumerId || !track) return;
-    let lastTime = -1;
-    let stalls = 0;
-    const iv = setInterval(() => {
-      if (video.paused || video.readyState < 2) return;
-      const t = video.currentTime;
-      if (t === lastTime) {
-        if (++stalls >= 2) {
-          getSocket().emit('media:requestKeyFrame', { consumerId });
-          stalls = 0;
-        }
-      } else {
-        stalls = 0;
-        lastTime = t;
-      }
-    }, 1000);
-    return () => clearInterval(iv);
-  }, [consumerId, track, isLocal]);
-
-  const showQuality = !isLocal && !!consumerId && !!track;
+    const el = videoRef.current;
+    if (!el || !track) return;
+    if (lkTrack && !isLocal) {
+      lkTrack.attach(el);
+      return () => { lkTrack.detach(el); };
+    }
+    el.srcObject = new MediaStream([track]);
+    return () => { el.srcObject = null; };
+  }, [track, lkTrack, isLocal]);
 
   return (
     <motion.div
@@ -108,21 +84,6 @@ export const FeedCard = memo(function FeedCard({
             {label[0]?.toUpperCase()}
           </div>
         </div>
-      )}
-
-      {/* Quality indicator (adaptive layer) */}
-      {showQuality && quality !== 'paused' && (
-        <motion.div
-          key={quality}
-          initial={{ opacity: 0, scale: 0.8 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className={`absolute top-2 right-2 z-10 rounded-full px-1.5 py-0.5 flex items-center gap-1 text-[10px] font-semibold backdrop-blur-sm ${
-            quality === 'high' ? 'bg-secondary/80 text-dark-900' : 'bg-black/50 text-white/70'
-          }`}
-        >
-          {quality === 'high' ? <Signal size={11} /> : <SignalLow size={11} />}
-          {quality === 'high' ? 'HD' : 'SD'}
-        </motion.div>
       )}
 
       {/* Voice activity waveform (bottom-right) */}

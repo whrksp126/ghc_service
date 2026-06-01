@@ -1,0 +1,27 @@
+# LiveKit SFU — production config.
+# Runs with network_mode: host. API keys are injected via the LIVEKIT_KEYS env
+# var (from backend/.env) and are NEVER committed in this file.
+#
+# Ports (must be forwarded on the home router):
+#   7880/tcp  signaling (WS) — proxied by nginx as wss://longdcam-livekit.ghmate.com
+#   7881/tcp  WebRTC TCP fallback (restrictive networks)
+#   7882/udp  WebRTC media (single-port UDP mux — no large range to forward)
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  # Single UDP mux port instead of a wide range — one port to forward, scales fine.
+  udp_port: 7882
+  # The advertised IP is provided explicitly via --node-ip (LK_NODE_IP = server LAN IP)
+  # in docker-compose, so no STUN-based external-IP detection is needed.
+  use_external_ip: false
+
+# Embedded TURN disabled for now: rely on host-candidate UDP (7882) + TCP fallback
+# (7881). The legacy coturn still serves the P2P device-preview path. Revisit if
+# clients on restrictive/symmetric-NAT networks fail to connect.
+turn:
+  enabled: false
+
+logging:
+  level: info
+  json: false

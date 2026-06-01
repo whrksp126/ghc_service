@@ -2,13 +2,15 @@ import { useEffect, useCallback, useMemo, useRef, useState } from 'react';
 import { LayoutGroup } from 'framer-motion';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useSocket } from '../hooks/useSocket';
-import { useMediasoup } from '../hooks/useMediasoup';
+import {
+  connectToRoom, publishTrack, unpublishTrack, setTrackMuted, replacePublishedTrack, disconnectRoom,
+} from '../lib/livekitRoom';
 import { useRoomStore } from '../stores/roomStore';
 import { useDeviceStore } from '../stores/deviceStore';
 import { useUIStore } from '../stores/uiStore';
 import { useAuthStore } from '../stores/authStore';
 import { useCameraStore } from '../stores/cameraStore';
-import { emitWithAck, getSocket } from '../lib/socket';
+import { emitWithAck } from '../lib/socket';
 import { api } from '../lib/api';
 import { useAlwaysOnCamera } from '../services/alwaysOnCamera';
 import { attachVoice, detachVoice, useVoiceStore } from '../services/voiceActivity';
@@ -25,7 +27,7 @@ import { Button } from '../components/common/Button';
 import { showToast } from '../components/common/Toast';
 import { Mic, MicOff, Video, VideoOff, Users } from 'lucide-react';
 import { initSounds, playSound } from '../lib/sounds';
-import type { Participant, ProducerInfo } from '../types/room';
+import type { Participant } from '../types/room';
 
 type RoomPhase = 'lobby' | 'connecting' | 'inRoom';
 
@@ -48,18 +50,14 @@ export function RoomPage() {
   const {
     setRoom, clearRoom, setParticipants, setConnecting, isConnecting, consumers, participants,
   } = useRoomStore();
-  const { isCamOn, setVideoTrack, setAudioTrack,
-    setScreenSharing, isScreenSharing, setScreenTrack, reset: resetDevice,
+  const {
+    isCamOn, setVideoTrack, setAudioTrack, setScreenSharing, isScreenSharing, setScreenTrack,
+    reset: resetDevice, setAudioProducerId, setVideoProducerId, setScreenProducerId,
   } = useDeviceStore();
   const { layoutMode, setLayoutMode, spotlightProducerId, setSpotlightProducer } = useUIStore();
   const { cameras, fetchCameras } = useCameraStore();
 
   const { connect, disconnect } = useSocket();
-  const {
-    loadDevice, createSendTransport, createRecvTransport,
-    produce, consume, closeProducer, cleanup: cleanupMedia,
-    producersRef, consumersRef,
-  } = useMediasoup();
 
   const [phase, setPhase] = useState<RoomPhase>('lobby');
   const [isOwner, setIsOwner] = useState(false);
@@ -67,12 +65,7 @@ export function RoomPage() {
   const [localScreenTrack, setLocalScreenTrack] = useState<MediaStreamTrack | null>(null);
   const localAudioTrackRef = useRef<MediaStreamTrack | null>(null);
   const joinedRef = useRef(false);
-  const consumedProducerIds = useRef<Set<string>>(new Set());
-  // Reconnection bookkeeping (re-establishing transports/producers/consumers).
   const sessionActiveRef = useRef(false);
-  const reestablishingRef = useRef(false);
-  const recvReadyRef = useRef(false);
-  const earlyProducersRef = useRef<string[]>([]);
 
   // Lobby state
   const [lobbyMicOn, setLobbyMicOn] = useState(true);
@@ -160,125 +153,21 @@ export function RoomPage() {
     await joinRoom();
   }
 
-  // Consume each producer at most once (existing + new), so we never miss or
-  // double-consume a feed (e.g. another of my devices joining concurrently).
-  const consumeOnce = useCallback((producerId: string) => {
-    if (consumedProducerIds.current.has(producerId)) return;
-    consumedProducerIds.current.add(producerId);
-    consume(producerId).catch(() => consumedProducerIds.current.delete(producerId));
-  }, [consume]);
-
-  // Idempotent room/media socket listeners (re-attachable on reconnect via off→on).
-  const attachRoomListeners = useCallback((socket: ReturnType<typeof getSocket>) => {
-    // Buffer producers that arrive before the recv transport is ready.
-    socket.off('media:newProducer');
-    socket.on('media:newProducer', (data: ProducerInfo) => {
-      if (recvReadyRef.current) consumeOnce(data.producerId);
-      else earlyProducersRef.current.push(data.producerId);
-    });
-
-    // dynacast: cap how many simulcast layers we send to what viewers watch.
-    socket.off('media:producerSendChange');
-    socket.on('media:producerSendChange', (data: { producerId: string; maxSpatialLayer: number }) => {
-      const producer = producersRef.current.get(data.producerId);
-      if (!producer || producer.kind !== 'video') return;
-      producer.setMaxSpatialLayer(data.maxSpatialLayer).catch(() => {});
-    });
-
-    socket.off('media:producerClosed');
-    socket.on('media:producerClosed', (data: { producerId: string }) => {
-      consumedProducerIds.current.delete(data.producerId);
-      for (const [consumerId, consumer] of consumersRef.current) {
-        if (consumer.producerId === data.producerId) {
-          consumer.close();
-          consumersRef.current.delete(consumerId);
-        }
-      }
-      useRoomStore.getState().removeConsumersByProducerId(data.producerId);
-    });
-
-    // Owner ended the room (or it was deleted) → leave gracefully.
-    socket.off('room:closed');
-    socket.on('room:closed', () => {
-      sessionActiveRef.current = false;
-      showToast('방이 종료되었습니다', 'info');
-      navigate('/');
-    });
-  }, [consumeOnce, navigate, producersRef, consumersRef]);
-
-  // Join the room + (re)build transports + consume existing producers. Reused on reconnect.
+  // Join the room over Socket.IO (presence + token) and connect to the LiveKit SFU.
+  // LiveKit auto-subscribes remote tracks → roomStore.consumers, and auto-reconnects media.
   const establishSession = useCallback(async () => {
-    const socket = getSocket();
-    recvReadyRef.current = false;
-    earlyProducersRef.current = [];
-    consumedProducerIds.current.clear();
-    attachRoomListeners(socket);
-
     const result = await emitWithAck<{
       participants: Participant[];
-      existingProducers: ProducerInfo[];
-      iceServers: any[];
       isOwner: boolean;
+      token: string;
     }>('room:join', { roomSlug: slug });
 
     setRoom(slug!, slug!);
     setParticipants(result.participants);
     setIsOwner(!!result.isOwner);
 
-    await loadDevice();
-    await createSendTransport();
-    await createRecvTransport();
-    recvReadyRef.current = true;
-
-    for (const producer of result.existingProducers) consumeOnce(producer.producerId);
-    for (const id of earlyProducersRef.current) consumeOnce(id);
-  }, [slug, attachRoomListeners, consumeOnce, loadDevice, createSendTransport, createRecvTransport,
-    setRoom, setParticipants]);
-
-  // Re-publish whatever this device is currently sharing (used on reconnect).
-  const republishCurrent = useCallback(async () => {
-    const { isMicOn: micOn, isCamOn: camOn, isScreenSharing: screenOn } = useDeviceStore.getState();
-    const alwaysOn = useAlwaysOnCamera.getState();
-    let stream = alwaysOn.stream;
-    if ((camOn || micOn) && (!stream || !stream.active)) {
-      try { await alwaysOn.start(); stream = useAlwaysOnCamera.getState().stream; } catch { /* ignore */ }
-    }
-    if (stream) {
-      const audioTrack = stream.getAudioTracks()[0];
-      const videoTrack = stream.getVideoTracks()[0];
-      if (micOn && audioTrack) {
-        localAudioTrackRef.current = audioTrack;
-        setAudioTrack(audioTrack);
-        await produce(audioTrack, { mediaType: 'audio' });
-      }
-      if (camOn && videoTrack) {
-        setLocalVideoTrack(videoTrack);
-        setVideoTrack(videoTrack);
-        await produce(videoTrack, { mediaType: 'video' });
-      }
-    }
-    const screenTrack = useDeviceStore.getState().screenShare.track;
-    if (screenOn && screenTrack && screenTrack.readyState === 'live') {
-      await produce(screenTrack, { mediaType: 'screen' });
-    }
-  }, [produce, setAudioTrack, setVideoTrack]);
-
-  // Full media rebuild after the socket reconnects (server treated us as fresh).
-  const handleReconnect = useCallback(async () => {
-    if (!sessionActiveRef.current || reestablishingRef.current) return;
-    reestablishingRef.current = true;
-    useRoomStore.getState().setReconnecting(true);
-    try {
-      cleanupMedia();
-      await establishSession();
-      await republishCurrent();
-      useRoomStore.getState().setReconnecting(false);
-    } catch {
-      // Leave the overlay up; the next 'reconnect' tick will retry.
-    } finally {
-      reestablishingRef.current = false;
-    }
-  }, [cleanupMedia, establishSession, republishCurrent]);
+    await connectToRoom(result.token);
+  }, [slug, setRoom, setParticipants]);
 
   const joinRoom = useCallback(async () => {
     if (!slug || joinedRef.current) return;
@@ -289,9 +178,19 @@ export function RoomPage() {
       initSounds();
       const socket = connect();
 
-      // Rebuild media whenever the underlying connection comes back.
+      // Owner ended the room (or it was deleted) → leave gracefully.
+      socket.off('room:closed');
+      socket.on('room:closed', () => {
+        sessionActiveRef.current = false;
+        showToast('방이 종료되었습니다', 'info');
+        navigate('/');
+      });
+
+      // Socket reconnect only needs to restore presence; LiveKit reconnects media itself.
       socket.io.off('reconnect');
-      socket.io.on('reconnect', () => { handleReconnect(); });
+      socket.io.on('reconnect', () => {
+        emitWithAck('room:join', { roomSlug: slug }).catch(() => {});
+      });
 
       await establishSession();
 
@@ -315,7 +214,7 @@ export function RoomPage() {
           try {
             stream = await navigator.mediaDevices.getUserMedia({
               audio: micConstraints(),
-              video: { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' },
+              video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 }, facingMode: 'user' },
             });
           } catch {
             showToast('카메라/마이크 접근이 거부되었습니다', 'error');
@@ -327,28 +226,26 @@ export function RoomPage() {
           const videoTrack = stream.getVideoTracks()[0];
 
           if (audioTrack) {
-            localAudioTrackRef.current = audioTrack;
-            setAudioTrack(audioTrack);
-            const audioProducer = await produce(audioTrack, { mediaType: 'audio' });
-            if (!lobbyMicOn && audioProducer) {
+            if (lobbyMicOn) {
+              localAudioTrackRef.current = audioTrack;
+              setAudioTrack(audioTrack);
+              const sid = await publishTrack(audioTrack, 'microphone');
+              setAudioProducerId(sid);
+            } else {
               audioTrack.stop();
-              localAudioTrackRef.current = null;
-              setAudioTrack(null);
               useDeviceStore.setState({ isMicOn: false });
-              emitWithAck('media:pauseProducer', { producerId: audioProducer.id }).catch(() => {});
             }
           }
 
           if (videoTrack) {
-            setLocalVideoTrack(videoTrack);
-            setVideoTrack(videoTrack);
-            const videoProducer = await produce(videoTrack, { mediaType: 'video' });
-            if (!lobbyCamOn && videoProducer) {
+            if (lobbyCamOn) {
+              setLocalVideoTrack(videoTrack);
+              setVideoTrack(videoTrack);
+              const sid = await publishTrack(videoTrack, 'camera');
+              setVideoProducerId(sid);
+            } else {
               videoTrack.stop();
-              setLocalVideoTrack(null);
-              setVideoTrack(null);
               useDeviceStore.setState({ isCamOn: false });
-              emitWithAck('media:pauseProducer', { producerId: videoProducer.id }).catch(() => {});
             }
           }
         }
@@ -363,16 +260,14 @@ export function RoomPage() {
       setConnecting(false);
       navigate('/');
     }
-  }, [slug, connect, establishSession, handleReconnect, produce,
-    setConnecting, setAudioTrack, setVideoTrack, navigate,
-    lobbyMicOn, lobbyCamOn, selectedCameras, deviceId]);
+  }, [slug, connect, establishSession, setConnecting, setAudioTrack, setVideoTrack,
+    setAudioProducerId, setVideoProducerId, navigate, lobbyMicOn, lobbyCamOn, selectedCameras, deviceId]);
 
   useEffect(() => {
     return () => {
       // Don't stop always-on camera tracks - they belong to the app
       sessionActiveRef.current = false;
-      cleanupMedia();
-      consumedProducerIds.current.clear();
+      disconnectRoom();
       disconnect();
       clearRoom();
       resetDevice();
@@ -388,31 +283,25 @@ export function RoomPage() {
       if (audioInput.track) audioInput.track.stop();
       setAudioTrack(null);
       localAudioTrackRef.current = null;
+      setAudioProducerId(null);
       useDeviceStore.setState({ isMicOn: false });
-      if (audioProducerId) {
-        emitWithAck('media:pauseProducer', { producerId: audioProducerId }).catch(() => {});
-      }
+      await unpublishTrack(audioProducerId);
     } else {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: micConstraints(),
-        });
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
         const newAudioTrack = stream.getAudioTracks()[0];
-        if (newAudioTrack && audioProducerId) {
-          const producer = producersRef.current.get(audioProducerId);
-          if (producer) {
-            await producer.replaceTrack({ track: newAudioTrack });
-          }
+        if (newAudioTrack) {
           localAudioTrackRef.current = newAudioTrack;
           setAudioTrack(newAudioTrack);
-          emitWithAck('media:resumeProducer', { producerId: audioProducerId }).catch(() => {});
+          const sid = await publishTrack(newAudioTrack, 'microphone');
+          setAudioProducerId(sid);
         }
         useDeviceStore.setState({ isMicOn: true });
       } catch {
         showToast('마이크를 다시 시작할 수 없습니다', 'error');
       }
     }
-  }, [setAudioTrack]);
+  }, [setAudioTrack, setAudioProducerId]);
 
   const handleToggleCam = useCallback(async () => {
     const { videoInput, isCamOn: currentCamOn } = useDeviceStore.getState();
@@ -422,10 +311,9 @@ export function RoomPage() {
       if (videoInput.track) videoInput.track.stop();
       setVideoTrack(null);
       setLocalVideoTrack(null);
+      setVideoProducerId(null);
       useDeviceStore.setState({ isCamOn: false });
-      if (videoProducerId) {
-        emitWithAck('media:pauseProducer', { producerId: videoProducerId }).catch(() => {});
-      }
+      await unpublishTrack(videoProducerId);
     } else {
       try {
         const alwaysOn = useAlwaysOnCamera.getState();
@@ -434,24 +322,21 @@ export function RoomPage() {
         const newStream = useAlwaysOnCamera.getState().stream;
         const newVideoTrack = newStream?.getVideoTracks()[0];
 
-        if (newVideoTrack && videoProducerId) {
-          const producer = producersRef.current.get(videoProducerId);
-          if (producer) {
-            await producer.replaceTrack({ track: newVideoTrack });
-          }
+        if (newVideoTrack) {
           setVideoTrack(newVideoTrack);
           setLocalVideoTrack(newVideoTrack);
-          emitWithAck('media:resumeProducer', { producerId: videoProducerId }).catch(() => {});
+          const sid = await publishTrack(newVideoTrack, 'camera');
+          setVideoProducerId(sid);
         }
         useDeviceStore.setState({ isCamOn: true });
       } catch {
         showToast('카메라를 다시 시작할 수 없습니다', 'error');
       }
     }
-  }, [setVideoTrack]);
+  }, [setVideoTrack, setVideoProducerId]);
 
   // Switch the current device's lens in-room: rotate the always-on camera and swap the
-  // live producer's track so the new lens is what others (and the dock) see immediately.
+  // live publication's track so the new lens is what others (and the dock) see immediately.
   const handleSwitchCurrentCam = useCallback(async () => {
     const ao = useAlwaysOnCamera.getState();
     const { availableCameras, activeCameraId } = ao;
@@ -463,24 +348,20 @@ export function RoomPage() {
       const newTrack = useAlwaysOnCamera.getState().stream?.getVideoTracks()[0];
       const videoProducerId = useDeviceStore.getState().videoInput.producerId;
       if (newTrack) {
-        if (videoProducerId) {
-          const producer = producersRef.current.get(videoProducerId);
-          if (producer) await producer.replaceTrack({ track: newTrack });
-        }
+        await replacePublishedTrack(videoProducerId, newTrack);
         setVideoTrack(newTrack);
         setLocalVideoTrack(newTrack);
       }
     } catch {
       showToast('카메라 전환에 실패했습니다', 'error');
     }
-  }, [setVideoTrack, producersRef]);
+  }, [setVideoTrack]);
 
   const handleToggleScreen = useCallback(async () => {
     if (isScreenSharing) {
       const screenProducerId = useDeviceStore.getState().screenShare.producerId;
-      if (screenProducerId) {
-        await closeProducer(screenProducerId);
-      }
+      await unpublishTrack(screenProducerId);
+      setScreenProducerId(null);
       localScreenTrack?.stop();
       setLocalScreenTrack(null);
       setScreenTrack(null);
@@ -492,7 +373,8 @@ export function RoomPage() {
         setLocalScreenTrack(videoTrack);
         setScreenTrack(videoTrack);
         setScreenSharing(true);
-        await produce(videoTrack, { mediaType: 'screen' });
+        const sid = await publishTrack(videoTrack, 'screen');
+        setScreenProducerId(sid);
 
         videoTrack.onended = () => {
           handleToggleScreen();
@@ -501,7 +383,7 @@ export function RoomPage() {
         showToast('화면 공유가 취소되었습니다', 'info');
       }
     }
-  }, [isScreenSharing, localScreenTrack, produce, closeProducer, setScreenTrack, setScreenSharing]);
+  }, [isScreenSharing, localScreenTrack, setScreenTrack, setScreenSharing, setScreenProducerId]);
 
   const handleLeave = useCallback(() => {
     sessionActiveRef.current = false;
@@ -523,7 +405,7 @@ export function RoomPage() {
     setLayoutMode(modes[(currentIdx + 1) % modes.length]);
   }, [layoutMode, setLayoutMode]);
 
-  // userId:deviceId → nickname/deviceLabel, so remote feeds show real names not raw ids.
+  // userId:deviceId → nickname/deviceLabel fallback (LiveKit metadata is primary).
   const participantLookup = useMemo(() => {
     const m = new Map<string, { nickname: string; deviceLabel: string }>();
     for (const p of participants) {
@@ -555,11 +437,12 @@ export function RoomPage() {
       items.push({
         id: consumer.consumerId,
         track: consumer.track,
-        label: info?.nickname || '참가자',
-        deviceLabel: info?.deviceLabel || '',
+        lkTrack: consumer.lkTrack,
+        label: consumer.nickname || info?.nickname || '참가자',
+        deviceLabel: consumer.deviceLabel || info?.deviceLabel || '',
         isMuted: false,
         isLocal: false,
-        isScreen: false,
+        isScreen: consumer.source === 'screen',
         voiceKey: `${consumer.userId}:${consumer.deviceId}`,
       });
     }
@@ -587,8 +470,8 @@ export function RoomPage() {
   }, [myVoiceKey, localAudioTrack]);
 
   // Noise gate (Discord "voice activity"): only transmit while my mic level is above the
-  // sensitivity threshold. We pause/resume the audio *producer* (not the track) so the
-  // local analyser keeps reading real audio and can re-open the gate when I speak again.
+  // sensitivity threshold. We mute/unmute the published mic track (a clone), so the local
+  // analyser keeps reading the original track and can re-open the gate when I speak again.
   const { noiseGate, sensitivity } = useAudioSettings();
   const myLevel = useVoiceStore((s) => (myVoiceKey ? s.levels[myVoiceKey] ?? 0 : 0));
   const audioProducerId = useDeviceStore((s) => s.audioInput.producerId);
@@ -597,10 +480,10 @@ export function RoomPage() {
   useEffect(() => {
     if (!localAudioTrack || !audioProducerId) return;
     if (!noiseGate) {
-      // Gate disabled → make sure we're not leaving the producer paused.
+      // Gate disabled → make sure we're not leaving the track muted.
       if (!gateOpenRef.current) {
         gateOpenRef.current = true;
-        emitWithAck('media:resumeProducer', { producerId: audioProducerId }).catch(() => {});
+        setTrackMuted(audioProducerId, false).catch(() => {});
       }
       return;
     }
@@ -609,7 +492,7 @@ export function RoomPage() {
     const open = now < gateHoldRef.current;
     if (open !== gateOpenRef.current) {
       gateOpenRef.current = open;
-      emitWithAck(open ? 'media:resumeProducer' : 'media:pauseProducer', { producerId: audioProducerId }).catch(() => {});
+      setTrackMuted(audioProducerId, !open).catch(() => {});
     }
   }, [noiseGate, sensitivity, myLevel, localAudioTrack, audioProducerId]);
 

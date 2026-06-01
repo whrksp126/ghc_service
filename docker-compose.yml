@@ -7,6 +7,7 @@ services:
       args:
         VITE_API_URL: https://longdcam-back.ghmate.com
         VITE_SOCKET_URL: https://longdcam-back.ghmate.com
+        VITE_LIVEKIT_URL: wss://longdcam-back.ghmate.com/livekit
         VITE_ENV: production
     networks:
       - longdcam_prod
@@ -31,6 +32,21 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  livekit:
+    container_name: longdcam_livekit_prod
+    image: livekit/livekit-server:latest
+    # Host network: binds 7880/tcp (signaling), 7881/tcp + 7882/udp (WebRTC) directly.
+    network_mode: host
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
+    # --node-ip advertises the server's LAN IP (LK_NODE_IP in ./.env) as the ICE candidate
+    # so same-WiFi clients reach media directly. Off-LAN access is a follow-up (public IP +
+    # router forward of 7881/tcp + 7882/udp).
+    command: ["--config", "/etc/livekit.yaml", "--node-ip", "${LK_NODE_IP}"]
+    restart: always
 
   turn:
     container_name: longdcam_turn_prod

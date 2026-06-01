@@ -47,6 +47,15 @@ export default defineConfig({
         target: `http://localhost:${process.env.API_PORT || 3001}`,
         changeOrigin: true,
       },
+      // LiveKit signaling over the dev server's TLS, so a phone on the LAN uses a single
+      // wss origin (no second self-signed cert, no mixed-content block). Media (RTP) still
+      // flows directly to the LiveKit UDP/TCP ports — see --node-ip in docker-compose.local.
+      '/livekit': {
+        target: `http://localhost:${process.env.LIVEKIT_PORT || 7880}`,
+        ws: true,
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/livekit/, ''),
+      },
     },
   },
 });

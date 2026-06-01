@@ -78,9 +78,11 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
     }
 
     try {
+      // Capture at 720p/30 — the top simulcast layer is budgeted at 1.5 Mbps (the home
+      // server NIC is 100 Mb/s, shared). LiveKit derives 360p/180p layers from this.
       const videoConstraints: MediaTrackConstraints = cameraDeviceId
-        ? { deviceId: { exact: cameraDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
-        : { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'environment' };
+        ? { deviceId: { exact: cameraDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } }
+        : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 }, facingMode: 'environment' };
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: videoConstraints,

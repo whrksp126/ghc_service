@@ -7,6 +7,7 @@ COPY . .
 
 ARG VITE_API_URL
 ARG VITE_SOCKET_URL
+ARG VITE_LIVEKIT_URL
 ARG VITE_ENV=production
 
 RUN npm run build

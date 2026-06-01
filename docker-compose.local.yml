@@ -21,6 +21,23 @@ services:
       timeout: 5s
       retries: 5
 
+  livekit:
+    container_name: longdcam_livekit_local
+    image: livekit/livekit-server:latest
+    # --node-ip advertises the Mac's LAN IP as the ICE candidate so a phone on the same
+    # WiFi can reach the media ports (7881/tcp, 7882/udp). local-setup.sh writes
+    # LK_NODE_IP into longdcam_service/.env; falls back to loopback for same-machine only.
+    command: ["--config", "/etc/livekit.yaml", "--node-ip", "${LK_NODE_IP:-127.0.0.1}"]
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+    volumes:
+      - ./livekit/livekit.local.yaml:/etc/livekit.yaml:ro
+    networks:
+      - longdcam_local
+    restart: unless-stopped
+
 networks:
   longdcam_local:
     driver: bridge

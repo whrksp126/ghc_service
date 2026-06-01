@@ -1,10 +1,12 @@
 import { useMemo } from 'react';
 import { AnimatePresence } from 'framer-motion';
+import type { RemoteTrack } from 'livekit-client';
 import { FeedCard } from './FeedCard';
 
 interface FeedItem {
   id: string;
   track: MediaStreamTrack | null;
+  lkTrack?: RemoteTrack;
   label: string;
   deviceLabel: string;
   isMuted?: boolean;
@@ -37,12 +39,12 @@ export function GridLayout({ feeds, onFeedClick }: GridLayoutProps) {
           <FeedCard
             key={feed.id}
             track={feed.track}
+            lkTrack={feed.lkTrack}
             label={feed.label}
             deviceLabel={feed.deviceLabel}
             isMuted={feed.isMuted}
             isLocal={feed.isLocal}
             isScreen={feed.isScreen}
-            consumerId={feed.isLocal ? undefined : feed.id}
             layoutId={feed.id}
             voiceKey={feed.voiceKey}
             onClick={() => onFeedClick?.(feed.id)}

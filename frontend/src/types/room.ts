@@ -22,6 +22,14 @@ export interface ConsumerInfo {
   kind: 'audio' | 'video';
   track: MediaStreamTrack;
   paused: boolean;
+  // From the LiveKit participant metadata — lets feeds label remote tiles without a
+  // separate Socket.IO roster lookup.
+  nickname?: string;
+  deviceLabel?: string;
+  source?: 'camera' | 'screen' | 'microphone' | 'unknown';
+  // The LiveKit RemoteTrack. Video feeds attach via this so adaptiveStream can pick the
+  // right simulcast layer from the element's on-screen size/visibility.
+  lkTrack?: import('livekit-client').RemoteTrack;
 }
 
 export interface RoomInfo {

@@ -1,25 +1,38 @@
 import { useRef, useCallback } from 'react';
-import { Device } from 'mediasoup-client';
-import type { types } from 'mediasoup-client';
 import { emitWithAck } from '../lib/socket';
 import { useCameraStore } from '../stores/cameraStore';
 import { useAuthStore } from '../stores/authStore';
 import { useAlwaysOnCamera } from './alwaysOnCamera';
-
-type Transport = types.Transport;
-type RtpCapabilities = types.RtpCapabilities;
+import { connectToRoom, publishTrack, disconnectRoom } from '../lib/livekitRoom';
 
 interface BackgroundSession {
   roomSlug: string;
-  device: Device;
-  sendTransport: Transport | null;
-  producerIds: string[];
+  trackSids: string[];
 }
 
+/**
+ * Headless streaming for a device that was remotely told to join a room (the user tapped
+ * "start" on this camera from another device). No room UI — just join, connect to LiveKit
+ * and publish camera + mic. Foreground RoomPage uses the same livekitRoom singleton.
+ */
 export function useBackgroundCamera() {
   const sessionRef = useRef<BackgroundSession | null>(null);
   const { updateCamera } = useCameraStore();
   const { deviceId } = useAuthStore();
+
+  const stopStreaming = useCallback(async () => {
+    const session = sessionRef.current;
+    if (!session) return;
+    sessionRef.current = null;
+
+    await disconnectRoom();
+    await emitWithAck('room:leave', {}).catch(() => {});
+
+    if (deviceId) {
+      updateCamera(deviceId, { isInRoom: false, roomSlug: null });
+    }
+    emitWithAck('camera:statusUpdate', { isInRoom: false, roomSlug: null }).catch(() => {});
+  }, [deviceId, updateCamera]);
 
   const startStreaming = useCallback(async (roomSlug: string) => {
     if (sessionRef.current) {
@@ -37,75 +50,23 @@ export function useBackgroundCamera() {
         return;
       }
 
-      await emitWithAck<{
-        participants: any[];
-        existingProducers: any[];
-        iceServers: any[];
-      }>('room:join', { roomSlug });
+      // room:join registers presence + returns a LiveKit token; connect & publish.
+      const { token } = await emitWithAck<{ token: string }>('room:join', { roomSlug });
+      await connectToRoom(token);
 
-      const { rtpCapabilities } = await emitWithAck<{ rtpCapabilities: RtpCapabilities }>(
-        'media:getRouterRtpCapabilities'
-      );
-
-      const device = new Device();
-      await device.load({ routerRtpCapabilities: rtpCapabilities });
-
-      const sendTransportOptions = await emitWithAck<any>('media:createSendTransport');
-      const sendTransport = device.createSendTransport(sendTransportOptions);
-
-      sendTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
-        emitWithAck('media:connectTransport', {
-          transportId: sendTransport.id,
-          dtlsParameters,
-        })
-          .then(() => callback())
-          .catch(errback);
-      });
-
-      sendTransport.on('produce', ({ kind, rtpParameters, appData }, callback, errback) => {
-        emitWithAck<{ producerId: string }>('media:produce', {
-          transportId: sendTransport.id,
-          kind,
-          rtpParameters,
-          appData,
-        })
-          .then(({ producerId }) => callback({ id: producerId }))
-          .catch(errback);
-      });
-
-      const session: BackgroundSession = {
-        roomSlug,
-        device,
-        sendTransport,
-        producerIds: [],
-      };
+      const session: BackgroundSession = { roomSlug, trackSids: [] };
 
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
-        // Prefer resolution over framerate so the top simulcast layer stays sharp.
-        videoTrack.contentHint = 'detail';
-        // Two-layer simulcast, matching the foreground path (useMediasoup): a tiny
-        // thumbnail + a full-res HD layer, so the HD layer gets almost all the uplink
-        // and a focused feed stays sharp.
-        const producer = await sendTransport.produce({
-          track: videoTrack,
-          encodings: [
-            { maxBitrate: 250000, scaleResolutionDownBy: 4, rid: 'r0', scalabilityMode: 'L1T3' },
-            { maxBitrate: 5000000, scaleResolutionDownBy: 1, rid: 'r1', scalabilityMode: 'L1T3' },
-          ],
-          codecOptions: { videoGoogleStartBitrate: 2500 },
-          appData: { mediaType: 'video' },
-        });
-        session.producerIds.push(producer.id);
+        videoTrack.contentHint = 'motion';
+        const sid = await publishTrack(videoTrack, 'camera');
+        if (sid) session.trackSids.push(sid);
       }
 
       const audioTrack = stream.getAudioTracks()[0];
       if (audioTrack) {
-        const producer = await sendTransport.produce({
-          track: audioTrack,
-          appData: { mediaType: 'audio' },
-        });
-        session.producerIds.push(producer.id);
+        const sid = await publishTrack(audioTrack, 'microphone');
+        if (sid) session.trackSids.push(sid);
       }
 
       sessionRef.current = session;
@@ -113,33 +74,11 @@ export function useBackgroundCamera() {
       if (deviceId) {
         updateCamera(deviceId, { isInRoom: true, roomSlug });
       }
-
       emitWithAck('camera:statusUpdate', { isInRoom: true, roomSlug }).catch(() => {});
     } catch (err) {
       console.error('Background camera start failed:', err);
     }
-  }, [deviceId, updateCamera]);
-
-  const stopStreaming = useCallback(async () => {
-    const session = sessionRef.current;
-    if (!session) return;
-
-    for (const producerId of session.producerIds) {
-      await emitWithAck('media:closeProducer', { producerId }).catch(() => {});
-    }
-
-    session.sendTransport?.close();
-
-    await emitWithAck('room:leave', {}).catch(() => {});
-
-    sessionRef.current = null;
-
-    if (deviceId) {
-      updateCamera(deviceId, { isInRoom: false, roomSlug: null });
-    }
-
-    emitWithAck('camera:statusUpdate', { isInRoom: false, roomSlug: null }).catch(() => {});
-  }, [deviceId, updateCamera]);
+  }, [deviceId, updateCamera, stopStreaming]);
 
   const isStreaming = useCallback(() => !!sessionRef.current, []);
 

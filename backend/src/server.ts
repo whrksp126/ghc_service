@@ -2,7 +2,6 @@ import http from 'http';
 import { Server } from 'socket.io';
 import app from './app';
 import { sequelize } from './models';
-import { mediasoupManager } from './media/MediasoupManager';
 import { setupSocketHandlers } from './signaling/socketHandler';
 
 const PORT = parseInt(process.env.API_PORT || '3000');
@@ -29,11 +28,7 @@ async function main() {
     pingTimeout: 5000,
   });
 
-  // mediasoup
-  await mediasoupManager.init();
-  console.log('mediasoup workers started');
-
-  // Socket handlers
+  // Socket handlers (media is handled by the external LiveKit SFU)
   setupSocketHandlers(io);
 
   httpServer.listen(PORT, () => {

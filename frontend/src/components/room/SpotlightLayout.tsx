@@ -1,9 +1,11 @@
 import { AnimatePresence } from 'framer-motion';
+import type { RemoteTrack } from 'livekit-client';
 import { FeedCard } from './FeedCard';
 
 interface FeedItem {
   id: string;
   track: MediaStreamTrack | null;
+  lkTrack?: RemoteTrack;
   label: string;
   deviceLabel: string;
   isMuted?: boolean;
@@ -30,14 +32,13 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick }: SpotlightLa
       <div className="flex-1 min-h-0">
         <FeedCard
           track={spotlight.track}
+          lkTrack={spotlight.lkTrack}
           label={spotlight.label}
           deviceLabel={spotlight.deviceLabel}
           isMuted={spotlight.isMuted}
           isLocal={spotlight.isLocal}
           isScreen={spotlight.isScreen}
-          consumerId={spotlight.isLocal ? undefined : spotlight.id}
           layoutId={spotlight.id}
-          priority
           voiceKey={spotlight.voiceKey}
           className="w-full h-full"
         />
@@ -51,12 +52,12 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick }: SpotlightLa
               <FeedCard
                 key={feed.id}
                 track={feed.track}
+                lkTrack={feed.lkTrack}
                 label={feed.label}
                 deviceLabel={feed.deviceLabel}
                 isMuted={feed.isMuted}
                 isLocal={feed.isLocal}
                 isScreen={feed.isScreen}
-                consumerId={feed.isLocal ? undefined : feed.id}
                 layoutId={feed.id}
                 voiceKey={feed.voiceKey}
                 className="w-32 h-24 sm:w-full sm:h-32 shrink-0"
