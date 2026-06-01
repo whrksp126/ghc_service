@@ -214,7 +214,7 @@ export function RoomPage() {
           try {
             stream = await navigator.mediaDevices.getUserMedia({
               audio: micConstraints(),
-              video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 }, facingMode: 'user' },
+              video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 }, facingMode: 'user' },
             });
           } catch {
             showToast('카메라/마이크 접근이 거부되었습니다', 'error');

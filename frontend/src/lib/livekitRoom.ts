@@ -86,11 +86,13 @@ export async function connectToRoom(token: string): Promise<Room> {
     dynacast: true,
     publishDefaults: {
       simulcast: true,
-      // Lower layers derived from the 720p capture. dynacast only sends the layers a
-      // viewer is actually watching, keeping the 100 Mb/s server NIC well under budget.
-      videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360],
-      videoEncoding: { maxBitrate: 1_500_000, maxFramerate: 30 },
-      screenShareEncoding: { maxBitrate: 2_000_000, maxFramerate: 15 },
+      // 1080p / 540p / 180p simulcast. The top layer is a ceiling, not a fixed rate —
+      // LiveKit's send-side congestion control scales it down automatically on a weak
+      // link (no stutter), while dynacast only forwards the layer each viewer is actually
+      // watching, so a small room stays well under the 100 Mb/s server NIC.
+      videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h540],
+      videoEncoding: { maxBitrate: 3_500_000, maxFramerate: 30 },
+      screenShareEncoding: { maxBitrate: 3_000_000, maxFramerate: 15 },
       dtx: true,
       red: true,
     },
