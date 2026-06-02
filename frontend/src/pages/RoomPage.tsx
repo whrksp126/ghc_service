@@ -600,6 +600,9 @@ export function RoomPage() {
       const consumer = camConsumers.get(key);
       const info = participantLookup.get(key);
       const isMine = uid === userId;
+      // OBS live ingress (identity `obs:<room>`) is not a real person — skip voice-activity
+      // FX (speaking ring + waveform); those are only for connected users.
+      const isObs = uid === 'obs';
 
       let controls: ReactNode | undefined;
       if (isMine) {
@@ -617,7 +620,7 @@ export function RoomPage() {
       items.push({
         id: key, track: consumer?.track ?? null, lkTrack: consumer?.lkTrack,
         label: isMine ? (nickname || '나') : (consumer?.nickname || info?.nickname || '참가자'),
-        isMuted: false, isLocal: false, isScreen: false, voiceKey: key, controls,
+        isMuted: false, isLocal: false, isScreen: false, voiceKey: isObs ? undefined : key, controls,
       });
     }
 
