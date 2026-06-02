@@ -52,23 +52,28 @@ export interface RoomIngress {
   streamKey: string;
 }
 
-// LiveKit returns the RTMP URL with the server's own (often internal) IP. Rewrite the host
-// to the publicly reachable one so OBS — which may run anywhere — can connect. Set
-// INGRESS_RTMP_HOST to the forwarded hostname (e.g. longdcam-rtmp.ghmate.com).
-function toPublicRtmpUrl(url: string): string {
+// Build the public RTMP server URL OBS should use. A self-hosted ingress often returns an
+// empty (or internal-IP) url, so we construct it from INGRESS_RTMP_HOST — the hostname
+// forwarded to port 1935. LiveKit ingress' RTMP application path is `/x` (OBS: Server =
+// rtmp://<host>:1935/x, Stream Key = the key). When LiveKit does report a url we keep its
+// path/port and only swap the host.
+function buildServerUrl(infoUrl: string): string {
   const host = process.env.INGRESS_RTMP_HOST;
-  if (!host) return url;
-  try {
-    const u = new URL(url);
-    u.hostname = host;
-    return u.toString();
-  } catch {
-    return url;
+  if (!host) return infoUrl || '';
+  if (infoUrl) {
+    try {
+      const u = new URL(infoUrl);
+      u.hostname = host;
+      return u.toString();
+    } catch {
+      /* fall through to the standard form */
+    }
   }
+  return `rtmp://${host}:1935/x`;
 }
 
 function toRoomIngress(info: { ingressId: string; url: string; streamKey: string }): RoomIngress {
-  return { ingressId: info.ingressId, url: toPublicRtmpUrl(info.url), streamKey: info.streamKey };
+  return { ingressId: info.ingressId, url: buildServerUrl(info.url), streamKey: info.streamKey };
 }
 
 /**
