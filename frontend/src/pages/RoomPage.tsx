@@ -80,6 +80,8 @@ export function RoomPage() {
   const localAudioTrackRef = useRef<MediaStreamTrack | null>(null);
   const joinedRef = useRef(false);
   const sessionActiveRef = useRef(false);
+  // Real room name from getRoom; falls back to slug until it resolves.
+  const roomNameRef = useRef<string | null>(null);
   // Track which of my devices we auto-pulled in vs the user explicitly stopped, so a
   // stopped device doesn't immediately bounce back into the room.
   const autoStartedRef = useRef<Set<string>>(new Set());
@@ -105,6 +107,13 @@ export function RoomPage() {
         // first-time joiner of a PIN room gets 'PIN required' → show the prompt.
         await api.joinRoom(slug, undefined, inviteToken || undefined);
         setRoomJoined(true);
+        // Pull room metadata (real name + PIN flag) for the top bar / share sheet.
+        api.getRoom(slug)
+          .then((res) => {
+            roomNameRef.current = res.room.name;
+            useRoomStore.setState({ roomName: res.room.name, hasPin: res.room.hasPin });
+          })
+          .catch(() => {});
       } catch (err: any) {
         if (err.message === 'PIN required') {
           setNeedsPin(true);
@@ -178,7 +187,7 @@ export function RoomPage() {
       token: string;
     }>('room:join', { roomSlug: slug });
 
-    setRoom(slug!, slug!);
+    setRoom(slug!, roomNameRef.current || slug!);
     setParticipants(result.participants);
     setIsOwner(!!result.isOwner);
 
@@ -455,81 +464,99 @@ export function RoomPage() {
     return m;
   }, [participants]);
 
-  // Main area = OTHER participants' camera feeds + any screen share (mine or theirs).
-  // My own device cameras live in the dock, never the main grid.
-  const feeds = useMemo(() => {
-    const items: any[] = [];
+  // Camera tiles are roster-driven: one tile per participant device (mine + others), so a
+  // device that turns its camera off keeps its slot (FeedCard renders an avatar placeholder
+  // when track is null) instead of vanishing. The video consumer's track is attached when
+  // present. Stable per-device ids keep the tile mounted across camera on/off.
+  const cameraFeeds = useMemo(() => {
+    const selfKey = `${userId}:${deviceId}`;
 
-    if (localScreenTrack) {
-      items.push({
-        id: 'local-screen',
-        track: localScreenTrack,
-        label: nickname || '나',
-        deviceLabel: '화면 공유',
-        isLocal: true,
-        isScreen: true,
-      });
+    // key (`userId:deviceId`) → that device's camera (non-screen) video consumer.
+    const camConsumers = new Map<string, any>();
+    for (const c of consumers) {
+      if (c.kind !== 'video' || c.source === 'screen') continue;
+      camConsumers.set(`${c.userId}:${c.deviceId}`, c);
     }
 
-    for (const consumer of consumers) {
-      if (consumer.kind !== 'video') continue;
-      if (consumer.userId === userId) continue; // my own devices → dock
-      const info = participantLookup.get(`${consumer.userId}:${consumer.deviceId}`);
+    // Every participant device, plus any device that has a camera consumer (in case the
+    // presence roster lags behind media). Excludes my current device — added explicitly.
+    const keys = new Set<string>();
+    for (const p of participants) keys.add(`${p.userId}:${p.deviceId}`);
+    for (const k of camConsumers.keys()) keys.add(k);
+    keys.delete(selfKey);
+
+    const items: any[] = [];
+
+    // My current device — always present so its slot stays even with the camera off.
+    items.push({
+      id: `self:${deviceId}`, track: localVideoTrack, label: nickname || '나',
+      isLocal: true, isScreen: false, voiceKey: selfKey,
+      controls: (
+        <>
+          <TileButton onClick={handleToggleMic} active={isMicOn} icon={isMicOn ? <Mic size={18} /> : <MicOff size={18} />} />
+          <TileButton onClick={handleToggleCam} active={isCamOn} icon={isCamOn ? <Video size={18} /> : <VideoOff size={18} />} />
+          {localLensCount > 1 && <TileButton onClick={handleSwitchCurrentCam} icon={<SwitchCamera size={18} />} />}
+        </>
+      ),
+    });
+
+    for (const key of keys) {
+      const did = key.slice(key.indexOf(':') + 1);
+      const uid = key.slice(0, key.indexOf(':'));
+      const consumer = camConsumers.get(key);
+      const info = participantLookup.get(key);
+      const isMine = uid === userId;
+
+      let controls: ReactNode | undefined;
+      if (isMine) {
+        const cam = cameras.find((x) => x.id === did);
+        controls = (
+          <>
+            <TileButton danger onClick={() => handleStopDevice(did)} icon={<Power size={18} />} />
+            {(cam?.remoteCameraCount ?? 0) > 1 && (
+              <TileButton onClick={() => emitWithAck('camera:requestSwitchCamera', { targetDeviceId: did }).catch(() => {})} icon={<SwitchCamera size={18} />} />
+            )}
+          </>
+        );
+      }
+
       items.push({
-        id: consumer.consumerId,
-        track: consumer.track,
-        lkTrack: consumer.lkTrack,
-        label: consumer.nickname || info?.nickname || '참가자',
-        deviceLabel: consumer.deviceLabel || info?.deviceLabel || '',
-        isMuted: false,
-        isLocal: false,
-        isScreen: consumer.source === 'screen',
-        voiceKey: `${consumer.userId}:${consumer.deviceId}`,
+        id: key, track: consumer?.track ?? null, lkTrack: consumer?.lkTrack,
+        label: isMine ? (nickname || '나') : (consumer?.nickname || info?.nickname || '참가자'),
+        isMuted: false, isLocal: false, isScreen: false, voiceKey: key, controls,
       });
     }
 
     return items;
-  }, [consumers, participantLookup, nickname, userId, localScreenTrack]);
+  }, [consumers, participants, participantLookup, localVideoTrack, deviceId, userId, nickname,
+    isMicOn, isCamOn, localLensCount, cameras, handleToggleMic, handleToggleCam, handleSwitchCurrentCam, handleStopDevice]);
 
-  // My own device feeds (current device + my other cameras). Controls live on the tile
-  // itself (single-click overlay) now that the bottom dock is gone.
-  const ownFeeds = useMemo(() => {
+  // Screen shares are separate from the camera roster: my current-device screen (local
+  // track) plus any screen consumer (mine-other-device or remote).
+  const screenFeeds = useMemo(() => {
     const items: any[] = [];
-    if (localVideoTrack) {
+    if (localScreenTrack) {
       items.push({
-        id: `self:${deviceId}`, track: localVideoTrack, label: nickname || '나',
-        isLocal: true, isScreen: false, voiceKey: `${userId}:${deviceId}`,
-        controls: (
-          <>
-            <TileButton onClick={handleToggleMic} active={isMicOn} icon={isMicOn ? <Mic size={18} /> : <MicOff size={18} />} />
-            <TileButton onClick={handleToggleCam} active={isCamOn} icon={isCamOn ? <Video size={18} /> : <VideoOff size={18} />} />
-            {localLensCount > 1 && <TileButton onClick={handleSwitchCurrentCam} icon={<SwitchCamera size={18} />} />}
-          </>
-        ),
+        id: 'local-screen', track: localScreenTrack, label: nickname || '나',
+        deviceLabel: '화면 공유', isLocal: true, isScreen: true,
       });
     }
     for (const c of consumers) {
-      if (c.kind !== 'video' || c.userId !== userId || c.deviceId === deviceId) continue;
-      const cam = cameras.find((x) => x.id === c.deviceId);
-      const camId = c.deviceId;
+      if (c.kind !== 'video' || c.source !== 'screen') continue;
+      const info = participantLookup.get(`${c.userId}:${c.deviceId}`);
+      const isMine = c.userId === userId;
       items.push({
-        id: c.consumerId, track: c.track, lkTrack: c.lkTrack, label: nickname || '나',
-        isLocal: false, isScreen: c.source === 'screen', voiceKey: `${c.userId}:${c.deviceId}`,
-        controls: (
-          <>
-            <TileButton danger onClick={() => handleStopDevice(camId)} icon={<Power size={18} />} />
-            {(cam?.remoteCameraCount ?? 0) > 1 && (
-              <TileButton onClick={() => emitWithAck('camera:requestSwitchCamera', { targetDeviceId: camId }).catch(() => {})} icon={<SwitchCamera size={18} />} />
-            )}
-          </>
-        ),
+        id: c.consumerId, track: c.track, lkTrack: c.lkTrack,
+        label: isMine ? (nickname || '나') : (c.nickname || info?.nickname || '참가자'),
+        isMuted: false, isLocal: false, isScreen: true,
+        voiceKey: `${c.userId}:${c.deviceId}`,
       });
     }
     return items;
-  }, [consumers, localVideoTrack, deviceId, userId, nickname, isMicOn, isCamOn, localLensCount, cameras, handleToggleMic, handleToggleCam, handleSwitchCurrentCam, handleStopDevice]);
+  }, [consumers, participantLookup, nickname, userId, localScreenTrack]);
 
-  // Everyone (my own + others) — one unified set for both grid and spotlight.
-  const allFeeds = useMemo(() => [...ownFeeds, ...feeds], [ownFeeds, feeds]);
+  // Everyone (camera roster + screen shares) — one unified set for grid and spotlight.
+  const allFeeds = useMemo(() => [...cameraFeeds, ...screenFeeds], [cameraFeeds, screenFeeds]);
 
   // Remote audio is played through hidden <audio> sinks, not the video tiles (a video
   // element only renders one track). My own devices' audio is skipped to avoid echo.

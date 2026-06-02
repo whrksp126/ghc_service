@@ -4,6 +4,7 @@ import type { Participant, ConsumerInfo, ConnectionQuality } from '../types/room
 interface RoomState {
   roomSlug: string | null;
   roomName: string | null;
+  hasPin: boolean;
   participants: Participant[];
   consumers: ConsumerInfo[];
   connectionQuality: ConnectionQuality;
@@ -29,6 +30,7 @@ interface RoomState {
 export const useRoomStore = create<RoomState>((set) => ({
   roomSlug: null,
   roomName: null,
+  hasPin: false,
   participants: [],
   consumers: [],
   connectionQuality: 'excellent',
@@ -41,6 +43,7 @@ export const useRoomStore = create<RoomState>((set) => ({
     set({
       roomSlug: null,
       roomName: null,
+      hasPin: false,
       participants: [],
       consumers: [],
       connectionQuality: 'excellent',

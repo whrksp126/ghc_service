@@ -42,6 +42,7 @@ export const FeedCard = memo(function FeedCard({
   const rootRef = useRef<HTMLDivElement>(null);
   const [showControls, setShowControls] = useState(false);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const level = useVoiceStore((s) => (voiceKey ? s.levels[voiceKey] ?? 0 : 0));
   const sensitivity = useAudioSettings((s) => s.sensitivity);
   const speaking = level > sensitivityToThreshold(sensitivity);
@@ -73,6 +74,21 @@ export const FeedCard = memo(function FeedCard({
       if (controls) setShowControls((v) => !v);
     }, 230);
   };
+
+  // Auto-hide the controls overlay after a few idle seconds. Interacting with the overlay
+  // (tap on a button or the backdrop) calls bumpControlsTimer to extend the window.
+  const bumpControlsTimer = () => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    hideTimer.current = setTimeout(() => setShowControls(false), 3000);
+  };
+  useEffect(() => {
+    if (!showControls) {
+      if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; }
+      return;
+    }
+    bumpControlsTimer();
+    return () => { if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; } };
+  }, [showControls]);
 
   return (
     <motion.div
@@ -124,14 +140,17 @@ export const FeedCard = memo(function FeedCard({
           className="absolute inset-0 z-30 flex items-center justify-center bg-black/45 backdrop-blur-sm"
           onClick={(e) => { e.stopPropagation(); setShowControls(false); }}
         >
-          <div className="flex items-center gap-2.5" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="flex items-center gap-2.5"
+            onClick={(e) => { e.stopPropagation(); bumpControlsTimer(); }}
+          >
             {controls}
           </div>
         </div>
       )}
 
       {/* Label */}
-      <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/60 to-transparent opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+      <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/60 to-transparent opacity-100 transition-opacity">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium truncate">{label}</span>
           {isMuted && (
