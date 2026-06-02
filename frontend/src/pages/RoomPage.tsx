@@ -22,6 +22,7 @@ import { BottomBar } from '../components/layout/BottomBar';
 import { ReconnectingOverlay } from '../components/connection/ReconnectingOverlay';
 import { LoadingScreen } from '../components/common/LoadingScreen';
 import { CameraPreviewTile } from '../components/devices/CameraPreviewTile';
+import { ObsBroadcastModal } from '../components/room/ObsBroadcastModal';
 import { Button } from '../components/common/Button';
 import { showToast } from '../components/common/Toast';
 import { Mic, MicOff, Video, VideoOff, Users, SwitchCamera, Power } from 'lucide-react';
@@ -147,6 +148,7 @@ export function RoomPage() {
 
   const [phase, setPhase] = useState<RoomPhase>('lobby');
   const [isOwner, setIsOwner] = useState(false);
+  const [obsOpen, setObsOpen] = useState(false);
   const [localVideoTrack, setLocalVideoTrack] = useState<MediaStreamTrack | null>(null);
   const [localScreenTrack, setLocalScreenTrack] = useState<MediaStreamTrack | null>(null);
   const localAudioTrackRef = useRef<MediaStreamTrack | null>(null);
@@ -650,10 +652,17 @@ export function RoomPage() {
 
   // Remote audio is played through hidden <audio> sinks, not the video tiles (a video
   // element only renders one track). My own devices' audio is skipped to avoid echo.
-  const audioConsumers = useMemo(
-    () => consumers.filter((c) => c.kind === 'audio' && c.userId !== userId && c.track),
-    [consumers, userId]
-  );
+  const audioConsumers = useMemo(() => {
+    // Dedupe by device — if a reconnect ever leaves two audio consumers for the same
+    // source, playing both <audio> sinks produces a delayed-echo doubling. Keep one per
+    // `${userId}:${deviceId}` (last wins = freshest track).
+    const byDevice = new Map<string, (typeof consumers)[number]>();
+    for (const c of consumers) {
+      if (c.kind !== 'audio' || c.userId === userId || !c.track) continue;
+      byDevice.set(`${c.userId}:${c.deviceId}`, c);
+    }
+    return [...byDevice.values()];
+  }, [consumers, userId]);
 
   // Tap my own mic for voice activity so my dock tile glows when I speak (no playback).
   const myVoiceKey = userId && deviceId ? `${userId}:${deviceId}` : '';
@@ -856,7 +865,10 @@ export function RoomPage() {
         onToggleScreen={handleToggleScreen}
         onLeave={handleLeave}
         onCloseRoom={isOwner ? handleCloseRoom : undefined}
+        onObsLive={isOwner ? () => setObsOpen(true) : undefined}
       />
+
+      {slug && <ObsBroadcastModal isOpen={obsOpen} onClose={() => setObsOpen(false)} slug={slug} />}
 
       <ReconnectingOverlay />
     </div>

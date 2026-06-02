@@ -1,20 +1,9 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Modal } from '../common/Modal';
 import { useAudioSettings, micConstraints, THRESHOLD_MIN, THRESHOLD_MAX } from '../../stores/audioSettings';
 import { useDeviceStore } from '../../stores/deviceStore';
 import { useAlwaysOnCamera } from '../../services/alwaysOnCamera';
-import { useVoiceStore } from '../../services/voiceActivity';
-import { useAuthStore } from '../../stores/authStore';
-
-/** Push the current DSP toggles onto the live mic track(s) immediately. */
-function applyToActiveMic() {
-  const c = micConstraints();
-  const tracks = [
-    useDeviceStore.getState().audioInput.track,
-    useAlwaysOnCamera.getState().getAudioTrack(),
-  ];
-  for (const t of tracks) if (t) t.applyConstraints(c).catch(() => {});
-}
+import { useVoiceStore, attachVoice, detachVoice } from '../../services/voiceActivity';
 
 function Toggle({ label, desc, value, onChange }: {
   label: string; desc: string; value: boolean; onChange: (v: boolean) => void;
@@ -41,15 +30,44 @@ function fractionToThreshold(f: number): number {
   return Math.min(THRESHOLD_MAX, Math.max(THRESHOLD_MIN, t));
 }
 
+// Dedicated voice-activity key so the modal's live meter works on its own, independent of
+// whether RoomPage has attached the in-room mic.
+const PREVIEW_KEY = 'settings-preview';
+
 export function AudioSettingsModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const s = useAudioSettings();
-  const { userId, deviceId } = useAuthStore();
-  const myKey = userId && deviceId ? `${userId}:${deviceId}` : '';
-  const level = useVoiceStore((st) => (myKey ? st.levels[myKey] ?? 0 : 0));
+  const level = useVoiceStore((st) => st.levels[PREVIEW_KEY] ?? 0);
   const threshold = s.threshold;
   const over = level >= threshold;
   const meterRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
+
+  // While the modal is open, tap the live mic so the meter always moves — even outside a
+  // room or with the in-room mic off. Reuses an existing capture when possible; otherwise
+  // briefly opens its own (stopped on close).
+  useEffect(() => {
+    if (!isOpen) return;
+    let tempTrack: MediaStreamTrack | null = null;
+    let cancelled = false;
+    (async () => {
+      let track = useDeviceStore.getState().audioInput.track
+        || useAlwaysOnCamera.getState().getAudioTrack();
+      if (!track) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
+          tempTrack = stream.getAudioTracks()[0] || null;
+          track = tempTrack;
+        } catch { /* mic denied — meter just stays flat */ }
+      }
+      if (cancelled) { tempTrack?.stop(); return; }
+      if (track) attachVoice(PREVIEW_KEY, track);
+    })();
+    return () => {
+      cancelled = true;
+      detachVoice(PREVIEW_KEY);
+      tempTrack?.stop();
+    };
+  }, [isOpen]);
 
   // 0..100 display value the number input shows/edits (relative to THRESHOLD_MAX).
   const pct = Math.round((threshold / THRESHOLD_MAX) * 100);
@@ -65,24 +83,6 @@ export function AudioSettingsModal({ isOpen, onClose }: { isOpen: boolean; onClo
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="마이크 설정">
       <div className="divide-y divide-white/5">
-        <Toggle
-          label="자동 소음 제거"
-          desc="키보드·팬·생활 소음을 자동으로 억제"
-          value={s.noiseSuppression}
-          onChange={(v) => { s.set({ noiseSuppression: v }); applyToActiveMic(); }}
-        />
-        <Toggle
-          label="에코 제거"
-          desc="스피커 소리가 마이크로 되돌아가는 울림 제거"
-          value={s.echoCancellation}
-          onChange={(v) => { s.set({ echoCancellation: v }); applyToActiveMic(); }}
-        />
-        <Toggle
-          label="자동 볼륨 조절"
-          desc="입력 음량을 자동으로 일정하게 맞춤"
-          value={s.autoGainControl}
-          onChange={(v) => { s.set({ autoGainControl: v }); applyToActiveMic(); }}
-        />
         <Toggle
           label="음성 감지 전송"
           desc="설정한 민감도 이상 말할 때만 소리를 전송 (노이즈 게이트)"
@@ -109,9 +109,9 @@ export function AudioSettingsModal({ isOpen, onClose }: { isOpen: boolean; onClo
             </div>
           </div>
           <p className="text-xs text-white/40 mb-2">
-            빨간 선이 기준이에요. 말할 때 막대가 빨간 선을 넘으면 전송돼요. 선을 끌어서 직접 맞추세요.
+            지금 들어오는 소리 크기가 막대로 보여요. 막대가 빨간 선을 넘으면 전송돼요. 선을 끌어서 직접 맞추세요.
           </p>
-          {/* Live input meter — the red marker IS the threshold control (drag it). */}
+          {/* Live input meter — bar = current mic level, red marker = threshold (draggable). */}
           <div
             ref={meterRef}
             onPointerDown={(e) => {
@@ -124,10 +124,10 @@ export function AudioSettingsModal({ isOpen, onClose }: { isOpen: boolean; onClo
               dragging.current = false;
               e.currentTarget.releasePointerCapture(e.pointerId);
             }}
-            className="relative h-7 rounded-md bg-dark-600 overflow-hidden cursor-ew-resize touch-none select-none"
+            className="relative h-8 rounded-md bg-dark-600 overflow-hidden cursor-ew-resize touch-none select-none"
           >
             <div
-              className={`h-full transition-[width] duration-75 ${over ? 'bg-secondary/70' : 'bg-white/20'}`}
+              className={`h-full transition-[width] duration-75 ${over ? 'bg-secondary' : 'bg-secondary/40'}`}
               style={{ width: `${Math.min(100, (level / THRESHOLD_MAX) * 100)}%` }}
             />
             {/* Threshold marker + grab handle */}
@@ -135,7 +135,7 @@ export function AudioSettingsModal({ isOpen, onClose }: { isOpen: boolean; onClo
               className="absolute top-0 bottom-0 w-0.5 bg-primary"
               style={{ left: `${(threshold / THRESHOLD_MAX) * 100}%` }}
             >
-              <div className="absolute -top-0.5 left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-primary shadow" />
+              <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-3.5 h-3.5 rounded-full bg-primary shadow ring-2 ring-white/70" />
             </div>
           </div>
         </div>

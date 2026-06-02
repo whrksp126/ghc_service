@@ -2,14 +2,12 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 /**
- * Discord-style mic settings. The browser's own DSP (echo cancel / noise suppression /
- * auto gain) is exposed as toggles, plus an input-sensitivity slider that drives both the
- * voice-activity glow threshold and an optional noise gate (only transmit above threshold).
+ * Mic settings. The browser DSP (echo cancellation / noise suppression / auto gain) is
+ * always forced ON — echo must never happen, so we don't expose toggles that could turn
+ * AEC off (a disabled AEC was the source of the heavy echo). What remains user-tunable is
+ * the noise gate + its sensitivity threshold (voice-activity glow / transmit gate).
  */
 interface AudioSettingsState {
-  echoCancellation: boolean;
-  noiseSuppression: boolean;
-  autoGainControl: boolean;
   /** When on, the mic only transmits while you're above the threshold. */
   noiseGate: boolean;
   /**
@@ -28,9 +26,6 @@ export const THRESHOLD_MAX = 0.3;
 export const useAudioSettings = create<AudioSettingsState>()(
   persist(
     (set) => ({
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
       // On by default: only transmit while actually speaking, so room noise / silence
       // isn't sent. Paired with browser noise suppression + a 600ms hangover (RoomPage).
       noiseGate: true,
@@ -52,8 +47,10 @@ export const useAudioSettings = create<AudioSettingsState>()(
   )
 );
 
-/** Audio constraints for getUserMedia / applyConstraints, derived from current settings. */
+/**
+ * Audio constraints for getUserMedia / applyConstraints. AEC + noise suppression + auto
+ * gain are always forced ON (no echo, ever) — not user-toggleable.
+ */
 export function micConstraints(): MediaTrackConstraints {
-  const { echoCancellation, noiseSuppression, autoGainControl } = useAudioSettings.getState();
-  return { echoCancellation, noiseSuppression, autoGainControl };
+  return { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
 }

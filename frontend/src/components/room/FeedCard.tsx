@@ -1,10 +1,11 @@
 import { useRef, useEffect, useState, memo, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
-import { MicOff, Monitor } from 'lucide-react';
+import { MicOff, Monitor, Maximize2, Minimize2 } from 'lucide-react';
 import type { RemoteTrack } from 'livekit-client';
 import { useVoiceStore } from '../../services/voiceActivity';
 import { useAudioSettings } from '../../stores/audioSettings';
 import { VoiceBars } from '../common/VoiceBars';
+import { showToast } from '../common/Toast';
 
 interface FeedCardProps {
   track: MediaStreamTrack | null;
@@ -22,6 +23,8 @@ interface FeedCardProps {
   controls?: ReactNode;
   /** Double click → focus this feed as the spotlight. */
   onDoubleClick?: () => void;
+  /** Show the whole frame (object-contain) instead of cropping — spotlight main / screens. */
+  fitContain?: boolean;
   className?: string;
 }
 
@@ -36,11 +39,13 @@ export const FeedCard = memo(function FeedCard({
   voiceKey,
   controls,
   onDoubleClick,
+  fitContain,
   className = '',
 }: FeedCardProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [showControls, setShowControls] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const level = useVoiceStore((s) => (voiceKey ? s.levels[voiceKey] ?? 0 : 0));
@@ -60,7 +65,8 @@ export const FeedCard = memo(function FeedCard({
     return () => { el.srcObject = null; };
   }, [track, lkTrack, isLocal]);
 
-  // Distinguish single (toggle controls) from double (focus) click.
+  // Distinguish single (toggle controls overlay) from double (focus) click. The overlay
+  // always at least carries the fullscreen button, so it toggles even without parent controls.
   const handleClick = () => {
     if (clickTimer.current) {
       clearTimeout(clickTimer.current);
@@ -71,9 +77,40 @@ export const FeedCard = memo(function FeedCard({
     }
     clickTimer.current = setTimeout(() => {
       clickTimer.current = null;
-      if (controls) setShowControls((v) => !v);
+      setShowControls((v) => !v);
     }, 230);
   };
+
+  // YouTube-style fullscreen: real OS fullscreen on the tile where supported (Android /
+  // desktop keep our custom overlay); iOS Safari can't fullscreen a <div>, so fall back to
+  // the <video> element's native fullscreen player.
+  const toggleFullscreen = () => {
+    const root = rootRef.current as any;
+    const video = videoRef.current as any;
+    const doc = document as any;
+    if (document.fullscreenElement || doc.webkitFullscreenElement) {
+      (document.exitFullscreen || doc.webkitExitFullscreen)?.call(document);
+      return;
+    }
+    if (root?.requestFullscreen) { root.requestFullscreen().catch(() => {}); return; }
+    if (root?.webkitRequestFullscreen) { root.webkitRequestFullscreen(); return; }
+    if (video?.webkitEnterFullscreen) { video.webkitEnterFullscreen(); return; }
+    showToast('이 브라우저에서는 전체화면을 지원하지 않습니다', 'info');
+  };
+
+  useEffect(() => {
+    const onChange = () => {
+      const doc = document as any;
+      const el = document.fullscreenElement || doc.webkitFullscreenElement;
+      setIsFullscreen(el === rootRef.current);
+    };
+    document.addEventListener('fullscreenchange', onChange);
+    document.addEventListener('webkitfullscreenchange', onChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onChange);
+      document.removeEventListener('webkitfullscreenchange', onChange);
+    };
+  }, []);
 
   // Auto-hide the controls overlay after a few idle seconds. Interacting with the overlay
   // (tap on a button or the backdrop) calls bumpControlsTimer to extend the window.
@@ -108,7 +145,7 @@ export const FeedCard = memo(function FeedCard({
           autoPlay
           playsInline
           muted={isLocal || track.kind === 'video'}
-          className={`w-full h-full object-cover ${isLocal && !isScreen ? 'scale-x-[-1]' : ''}`}
+          className={`w-full h-full ${isScreen || fitContain || isFullscreen ? 'object-contain' : 'object-cover'} ${isLocal && !isScreen ? 'scale-x-[-1]' : ''}`}
         />
       ) : (
         <div className="w-full h-full flex items-center justify-center bg-dark-800">
@@ -134,8 +171,9 @@ export const FeedCard = memo(function FeedCard({
         </div>
       )}
 
-      {/* Controls overlay (single click). Tapping the dim backdrop closes it. */}
-      {showControls && controls && (
+      {/* Controls overlay (single click). Tapping the dim backdrop closes it. Always carries
+          the fullscreen button; parent-provided controls (mic/cam/switch…) sit alongside. */}
+      {showControls && (
         <div
           className="absolute inset-0 z-30 flex items-center justify-center bg-black/45 backdrop-blur-sm"
           onClick={(e) => { e.stopPropagation(); setShowControls(false); }}
@@ -145,6 +183,13 @@ export const FeedCard = memo(function FeedCard({
             onClick={(e) => { e.stopPropagation(); bumpControlsTimer(); }}
           >
             {controls}
+            <button
+              onClick={toggleFullscreen}
+              className="w-11 h-11 rounded-full flex items-center justify-center bg-white/15 text-white hover:bg-white/25 transition-colors"
+              title="전체화면"
+            >
+              {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+            </button>
           </div>
         </div>
       )}

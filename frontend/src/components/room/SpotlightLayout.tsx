@@ -44,6 +44,7 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit }: Spo
           voiceKey={spotlight.voiceKey}
           controls={spotlight.controls}
           onDoubleClick={onExit}
+          fitContain
           className="w-full h-full"
         />
       </div>

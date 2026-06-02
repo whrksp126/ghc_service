@@ -111,6 +111,21 @@ export const api = {
       method: 'POST',
     }),
 
+  // OBS live broadcast (RTMP ingress) — owner only.
+  createIngress: (slug: string) =>
+    request<{ ingress: { ingressId: string; url: string; streamKey: string } }>(
+      `/api/rooms/${slug}/ingress`,
+      { method: 'POST' }
+    ),
+
+  listIngress: (slug: string) =>
+    request<{ ingresses: { ingressId: string; url: string; streamKey: string }[] }>(
+      `/api/rooms/${slug}/ingress`
+    ),
+
+  deleteIngress: (slug: string, id: string) =>
+    request<{ success: boolean }>(`/api/rooms/${slug}/ingress/${id}`, { method: 'DELETE' }),
+
   getMediaLibrary: () =>
     request<{ items: { key: string; name: string; size: number }[] }>('/api/media/library'),
 

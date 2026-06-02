@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { Room, RoomMember } from '../models';
 import { authMiddleware } from '../middleware/auth';
 import { forceCloseRoom } from '../signaling/socketHandler';
+import { createRoomIngress, listRoomIngress, deleteRoomIngress } from '../services/livekitService';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'longdcam_dev_secret';
 
@@ -226,6 +227,41 @@ router.patch('/rooms/:slug', authMiddleware, async (req, res) => {
     }
     throw err;
   }
+});
+
+// --- OBS live broadcast (RTMP ingress) — owner only -----------------------------------
+// Returns the RTMP server URL + stream key for the room owner to paste into OBS. The
+// ingress publishes into the room as an "OBS 라이브" participant.
+router.post('/rooms/:slug/ingress', authMiddleware, async (req, res) => {
+  const room = await Room.findOne({
+    where: { slug: req.params.slug, owner_id: req.user!.userId, is_active: true },
+  });
+  if (!room) return res.status(404).json({ error: '방을 찾을 수 없거나 방장이 아닙니다' });
+  try {
+    const ingress = await createRoomIngress(room.slug);
+    res.json({ ingress });
+  } catch (err) {
+    console.error('createRoomIngress failed:', err);
+    res.status(502).json({ error: 'OBS 라이브 설정에 실패했습니다' });
+  }
+});
+
+router.get('/rooms/:slug/ingress', authMiddleware, async (req, res) => {
+  const room = await Room.findOne({
+    where: { slug: req.params.slug, owner_id: req.user!.userId, is_active: true },
+  });
+  if (!room) return res.status(404).json({ error: '방을 찾을 수 없거나 방장이 아닙니다' });
+  const ingresses = await listRoomIngress(room.slug);
+  res.json({ ingresses });
+});
+
+router.delete('/rooms/:slug/ingress/:id', authMiddleware, async (req, res) => {
+  const room = await Room.findOne({
+    where: { slug: req.params.slug, owner_id: req.user!.userId, is_active: true },
+  });
+  if (!room) return res.status(404).json({ error: '방을 찾을 수 없거나 방장이 아닙니다' });
+  await deleteRoomIngress(String(req.params.id));
+  res.json({ success: true });
 });
 
 // Leave a room — removes the caller's membership ("내 목록에서 삭제"). Owners delete instead.
