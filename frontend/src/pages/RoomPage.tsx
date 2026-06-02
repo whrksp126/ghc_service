@@ -448,6 +448,42 @@ export function RoomPage() {
     return items;
   }, [consumers, participantLookup, nickname, userId, localScreenTrack]);
 
+  // My own device feeds (current device + my other cameras) — used as spotlight targets so
+  // clicking any tile (mine or others') focuses it as the main view, Discord-style.
+  const ownFeeds = useMemo(() => {
+    const items: any[] = [];
+    if (localVideoTrack) {
+      items.push({
+        id: `self:${deviceId}`, track: localVideoTrack, label: nickname || '나',
+        deviceLabel: '', isLocal: true, isScreen: false, voiceKey: `${userId}:${deviceId}`,
+      });
+    }
+    for (const c of consumers) {
+      if (c.kind !== 'video' || c.userId !== userId || c.deviceId === deviceId) continue;
+      items.push({
+        id: c.consumerId, track: c.track, lkTrack: c.lkTrack, label: nickname || '나',
+        deviceLabel: '', isLocal: false, isScreen: c.source === 'screen',
+        voiceKey: `${c.userId}:${c.deviceId}`,
+      });
+    }
+    return items;
+  }, [consumers, localVideoTrack, deviceId, userId, nickname]);
+
+  // Everyone (others + my own) for the spotlight view and its thumbnail strip.
+  const spotlightFeeds = useMemo(() => [...feeds, ...ownFeeds], [feeds, ownFeeds]);
+
+  // Focus a device as the main view (from the dock or a grid tile).
+  const handleFocusDevice = useCallback((camId: string) => {
+    let focusId = '';
+    if (camId === deviceId) {
+      focusId = `self:${deviceId}`;
+    } else {
+      const c = consumers.find((x) => x.userId === userId && x.deviceId === camId && x.kind === 'video');
+      if (c) focusId = c.consumerId;
+    }
+    if (focusId) { setLayoutMode('spotlight'); setSpotlightProducer(focusId); }
+  }, [deviceId, userId, consumers, setLayoutMode, setSpotlightProducer]);
+
   // Remote audio is played through hidden <audio> sinks, not the video tiles (a video
   // element only renders one track). My own devices' audio is skipped to avoid echo.
   const audioConsumers = useMemo(
@@ -621,7 +657,7 @@ export function RoomPage() {
       ))}
 
       <div className="flex-1 min-h-0 relative">
-        {feeds.length > 0 ? (
+        {(layoutMode === 'spotlight' ? spotlightFeeds.length > 0 : feeds.length > 0) ? (
           <LayoutGroup>
             {layoutMode === 'grid' && (
               <GridLayout
@@ -634,7 +670,7 @@ export function RoomPage() {
             )}
             {layoutMode === 'spotlight' && (
               <SpotlightLayout
-                feeds={feeds}
+                feeds={spotlightFeeds}
                 spotlightId={spotlightProducerId}
                 onFeedClick={(id) => setSpotlightProducer(id)}
               />
@@ -656,6 +692,7 @@ export function RoomPage() {
         onToggleCurrentCam={handleToggleCam}
         onSwitchCurrentCam={handleSwitchCurrentCam}
         localVideoTrack={localVideoTrack}
+        onFocusDevice={handleFocusDevice}
       />
 
       <BottomBar

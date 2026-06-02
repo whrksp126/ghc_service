@@ -63,11 +63,9 @@ export function useBackgroundCamera() {
         if (sid) session.trackSids.push(sid);
       }
 
-      const audioTrack = stream.getAudioTracks()[0];
-      if (audioTrack) {
-        const sid = await publishTrack(audioTrack, 'microphone');
-        if (sid) session.trackSids.push(sid);
-      }
+      // Video only — a secondary/background camera must NOT publish a mic. Two mics from
+      // the same user in one physical room cause echo/howling; the foreground device
+      // (the one with the room open) is the single audio source.
 
       sessionRef.current = session;
 

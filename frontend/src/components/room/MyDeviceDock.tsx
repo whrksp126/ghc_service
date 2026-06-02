@@ -17,6 +17,8 @@ interface MyDeviceDockProps {
   onToggleCurrentCam: () => void;
   onSwitchCurrentCam: () => void;
   localVideoTrack: MediaStreamTrack | null;
+  /** Click a tile → focus that device as the main (spotlight) view. */
+  onFocusDevice: (camId: string) => void;
 }
 
 function DeviceIcon({ type, size = 14 }: { type: string; size?: number }) {
@@ -51,7 +53,7 @@ function DockVideo({ track, mirror }: { track: MediaStreamTrack; mirror?: boolea
  * current device toggles its local producer; other devices are controlled over the
  * existing camera:* signaling (server only relays to devices owned by the same user).
  */
-export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onSwitchCurrentCam, localVideoTrack }: MyDeviceDockProps) {
+export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onSwitchCurrentCam, localVideoTrack, onFocusDevice }: MyDeviceDockProps) {
   const { cameras, fetchCameras } = useCameraStore();
   const { userId, deviceId } = useAuthStore();
   const consumers = useRoomStore((s) => s.consumers);
@@ -187,7 +189,8 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
       <div className="flex items-center gap-1.5 mb-1.5 px-1">
         <span className="text-[11px] font-semibold text-white/40 uppercase tracking-wider">내 기기</span>
       </div>
-      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-none">
+      {/* py gives the cyan speaking-glow room so it isn't clipped by the scroll box. */}
+      <div className="flex gap-2 overflow-x-auto py-2.5 px-2 -mx-1 scrollbar-none">
         {sorted.map((cam) => {
           const { isCurrent, online, track, streaming, busy } = camState(cam);
           const reconnecting = isCurrent && isReconnecting;
@@ -197,8 +200,9 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
           return (
             <div key={cam.id} className="relative w-28 shrink-0">
               <div
-                className="relative w-full aspect-video rounded-xl overflow-hidden bg-dark-800 border border-white/10 transition-shadow duration-100"
-                style={speaking ? { boxShadow: `0 0 0 2px #25F4EE, 0 0 12px 1px rgba(37,244,238,${Math.min(0.7, 0.35 + level)})` } : undefined}
+                onClick={() => onFocusDevice(cam.id)}
+                className="relative w-full aspect-video rounded-xl overflow-hidden bg-dark-800 border border-white/10 transition-shadow duration-100 cursor-pointer"
+                style={speaking ? { boxShadow: `0 0 0 2px #25F4EE, 0 0 8px 0px rgba(37,244,238,${Math.min(0.7, 0.35 + level)})` } : undefined}
               >
                 {track && streaming ? (
                   <DockVideo track={track} mirror={isCurrent} />
@@ -226,7 +230,7 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
 
                 {/* More menu */}
                 <button
-                  onClick={() => setSheetCamId(cam.id)}
+                  onClick={(e) => { e.stopPropagation(); setSheetCamId(cam.id); }}
                   disabled={busy || (!online && !isCurrent)}
                   className="absolute bottom-1 right-1 w-7 h-7 rounded-full bg-black/55 backdrop-blur-sm flex items-center justify-center text-white/70 hover:text-white disabled:opacity-40"
                   title="더보기"
@@ -240,13 +244,6 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
                     <VoiceBars level={level} className="h-3" />
                   </div>
                 )}
-              </div>
-
-              <div className="flex items-center gap-1 mt-1 px-0.5">
-                <span className="text-white/50 shrink-0"><DeviceIcon type={cam.deviceType} size={11} /></span>
-                <span className={`text-[11px] truncate ${isCurrent ? 'text-primary font-medium' : 'text-white/70'}`}>
-                  {isCurrent ? '이 기기' : '다른 기기'}
-                </span>
               </div>
             </div>
           );
