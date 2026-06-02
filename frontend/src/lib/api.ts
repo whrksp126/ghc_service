@@ -73,6 +73,15 @@ export const api = {
   deleteRoom: (slug: string) =>
     request<{ success: boolean }>(`/api/rooms/${slug}`, { method: 'DELETE' }),
 
+  renameRoom: (slug: string, name: string) =>
+    request<{ room: { id: string; name: string; slug: string } }>(`/api/rooms/${slug}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+
+  leaveRoom: (slug: string) =>
+    request<{ success: boolean }>(`/api/rooms/${slug}/leave`, { method: 'POST' }),
+
   getDevices: () =>
     request<{
       devices: {

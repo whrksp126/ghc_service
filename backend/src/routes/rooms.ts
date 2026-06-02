@@ -209,4 +209,35 @@ router.delete('/rooms/:slug', authMiddleware, async (req, res) => {
   res.json({ success: true });
 });
 
+// Rename a room (owner only).
+const renameRoomSchema = z.object({ name: z.string().min(1).max(100) });
+router.patch('/rooms/:slug', authMiddleware, async (req, res) => {
+  try {
+    const data = renameRoomSchema.parse(req.body);
+    const room = await Room.findOne({
+      where: { slug: req.params.slug, owner_id: req.user!.userId },
+    });
+    if (!room) return res.status(404).json({ error: '방을 찾을 수 없거나 방장이 아닙니다' });
+    await room.update({ name: data.name });
+    res.json({ room: { id: room.id, name: room.name, slug: room.slug } });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Validation error', details: err.errors });
+    }
+    throw err;
+  }
+});
+
+// Leave a room — removes the caller's membership ("내 목록에서 삭제"). Owners delete instead.
+router.post('/rooms/:slug/leave', authMiddleware, async (req, res) => {
+  const userId = req.user!.userId;
+  const room = await Room.findOne({ where: { slug: req.params.slug } });
+  if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (room.owner_id === userId) {
+    return res.status(400).json({ error: '방장은 나갈 수 없습니다. 방을 삭제해주세요.' });
+  }
+  await RoomMember.destroy({ where: { room_id: room.id, user_id: userId } });
+  res.json({ success: true });
+});
+
 export default router;

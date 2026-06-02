@@ -23,7 +23,9 @@ export const useAudioSettings = create<AudioSettingsState>()(
       echoCancellation: true,
       noiseSuppression: true,
       autoGainControl: true,
-      noiseGate: false,
+      // On by default: only transmit while actually speaking, so room noise / silence
+      // isn't sent. Paired with browser noise suppression + a 600ms hangover (RoomPage).
+      noiseGate: true,
       sensitivity: 0.5,
       set: (patch) => set(patch),
     }),
@@ -37,7 +39,11 @@ export function micConstraints(): MediaTrackConstraints {
   return { echoCancellation, noiseSuppression, autoGainControl };
 }
 
-/** Map the 0..1 sensitivity slider to an RMS threshold (higher sensitivity → lower threshold). */
+/**
+ * Map the 0..1 sensitivity slider to an RMS gate threshold. Tuned so the default (0.5)
+ * reliably passes normal speech (~0.05) while blocking quiet room noise; "둔감"(0) needs
+ * loud speech, "민감"(1) opens on almost anything.
+ */
 export function sensitivityToThreshold(sensitivity: number): number {
-  return 0.13 * (1 - sensitivity) + 0.015;
+  return 0.075 * (1 - sensitivity) + 0.012;
 }

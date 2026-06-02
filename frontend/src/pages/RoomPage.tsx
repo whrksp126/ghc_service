@@ -486,7 +486,8 @@ export function RoomPage() {
       return;
     }
     const now = Date.now();
-    if (myLevel >= sensitivityToThreshold(sensitivity)) gateHoldRef.current = now + 400;
+    // 600ms hangover so the gate doesn't slam shut between words/syllables.
+    if (myLevel >= sensitivityToThreshold(sensitivity)) gateHoldRef.current = now + 600;
     const open = now < gateHoldRef.current;
     if (open !== gateOpenRef.current) {
       gateOpenRef.current = open;

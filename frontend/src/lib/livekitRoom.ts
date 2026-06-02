@@ -99,7 +99,9 @@ export async function connectToRoom(token: string): Promise<Room> {
       videoSimulcastLayers: isMobile ? [] : [VideoPresets.h180, VideoPresets.h540],
       videoEncoding: { maxBitrate: isMobile ? 1_700_000 : 3_500_000, maxFramerate: 30 },
       screenShareEncoding: { maxBitrate: 3_000_000, maxFramerate: 15 },
-      dtx: true,
+      // DTX off: our noise gate already stops sending during silence; DTX on top can clip
+      // the first syllable / add comfort-noise artifacts. RED stays on for loss resilience.
+      dtx: false,
       red: true,
     },
   });

@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Trash2 } from 'lucide-react';
+import { Trash2, MoreHorizontal, Share2, Pencil, LogOut, Video } from 'lucide-react';
 import { Button } from '../components/common/Button';
 import { Modal } from '../components/common/Modal';
+import { BottomSheet, type SheetAction } from '../components/common/BottomSheet';
 import { showToast } from '../components/common/Toast';
 import { ShareModal } from '../components/room/ShareModal';
 import { QrScanModal } from '../components/room/QrScanModal';
@@ -24,6 +25,11 @@ export function HomePage() {
   const [joinSlug, setJoinSlug] = useState('');
   const [rooms, setRooms] = useState<{ id: string; name: string; slug: string; role: string; hasPin: boolean }[]>([]);
   const [loading, setLoading] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  type RoomItem = { id: string; name: string; slug: string; role: string; hasPin: boolean };
+  const [sheetRoom, setSheetRoom] = useState<RoomItem | null>(null);
+  const [renameRoom, setRenameRoom] = useState<RoomItem | null>(null);
+  const [renameName, setRenameName] = useState('');
 
   useEffect(() => {
     api.getMyRooms().then((res) => setRooms(res.rooms)).catch(() => {});
@@ -75,11 +81,41 @@ export function HomePage() {
     }
   }
 
-  const roleLabel: Record<string, string> = {
-    owner: '방장',
-    member: '참여자',
-    viewer: '시청자',
-  };
+  async function handleLeaveRoom(room: { id: string; name: string; slug: string }) {
+    try {
+      await api.leaveRoom(room.slug);
+      setRooms((prev) => prev.filter((r) => r.id !== room.id));
+      showToast('목록에서 삭제했습니다', 'success');
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  async function handleRename() {
+    if (!renameRoom || !renameName.trim()) return;
+    try {
+      await api.renameRoom(renameRoom.slug, renameName.trim());
+      setRooms((prev) => prev.map((r) => (r.id === renameRoom.id ? { ...r, name: renameName.trim() } : r)));
+      showToast('방 이름을 변경했습니다', 'success');
+      setRenameRoom(null);
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    }
+  }
+
+  const roomSheetActions: SheetAction[] = sheetRoom
+    ? [
+        { icon: <Share2 size={18} />, label: '공유하기', onClick: () => handleShareRoom(sheetRoom) },
+        ...(sheetRoom.role === 'owner'
+          ? [
+              { icon: <Pencil size={18} />, label: '방 이름 변경', onClick: () => { setRenameName(sheetRoom.name); setRenameRoom(sheetRoom); } },
+              { icon: <Trash2 size={18} />, label: '방 삭제', danger: true, onClick: () => handleDeleteRoom(sheetRoom) },
+            ]
+          : [
+              { icon: <LogOut size={18} />, label: '목록에서 삭제', danger: true, onClick: () => handleLeaveRoom(sheetRoom) },
+            ]),
+      ]
+    : [];
 
   return (
     <div className="min-h-screen bg-dark-900 flex flex-col">
@@ -88,20 +124,40 @@ export function HomePage() {
           <span className="text-primary">Long</span>
           <span className="text-secondary">dcam</span>
         </h1>
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-secondary flex items-center justify-center text-sm font-bold">
-            {nickname?.[0]?.toUpperCase()}
-          </div>
-          <span className="text-sm text-white/70">{nickname}</span>
+        <div className="relative">
           <button
-            onClick={() => {
-              logout();
-              navigate('/login');
-            }}
-            className="text-xs text-white/30 hover:text-white/60 transition-colors ml-2"
+            onClick={() => setShowUserMenu((v) => !v)}
+            className="flex items-center gap-2 rounded-full pl-1 pr-3 py-1 hover:bg-white/5 transition-colors"
           >
-            로그아웃
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-secondary flex items-center justify-center text-sm font-bold">
+              {nickname?.[0]?.toUpperCase()}
+            </div>
+            <span className="text-sm text-white/70">{nickname}</span>
           </button>
+
+          {showUserMenu && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setShowUserMenu(false)} />
+              <div className="absolute right-0 mt-2 w-48 bg-dark-700 border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden">
+                <div className="px-4 py-3 border-b border-white/10">
+                  <p className="text-sm font-medium truncate">{nickname}</p>
+                  <p className="text-[11px] text-white/40 mt-0.5">개인 설정</p>
+                </div>
+                <button
+                  onClick={() => { setShowUserMenu(false); navigate('/cameras'); }}
+                  className="w-full flex items-center gap-2.5 text-left px-4 py-2.5 text-sm text-white/85 hover:bg-white/5 transition-colors"
+                >
+                  <Video size={16} /> 카메라 관리
+                </button>
+                <button
+                  onClick={() => { setShowUserMenu(false); logout(); navigate('/login'); }}
+                  className="w-full flex items-center gap-2.5 text-left px-4 py-2.5 text-sm text-danger hover:bg-danger/10 transition-colors"
+                >
+                  <LogOut size={16} /> 로그아웃
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </header>
 
@@ -162,35 +218,16 @@ export function HomePage() {
                         <p className="font-medium">{room.name}</p>
                         <p className="text-xs text-white/40 mt-0.5">{room.slug}</p>
                       </button>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleShareRoom(room);
-                          }}
-                          className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-                          title="공유하기"
-                        >
-                          <svg className="w-4 h-4 text-white/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-                          </svg>
-                        </button>
-                        {room.role === 'owner' && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteRoom(room);
-                            }}
-                            className="p-2 hover:bg-danger/15 rounded-lg transition-colors group/del"
-                            title="방 삭제"
-                          >
-                            <Trash2 className="w-4 h-4 text-white/40 group-hover/del:text-danger" />
-                          </button>
-                        )}
-                        <span className="text-xs text-white/30 bg-dark-700 px-2 py-1 rounded-full">
-                          {roleLabel[room.role] || room.role}
-                        </span>
-                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSheetRoom(room);
+                        }}
+                        className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                        title="더보기"
+                      >
+                        <MoreHorizontal className="w-5 h-5 text-white/50" />
+                      </button>
                     </motion.div>
                   ))}
                 </AnimatePresence>
@@ -265,6 +302,31 @@ export function HomePage() {
         onClose={() => setShowScan(false)}
         onResult={(path) => { setShowScan(false); navigate(path); }}
       />
+
+      <BottomSheet
+        isOpen={!!sheetRoom}
+        onClose={() => setSheetRoom(null)}
+        title={sheetRoom?.name}
+        actions={roomSheetActions}
+      />
+
+      <Modal isOpen={!!renameRoom} onClose={() => setRenameRoom(null)} title="방 이름 변경">
+        <div className="space-y-4">
+          <input
+            type="text"
+            value={renameName}
+            onChange={(e) => setRenameName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleRename()}
+            placeholder="새 방 이름"
+            className="w-full bg-dark-700 border border-white/10 rounded-btn px-4 py-3 text-white placeholder:text-white/30 focus:outline-none focus:border-primary/50 transition-colors"
+            maxLength={100}
+            autoFocus
+          />
+          <Button className="w-full" onClick={handleRename}>
+            저장
+          </Button>
+        </div>
+      </Modal>
 
       {shareRoom && (
         <ShareModal
