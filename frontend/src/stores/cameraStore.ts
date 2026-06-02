@@ -61,6 +61,27 @@ export const useCameraStore = create<CameraState>()((set, get) => ({
           remoteCameraActiveIndex: existing?.remoteCameraActiveIndex ?? 0,
         };
       });
+      // Always include THIS device. The REST list only has currently-online devices, and
+      // on a cold load into /room the socket may not have marked us online yet — without
+      // this, the lobby shows no preview and our own camera never gets published.
+      if (currentDeviceId && !cameras.some((c) => c.id === currentDeviceId)) {
+        const existing = prev.find((c) => c.id === currentDeviceId);
+        const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        cameras.unshift({
+          id: currentDeviceId,
+          cameraName: existing?.cameraName || '이 기기',
+          label: existing?.label || '',
+          deviceType: existing?.deviceType || (isMobile ? 'phone' : 'desktop'),
+          isOnline: true,
+          isInRoom: existing?.isInRoom ?? false,
+          roomSlug: existing?.roomSlug ?? null,
+          isCameraActive: existing?.isCameraActive ?? false,
+          isCurrentDevice: true,
+          lastSeenAt: existing?.lastSeenAt ?? null,
+          remoteCameraCount: existing?.remoteCameraCount ?? 0,
+          remoteCameraActiveIndex: existing?.remoteCameraActiveIndex ?? 0,
+        });
+      }
       set({ cameras, loading: false });
     } catch {
       set({ loading: false });

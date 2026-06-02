@@ -210,9 +210,11 @@ export function RoomPage() {
 
       await establishSession();
 
-      const shouldStreamCurrent = selectedCameras.has(deviceId || '');
+      // Stream this device by default; only skip it if the user explicitly unchecked it
+      // in the lobby (selection populated but our id absent).
+      const shouldStreamCurrent = selectedCameras.size === 0 || selectedCameras.has(deviceId || '');
 
-      if (shouldStreamCurrent !== false) {
+      if (shouldStreamCurrent) {
         // Use always-on camera stream if available, otherwise get new one
         const alwaysOn = useAlwaysOnCamera.getState();
         let stream = alwaysOn.stream;
