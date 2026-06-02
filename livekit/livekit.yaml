@@ -9,6 +9,11 @@
 #              so it effectively never reaches 40100.
 port: 7880
 
+# Shared with the ingress service so OBS RTMP streams can be routed into rooms. Loopback
+# redis (see docker-compose redis service, bound to 127.0.0.1).
+redis:
+  address: 127.0.0.1:6379
+
 rtc:
   tcp_port: 7881
   # Reuse the existing 40000-40100/udp port-forward (mediasoup's old range) as a single

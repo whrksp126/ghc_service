@@ -57,6 +57,40 @@ services:
     command: ["-c", "/etc/turnserver.conf"]
     restart: always
 
+  # Redis coordinates livekit-server <-> ingress. Bound to loopback only (host network
+  # would otherwise expose 6379 publicly).
+  redis:
+    container_name: longdcam_redis_prod
+    image: redis:7-alpine
+    network_mode: host
+    command: ["redis-server", "--bind", "127.0.0.1", "--port", "6379", "--protected-mode", "yes"]
+    restart: always
+
+  # LiveKit Ingress: OBS → RTMP(1935) → publishes into the room as a participant. Config is
+  # injected via INGRESS_CONFIG_BODY so the API secret never lives in a committed file
+  # (interpolated from longdcam_service/.env, same as MYSQL_* below). 1935/tcp must be
+  # forwarded on the router; point a DNS-only (grey-cloud) record at it (INGRESS_RTMP_HOST).
+  ingress:
+    container_name: longdcam_ingress_prod
+    image: livekit/ingress:latest
+    network_mode: host
+    environment:
+      INGRESS_CONFIG_BODY: |
+        logging:
+          level: info
+        redis:
+          address: 127.0.0.1:6379
+        ws_url: ws://127.0.0.1:7880
+        api_key: ${LIVEKIT_API_KEY}
+        api_secret: ${LIVEKIT_API_SECRET}
+        rtmp_port: 1935
+        http_relay_port: 9090
+        health_port: 9091
+    depends_on:
+      - redis
+      - livekit
+    restart: always
+
   mysql:
     container_name: longdcam_mysql_prod
     image: mysql:8.0
