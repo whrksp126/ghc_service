@@ -35,9 +35,25 @@ type RoomPhase = 'lobby' | 'connecting' | 'inRoom';
 function RemoteAudio({ track, voiceKey }: { track: MediaStreamTrack; voiceKey: string }) {
   const ref = useRef<HTMLAudioElement>(null);
   useEffect(() => {
-    if (ref.current) ref.current.srcObject = new MediaStream([track]);
+    const el = ref.current;
+    if (el) el.srcObject = new MediaStream([track]);
     attachVoice(voiceKey, track);
-    return () => detachVoice(voiceKey);
+
+    // Autoplay of audio is often blocked by the browser when a track arrives at connect
+    // time without a fresh user gesture (e.g. the always-on OBS ingress track right after a
+    // refresh) → silent video-only. <audio autoPlay> alone won't recover. Explicitly play,
+    // and retry on the next user interaction so a tap anywhere unblocks it.
+    const tryPlay = () => { el?.play().catch(() => {}); };
+    tryPlay();
+    document.addEventListener('pointerdown', tryPlay);
+    document.addEventListener('keydown', tryPlay);
+
+    return () => {
+      detachVoice(voiceKey);
+      document.removeEventListener('pointerdown', tryPlay);
+      document.removeEventListener('keydown', tryPlay);
+      if (el) el.srcObject = null;
+    };
   }, [track, voiceKey]);
   return <audio ref={ref} autoPlay playsInline />;
 }
