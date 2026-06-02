@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import type { RemoteTrack } from 'livekit-client';
 import { FeedCard } from './FeedCard';
@@ -8,11 +8,11 @@ interface FeedItem {
   track: MediaStreamTrack | null;
   lkTrack?: RemoteTrack;
   label: string;
-  deviceLabel: string;
   isMuted?: boolean;
   isLocal?: boolean;
   isScreen?: boolean;
   voiceKey?: string;
+  controls?: ReactNode;
 }
 
 interface GridLayoutProps {
@@ -41,13 +41,13 @@ export function GridLayout({ feeds, onFeedClick }: GridLayoutProps) {
             track={feed.track}
             lkTrack={feed.lkTrack}
             label={feed.label}
-            deviceLabel={feed.deviceLabel}
             isMuted={feed.isMuted}
             isLocal={feed.isLocal}
             isScreen={feed.isScreen}
             layoutId={feed.id}
             voiceKey={feed.voiceKey}
-            onClick={() => onFeedClick?.(feed.id)}
+            controls={feed.controls}
+            onDoubleClick={() => onFeedClick?.(feed.id)}
           />
         ))}
       </AnimatePresence>

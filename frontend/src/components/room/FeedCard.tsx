@@ -1,4 +1,4 @@
-import { useRef, useEffect, memo } from 'react';
+import { useRef, useEffect, useState, memo, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import { MicOff, Monitor } from 'lucide-react';
 import type { RemoteTrack } from 'livekit-client';
@@ -11,7 +11,6 @@ interface FeedCardProps {
   /** LiveKit remote track — attaching via this lets adaptiveStream size the layer. */
   lkTrack?: RemoteTrack;
   label: string;
-  deviceLabel: string;
   isMuted?: boolean;
   isLocal?: boolean;
   isScreen?: boolean;
@@ -19,8 +18,11 @@ interface FeedCardProps {
   layoutId?: string;
   /** Participant key (`${userId}:${deviceId}`) for voice-activity glow + waveform. */
   voiceKey?: string;
+  /** Controls overlay (mic/cam/switch…) shown on a single click. */
+  controls?: ReactNode;
+  /** Double click → focus this feed as the spotlight. */
+  onDoubleClick?: () => void;
   className?: string;
-  onClick?: () => void;
 }
 
 export const FeedCard = memo(function FeedCard({
@@ -32,11 +34,14 @@ export const FeedCard = memo(function FeedCard({
   isScreen,
   layoutId,
   voiceKey,
+  controls,
+  onDoubleClick,
   className = '',
-  onClick,
 }: FeedCardProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const [showControls, setShowControls] = useState(false);
+  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const level = useVoiceStore((s) => (voiceKey ? s.levels[voiceKey] ?? 0 : 0));
   const sensitivity = useAudioSettings((s) => s.sensitivity);
   const speaking = level > sensitivityToThreshold(sensitivity);
@@ -54,6 +59,21 @@ export const FeedCard = memo(function FeedCard({
     return () => { el.srcObject = null; };
   }, [track, lkTrack, isLocal]);
 
+  // Distinguish single (toggle controls) from double (focus) click.
+  const handleClick = () => {
+    if (clickTimer.current) {
+      clearTimeout(clickTimer.current);
+      clickTimer.current = null;
+      setShowControls(false);
+      onDoubleClick?.();
+      return;
+    }
+    clickTimer.current = setTimeout(() => {
+      clickTimer.current = null;
+      if (controls) setShowControls((v) => !v);
+    }, 230);
+  };
+
   return (
     <motion.div
       ref={rootRef}
@@ -63,11 +83,8 @@ export const FeedCard = memo(function FeedCard({
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
       transition={{ type: 'spring', stiffness: 350, damping: 32 }}
-      className={`feed-card relative group cursor-pointer transition-shadow duration-100 ${className}`}
-      style={speaking
-        ? { boxShadow: `0 0 0 3px #25F4EE, 0 0 18px 2px rgba(37,244,238,${Math.min(0.7, 0.35 + level)})` }
-        : undefined}
-      onClick={onClick}
+      className={`feed-card relative group cursor-pointer ${className}`}
+      onClick={handleClick}
     >
       {track ? (
         <video
@@ -85,6 +102,15 @@ export const FeedCard = memo(function FeedCard({
         </div>
       )}
 
+      {/* Speaking ring — drawn INSET on top of the video so it's never clipped by any
+          scroll/grid container's overflow (the old outer box-shadow was getting cut off). */}
+      {speaking && (
+        <div
+          className="absolute inset-0 z-20 pointer-events-none"
+          style={{ boxShadow: `inset 0 0 0 3px #25F4EE, inset 0 0 16px 2px rgba(37,244,238,${Math.min(0.7, 0.35 + level)})` }}
+        />
+      )}
+
       {/* Voice activity waveform (bottom-right) */}
       {voiceKey && speaking && (
         <div className="absolute bottom-2 right-2 z-10 flex items-center bg-black/45 backdrop-blur-sm rounded-full px-2 py-1">
@@ -92,7 +118,19 @@ export const FeedCard = memo(function FeedCard({
         </div>
       )}
 
-      {/* Overlay */}
+      {/* Controls overlay (single click). Tapping the dim backdrop closes it. */}
+      {showControls && controls && (
+        <div
+          className="absolute inset-0 z-30 flex items-center justify-center bg-black/45 backdrop-blur-sm"
+          onClick={(e) => { e.stopPropagation(); setShowControls(false); }}
+        >
+          <div className="flex items-center gap-2.5" onClick={(e) => e.stopPropagation()}>
+            {controls}
+          </div>
+        </div>
+      )}
+
+      {/* Label */}
       <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/60 to-transparent opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium truncate">{label}</span>

@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useMemo, useRef, useState } from 'react';
+import { useEffect, useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
 import { LayoutGroup } from 'framer-motion';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useSocket } from '../hooks/useSocket';
@@ -21,11 +21,10 @@ import { TopBar } from '../components/layout/TopBar';
 import { BottomBar } from '../components/layout/BottomBar';
 import { ReconnectingOverlay } from '../components/connection/ReconnectingOverlay';
 import { LoadingScreen } from '../components/common/LoadingScreen';
-import { MyDeviceDock } from '../components/room/MyDeviceDock';
 import { CameraPreviewTile } from '../components/devices/CameraPreviewTile';
 import { Button } from '../components/common/Button';
 import { showToast } from '../components/common/Toast';
-import { Mic, MicOff, Video, VideoOff, Users } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, Users, SwitchCamera, Power } from 'lucide-react';
 import { initSounds, playSound } from '../lib/sounds';
 import type { Participant } from '../types/room';
 
@@ -42,6 +41,20 @@ function RemoteAudio({ track, voiceKey }: { track: MediaStreamTrack; voiceKey: s
   return <audio ref={ref} autoPlay playsInline />;
 }
 
+/** Round control button shown inside a feed tile's single-click overlay. */
+function TileButton({ onClick, icon, danger, active }: { onClick: () => void; icon: ReactNode; danger?: boolean; active?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-11 h-11 rounded-full flex items-center justify-center transition-colors ${
+        danger ? 'bg-danger text-white' : active === false ? 'bg-danger text-white' : 'bg-white/15 text-white hover:bg-white/25'
+      }`}
+    >
+      {icon}
+    </button>
+  );
+}
+
 export function RoomPage() {
   const { slug } = useParams<{ slug: string }>();
   const [searchParams] = useSearchParams();
@@ -51,11 +64,12 @@ export function RoomPage() {
     setRoom, clearRoom, setParticipants, setConnecting, isConnecting, consumers, participants,
   } = useRoomStore();
   const {
-    isCamOn, setVideoTrack, setAudioTrack, setScreenSharing, isScreenSharing, setScreenTrack,
+    isCamOn, isMicOn, setVideoTrack, setAudioTrack, setScreenSharing, isScreenSharing, setScreenTrack,
     reset: resetDevice, setAudioProducerId, setVideoProducerId, setScreenProducerId,
   } = useDeviceStore();
   const { layoutMode, setLayoutMode, spotlightProducerId, setSpotlightProducer } = useUIStore();
   const { cameras, fetchCameras } = useCameraStore();
+  const localLensCount = useAlwaysOnCamera((s) => s.availableCameras.length);
 
   const { connect, disconnect } = useSocket();
 
@@ -66,6 +80,10 @@ export function RoomPage() {
   const localAudioTrackRef = useRef<MediaStreamTrack | null>(null);
   const joinedRef = useRef(false);
   const sessionActiveRef = useRef(false);
+  // Track which of my devices we auto-pulled in vs the user explicitly stopped, so a
+  // stopped device doesn't immediately bounce back into the room.
+  const autoStartedRef = useRef<Set<string>>(new Set());
+  const manualStopRef = useRef<Set<string>>(new Set());
 
   // Lobby state
   const [lobbyMicOn, setLobbyMicOn] = useState(true);
@@ -403,6 +421,29 @@ export function RoomPage() {
     setLayoutMode(modes[(currentIdx + 1) % modes.length]);
   }, [layoutMode, setLayoutMode]);
 
+  // Auto-bring my online devices into the room (was in the now-removed dock). Capped at
+  // 3 cameras/user; respects devices the user explicitly stopped.
+  useEffect(() => {
+    if (phase !== 'inRoom' || !slug) return;
+    const MAX_DEVICES_PER_USER = 3;
+    let inRoom = cameras.filter((c) => c.isCurrentDevice || c.isInRoom).length;
+    for (const cam of cameras) {
+      if (cam.isCurrentDevice) continue;
+      if (!cam.isOnline) { autoStartedRef.current.delete(cam.id); continue; }
+      if (cam.isInRoom || manualStopRef.current.has(cam.id) || autoStartedRef.current.has(cam.id)) continue;
+      if (inRoom >= MAX_DEVICES_PER_USER) break;
+      autoStartedRef.current.add(cam.id);
+      inRoom++;
+      emitWithAck('camera:requestStart', { targetDeviceId: cam.id, roomSlug: slug }).catch(() => {});
+    }
+  }, [cameras, phase, slug]);
+
+  const handleStopDevice = useCallback((camId: string) => {
+    manualStopRef.current.add(camId);
+    autoStartedRef.current.delete(camId);
+    emitWithAck('camera:requestStop', { targetDeviceId: camId }).catch(() => {});
+  }, []);
+
   // userId:deviceId → nickname/deviceLabel fallback (LiveKit metadata is primary).
   const participantLookup = useMemo(() => {
     const m = new Map<string, { nickname: string; deviceLabel: string }>();
@@ -448,41 +489,45 @@ export function RoomPage() {
     return items;
   }, [consumers, participantLookup, nickname, userId, localScreenTrack]);
 
-  // My own device feeds (current device + my other cameras) — used as spotlight targets so
-  // clicking any tile (mine or others') focuses it as the main view, Discord-style.
+  // My own device feeds (current device + my other cameras). Controls live on the tile
+  // itself (single-click overlay) now that the bottom dock is gone.
   const ownFeeds = useMemo(() => {
     const items: any[] = [];
     if (localVideoTrack) {
       items.push({
         id: `self:${deviceId}`, track: localVideoTrack, label: nickname || '나',
-        deviceLabel: '', isLocal: true, isScreen: false, voiceKey: `${userId}:${deviceId}`,
+        isLocal: true, isScreen: false, voiceKey: `${userId}:${deviceId}`,
+        controls: (
+          <>
+            <TileButton onClick={handleToggleMic} active={isMicOn} icon={isMicOn ? <Mic size={18} /> : <MicOff size={18} />} />
+            <TileButton onClick={handleToggleCam} active={isCamOn} icon={isCamOn ? <Video size={18} /> : <VideoOff size={18} />} />
+            {localLensCount > 1 && <TileButton onClick={handleSwitchCurrentCam} icon={<SwitchCamera size={18} />} />}
+          </>
+        ),
       });
     }
     for (const c of consumers) {
       if (c.kind !== 'video' || c.userId !== userId || c.deviceId === deviceId) continue;
+      const cam = cameras.find((x) => x.id === c.deviceId);
+      const camId = c.deviceId;
       items.push({
         id: c.consumerId, track: c.track, lkTrack: c.lkTrack, label: nickname || '나',
-        deviceLabel: '', isLocal: false, isScreen: c.source === 'screen',
-        voiceKey: `${c.userId}:${c.deviceId}`,
+        isLocal: false, isScreen: c.source === 'screen', voiceKey: `${c.userId}:${c.deviceId}`,
+        controls: (
+          <>
+            <TileButton danger onClick={() => handleStopDevice(camId)} icon={<Power size={18} />} />
+            {(cam?.remoteCameraCount ?? 0) > 1 && (
+              <TileButton onClick={() => emitWithAck('camera:requestSwitchCamera', { targetDeviceId: camId }).catch(() => {})} icon={<SwitchCamera size={18} />} />
+            )}
+          </>
+        ),
       });
     }
     return items;
-  }, [consumers, localVideoTrack, deviceId, userId, nickname]);
+  }, [consumers, localVideoTrack, deviceId, userId, nickname, isMicOn, isCamOn, localLensCount, cameras, handleToggleMic, handleToggleCam, handleSwitchCurrentCam, handleStopDevice]);
 
-  // Everyone (others + my own) for the spotlight view and its thumbnail strip.
-  const spotlightFeeds = useMemo(() => [...feeds, ...ownFeeds], [feeds, ownFeeds]);
-
-  // Focus a device as the main view (from the dock or a grid tile).
-  const handleFocusDevice = useCallback((camId: string) => {
-    let focusId = '';
-    if (camId === deviceId) {
-      focusId = `self:${deviceId}`;
-    } else {
-      const c = consumers.find((x) => x.userId === userId && x.deviceId === camId && x.kind === 'video');
-      if (c) focusId = c.consumerId;
-    }
-    if (focusId) { setLayoutMode('spotlight'); setSpotlightProducer(focusId); }
-  }, [deviceId, userId, consumers, setLayoutMode, setSpotlightProducer]);
+  // Everyone (my own + others) — one unified set for both grid and spotlight.
+  const allFeeds = useMemo(() => [...ownFeeds, ...feeds], [ownFeeds, feeds]);
 
   // Remote audio is played through hidden <audio> sinks, not the video tiles (a video
   // element only renders one track). My own devices' audio is skipped to avoid echo.
@@ -657,11 +702,11 @@ export function RoomPage() {
       ))}
 
       <div className="flex-1 min-h-0 relative">
-        {(layoutMode === 'spotlight' ? spotlightFeeds.length > 0 : feeds.length > 0) ? (
+        {allFeeds.length > 0 ? (
           <LayoutGroup>
             {layoutMode === 'grid' && (
               <GridLayout
-                feeds={feeds}
+                feeds={allFeeds}
                 onFeedClick={(id) => {
                   setLayoutMode('spotlight');
                   setSpotlightProducer(id);
@@ -670,30 +715,22 @@ export function RoomPage() {
             )}
             {layoutMode === 'spotlight' && (
               <SpotlightLayout
-                feeds={spotlightFeeds}
+                feeds={allFeeds}
                 spotlightId={spotlightProducerId}
                 onFeedClick={(id) => setSpotlightProducer(id)}
+                onExit={() => setLayoutMode('grid')}
               />
             )}
           </LayoutGroup>
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center text-white/30 gap-2 px-6 text-center">
             <Users size={40} strokeWidth={1.5} />
-            <p className="text-sm">아직 다른 참가자가 없습니다</p>
-            <p className="text-xs text-white/20">내 기기는 아래에서 켜고 끌 수 있어요</p>
+            <p className="text-sm">카메라를 켜면 여기에 표시됩니다</p>
+            <p className="text-xs text-white/20">타일을 한 번 누르면 설정, 두 번 누르면 크게 보기</p>
           </div>
         )}
 
       </div>
-
-      <MyDeviceDock
-        roomSlug={slug || ''}
-        isCurrentCamOn={isCamOn}
-        onToggleCurrentCam={handleToggleCam}
-        onSwitchCurrentCam={handleSwitchCurrentCam}
-        localVideoTrack={localVideoTrack}
-        onFocusDevice={handleFocusDevice}
-      />
 
       <BottomBar
         onToggleMic={handleToggleMic}

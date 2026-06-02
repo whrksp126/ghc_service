@@ -1,4 +1,5 @@
 import { AnimatePresence } from 'framer-motion';
+import type { ReactNode } from 'react';
 import type { RemoteTrack } from 'livekit-client';
 import { FeedCard } from './FeedCard';
 
@@ -7,20 +8,22 @@ interface FeedItem {
   track: MediaStreamTrack | null;
   lkTrack?: RemoteTrack;
   label: string;
-  deviceLabel: string;
   isMuted?: boolean;
   isLocal?: boolean;
   isScreen?: boolean;
   voiceKey?: string;
+  controls?: ReactNode;
 }
 
 interface SpotlightLayoutProps {
   feeds: FeedItem[];
   spotlightId: string | null;
   onFeedClick?: (feedId: string) => void;
+  /** Double-clicking the big spotlight tile goes back to grid. */
+  onExit?: () => void;
 }
 
-export function SpotlightLayout({ feeds, spotlightId, onFeedClick }: SpotlightLayoutProps) {
+export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit }: SpotlightLayoutProps) {
   const spotlight = feeds.find((f) => f.id === spotlightId) || feeds[0];
   const sidebar = feeds.filter((f) => f.id !== spotlight?.id);
 
@@ -34,19 +37,20 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick }: SpotlightLa
           track={spotlight.track}
           lkTrack={spotlight.lkTrack}
           label={spotlight.label}
-          deviceLabel={spotlight.deviceLabel}
           isMuted={spotlight.isMuted}
           isLocal={spotlight.isLocal}
           isScreen={spotlight.isScreen}
           layoutId={spotlight.id}
           voiceKey={spotlight.voiceKey}
+          controls={spotlight.controls}
+          onDoubleClick={onExit}
           className="w-full h-full"
         />
       </div>
 
-      {/* Sidebar */}
+      {/* Sidebar (padding so the inset glow + tiles aren't crowded) */}
       {sidebar.length > 0 && (
-        <div className="flex sm:flex-col gap-2 sm:w-48 overflow-auto shrink-0">
+        <div className="flex sm:flex-col gap-2 sm:w-48 overflow-auto shrink-0 p-0.5">
           <AnimatePresence mode="popLayout">
             {sidebar.map((feed) => (
               <FeedCard
@@ -54,14 +58,14 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick }: SpotlightLa
                 track={feed.track}
                 lkTrack={feed.lkTrack}
                 label={feed.label}
-                deviceLabel={feed.deviceLabel}
                 isMuted={feed.isMuted}
                 isLocal={feed.isLocal}
                 isScreen={feed.isScreen}
                 layoutId={feed.id}
                 voiceKey={feed.voiceKey}
+                controls={feed.controls}
+                onDoubleClick={() => onFeedClick?.(feed.id)}
                 className="w-32 h-24 sm:w-full sm:h-32 shrink-0"
-                onClick={() => onFeedClick?.(feed.id)}
               />
             ))}
           </AnimatePresence>
