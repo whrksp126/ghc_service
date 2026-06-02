@@ -18,7 +18,6 @@ export function HomePage() {
   const [showShare, setShowShare] = useState(false);
   const [shareRoom, setShareRoom] = useState<{ slug: string; name: string; hasPin: boolean } | null>(null);
   const [roomName, setRoomName] = useState('');
-  const [roomPin, setRoomPin] = useState('');
   const [joinSlug, setJoinSlug] = useState('');
   const [rooms, setRooms] = useState<{ id: string; name: string; slug: string; role: string; hasPin: boolean }[]>([]);
   const [loading, setLoading] = useState(false);
@@ -33,14 +32,12 @@ export function HomePage() {
     try {
       const res = await api.createRoom({
         name: roomName.trim(),
-        pin: roomPin || undefined,
       });
       setShowCreateRoom(false);
       setShareRoom({ slug: res.room.slug, name: res.room.name, hasPin: res.room.hasPin });
       setShowShare(true);
       setRooms((prev) => [{ id: res.room.id, name: res.room.name, slug: res.room.slug, role: 'owner', hasPin: res.room.hasPin }, ...prev]);
       setRoomName('');
-      setRoomPin('');
       showToast('방이 생성되었습니다!', 'success');
     } catch (err: any) {
       showToast(err.message, 'error');
@@ -210,17 +207,6 @@ export function HomePage() {
               className="w-full bg-dark-700 border border-white/10 rounded-btn px-4 py-3 text-white placeholder:text-white/30 focus:outline-none focus:border-primary/50 transition-colors"
               maxLength={100}
               autoFocus
-            />
-          </div>
-          <div>
-            <label className="text-sm text-white/50 mb-1.5 block">비밀번호 (선택)</label>
-            <input
-              type="text"
-              value={roomPin}
-              onChange={(e) => setRoomPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              placeholder="4~6자리 숫자"
-              className="w-full bg-dark-700 border border-white/10 rounded-btn px-4 py-3 text-white placeholder:text-white/30 focus:outline-none focus:border-primary/50 transition-colors"
-              inputMode="numeric"
             />
           </div>
           <Button className="w-full" loading={loading} onClick={handleCreateRoom}>
