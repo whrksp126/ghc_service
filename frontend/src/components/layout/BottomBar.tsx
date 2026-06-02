@@ -1,11 +1,10 @@
 import { useState, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Mic, MicOff, MonitorUp, MonitorOff, LayoutGrid, Maximize2,
+  Mic, MicOff, MonitorUp, MonitorOff,
   PhoneOff, MoreHorizontal, Trash2, SlidersHorizontal,
 } from 'lucide-react';
 import { useDeviceStore } from '../../stores/deviceStore';
-import { useUIStore } from '../../stores/uiStore';
 import { playSound } from '../../lib/sounds';
 import { AudioSettingsModal } from '../room/AudioSettingsModal';
 
@@ -13,30 +12,21 @@ interface BottomBarProps {
   onToggleMic: () => void;
   onToggleScreen: () => void;
   onLeave: () => void;
-  onSwitchLayout: () => void;
   /** Owner only — ends the room for everyone. */
   onCloseRoom?: () => void;
 }
 
-const layoutIcons: Record<string, typeof LayoutGrid> = {
-  grid: LayoutGrid,
-  spotlight: Maximize2,
-};
-
 /**
  * Simplified control bar. Camera on/off lives in MyDeviceDock now (per-device), so this
  * bar only keeps this-device essentials (mic, leave) up front; everything secondary
- * (screen share, layout, room delete) is tucked into a "더보기" menu.
+ * (screen share, room delete) is tucked into a "더보기" menu.
  */
 export function BottomBar({
-  onToggleMic, onToggleScreen, onLeave, onSwitchLayout, onCloseRoom,
+  onToggleMic, onToggleScreen, onLeave, onCloseRoom,
 }: BottomBarProps) {
   const { isMicOn, isScreenSharing } = useDeviceStore();
-  const { layoutMode } = useUIStore();
   const [moreOpen, setMoreOpen] = useState(false);
   const [audioOpen, setAudioOpen] = useState(false);
-
-  const LayoutIcon = layoutIcons[layoutMode] || LayoutGrid;
 
   const menuItem = (
     icon: ReactNode, label: string, onClick: () => void, danger?: boolean,
@@ -97,7 +87,6 @@ export function BottomBar({
                   exit={{ opacity: 0, y: 8, scale: 0.96 }}
                   className="absolute bottom-14 left-1/2 -translate-x-1/2 z-50 w-44 glass-strong rounded-xl overflow-hidden py-1"
                 >
-                  {menuItem(<LayoutIcon size={18} />, '레이아웃 전환', onSwitchLayout)}
                   {menuItem(<SlidersHorizontal size={18} />, '마이크 설정', () => setAudioOpen(true))}
                   {onCloseRoom && menuItem(<Trash2 size={18} />, '방 종료', onCloseRoom, true)}
                 </motion.div>

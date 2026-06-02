@@ -14,7 +14,7 @@ import { emitWithAck } from '../lib/socket';
 import { api } from '../lib/api';
 import { useAlwaysOnCamera } from '../services/alwaysOnCamera';
 import { attachVoice, detachVoice, useVoiceStore } from '../services/voiceActivity';
-import { useAudioSettings, micConstraints, sensitivityToThreshold } from '../stores/audioSettings';
+import { useAudioSettings, micConstraints } from '../stores/audioSettings';
 import { GridLayout } from '../components/room/GridLayout';
 import { SpotlightLayout } from '../components/room/SpotlightLayout';
 import { TopBar } from '../components/layout/TopBar';
@@ -55,6 +55,79 @@ function TileButton({ onClick, icon, danger, active }: { onClick: () => void; ic
   );
 }
 
+// Phone lenses show up as separate camera devices; order/label them by zoom from the OS
+// label (ultrawide → 0.5×, wide/main → 1×, telephoto → 2×). Heuristic — falls back to
+// "렌즈 N" when the label gives no hint.
+const ZOOM_BY_RANK = ['0.5×', '1×', '2×'];
+function lensZoomRank(label: string): number {
+  const l = label.toLowerCase();
+  if (/(ultra|초광각)/.test(l)) return 0;
+  if (/(tele|telephoto|망원)/.test(l)) return 2;
+  return 1;
+}
+
+/**
+ * Smartphone-style camera switcher for my current device's tile: a front/back toggle (when
+ * both facings exist) plus zoom-lens chips for the active facing. Reads the always-on
+ * camera roster directly; onSelect hot-swaps the published track.
+ */
+function CameraSwitcher({ onSelect }: { onSelect: (deviceId: string) => void }) {
+  const cameras = useAlwaysOnCamera((s) => s.availableCameras);
+  const activeId = useAlwaysOnCamera((s) => s.activeCameraId);
+  if (cameras.length <= 1) return null;
+
+  const active = cameras.find((c) => c.deviceId === activeId);
+  const front = cameras.filter((c) => c.facing === 'user');
+  const back = cameras.filter((c) => c.facing === 'environment');
+  const canToggleFacing = front.length > 0 && back.length > 0;
+
+  // Which facing are we in now? Unknown active → default to back (rear is the common case).
+  const currentFacing: 'user' | 'environment' = active?.facing === 'user' ? 'user' : 'environment';
+  // Lens chips come from the current facing group (or all cameras if we can't split them).
+  const group = canToggleFacing ? (currentFacing === 'user' ? front : back) : cameras;
+  const lenses = [...group].sort((a, b) => lensZoomRank(a.label) - lensZoomRank(b.label));
+  // Use ×-labels only when at least one lens is clearly non-default (otherwise plain ordinals).
+  const hasZoomHint = lenses.some((c) => lensZoomRank(c.label) !== 1);
+
+  const flipFacing = () => {
+    const target = currentFacing === 'user' ? back[0] : front[0];
+    if (target) onSelect(target.deviceId);
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      {canToggleFacing && (
+        <button
+          onClick={flipFacing}
+          className="h-9 px-3 rounded-full bg-white/15 text-white text-xs font-medium flex items-center gap-1 hover:bg-white/25 transition-colors"
+        >
+          <SwitchCamera size={15} />
+          {currentFacing === 'user' ? '후면' : '전면'}
+        </button>
+      )}
+      {lenses.length > 1 && (
+        <div className="flex items-center gap-1 bg-black/35 rounded-full p-0.5">
+          {lenses.map((c, i) => {
+            const isActiveLens = c.deviceId === activeId;
+            const label = hasZoomHint ? (ZOOM_BY_RANK[lensZoomRank(c.label)] ?? `${i + 1}×`) : `렌즈 ${i + 1}`;
+            return (
+              <button
+                key={c.deviceId}
+                onClick={() => onSelect(c.deviceId)}
+                className={`h-8 min-w-[2rem] px-2 rounded-full text-xs font-semibold transition-colors ${
+                  isActiveLens ? 'bg-white text-dark-900' : 'text-white/80 hover:bg-white/10'
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function RoomPage() {
   const { slug } = useParams<{ slug: string }>();
   const [searchParams] = useSearchParams();
@@ -69,7 +142,6 @@ export function RoomPage() {
   } = useDeviceStore();
   const { layoutMode, setLayoutMode, spotlightProducerId, setSpotlightProducer } = useUIStore();
   const { cameras, fetchCameras } = useCameraStore();
-  const localLensCount = useAlwaysOnCamera((s) => s.availableCameras.length);
 
   const { connect, disconnect } = useSocket();
 
@@ -362,16 +434,14 @@ export function RoomPage() {
     }
   }, [setVideoTrack, setVideoProducerId]);
 
-  // Switch the current device's lens in-room: rotate the always-on camera and swap the
-  // live publication's track so the new lens is what others (and the dock) see immediately.
-  const handleSwitchCurrentCam = useCallback(async () => {
+  // Switch the current device to a specific camera (front/back or a zoom lens) in-room:
+  // re-acquire that lens and hot-swap the live publication's track so others (and the
+  // dock) see the new lens immediately.
+  const switchToDevice = useCallback(async (targetDeviceId: string) => {
     const ao = useAlwaysOnCamera.getState();
-    const { availableCameras, activeCameraId } = ao;
-    if (availableCameras.length <= 1) return;
-    const idx = availableCameras.findIndex((c) => c.deviceId === activeCameraId);
-    const next = availableCameras[(idx + 1) % availableCameras.length];
+    if (!targetDeviceId || ao.activeCameraId === targetDeviceId) return;
     try {
-      await ao.switchCamera(next.deviceId);
+      await ao.switchCamera(targetDeviceId);
       const newTrack = useAlwaysOnCamera.getState().stream?.getVideoTracks()[0];
       const videoProducerId = useDeviceStore.getState().videoInput.producerId;
       if (newTrack) {
@@ -394,20 +464,44 @@ export function RoomPage() {
       setScreenTrack(null);
       setScreenSharing(false);
     } else {
+      // getDisplayMedia is desktop-only — mobile Safari/Chrome don't expose it. Tell the
+      // user instead of silently doing nothing.
+      if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
+        showToast('이 기기에서는 화면 공유를 지원하지 않습니다 (PC에서 가능)', 'error');
+        return;
+      }
       try {
         const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
         const videoTrack = stream.getVideoTracks()[0];
+        if (!videoTrack) {
+          showToast('공유할 화면을 가져오지 못했습니다', 'error');
+          return;
+        }
         setLocalScreenTrack(videoTrack);
         setScreenTrack(videoTrack);
         setScreenSharing(true);
         const sid = await publishTrack(videoTrack, 'screen');
+        if (!sid) {
+          // Room/SFU not connected — roll back so the button doesn't get stuck "on".
+          videoTrack.stop();
+          setLocalScreenTrack(null);
+          setScreenTrack(null);
+          setScreenSharing(false);
+          showToast('화면 공유를 시작하지 못했습니다 (연결 확인)', 'error');
+          return;
+        }
         setScreenProducerId(sid);
 
         videoTrack.onended = () => {
           handleToggleScreen();
         };
-      } catch {
-        showToast('화면 공유가 취소되었습니다', 'info');
+      } catch (err: any) {
+        // NotAllowedError = user dismissed the picker; anything else is a real failure.
+        if (err?.name === 'NotAllowedError') {
+          showToast('화면 공유가 취소되었습니다', 'info');
+        } else {
+          showToast('화면 공유를 시작할 수 없습니다', 'error');
+        }
       }
     }
   }, [isScreenSharing, localScreenTrack, setScreenTrack, setScreenSharing, setScreenProducerId]);
@@ -425,12 +519,6 @@ export function RoomPage() {
       .then(() => navigate('/'))
       .catch((err: any) => showToast(err.message || '방 종료에 실패했습니다', 'error'));
   }, [navigate]);
-
-  const handleSwitchLayout = useCallback(() => {
-    const modes: ('grid' | 'spotlight')[] = ['grid', 'spotlight'];
-    const currentIdx = modes.indexOf(layoutMode);
-    setLayoutMode(modes[(currentIdx + 1) % modes.length]);
-  }, [layoutMode, setLayoutMode]);
 
   // Auto-bring my online devices into the room (was in the now-removed dock). Capped at
   // 3 cameras/user; respects devices the user explicitly stopped.
@@ -492,11 +580,13 @@ export function RoomPage() {
       id: `self:${deviceId}`, track: localVideoTrack, label: nickname || '나',
       isLocal: true, isScreen: false, voiceKey: selfKey,
       controls: (
-        <>
-          <TileButton onClick={handleToggleMic} active={isMicOn} icon={isMicOn ? <Mic size={18} /> : <MicOff size={18} />} />
-          <TileButton onClick={handleToggleCam} active={isCamOn} icon={isCamOn ? <Video size={18} /> : <VideoOff size={18} />} />
-          {localLensCount > 1 && <TileButton onClick={handleSwitchCurrentCam} icon={<SwitchCamera size={18} />} />}
-        </>
+        <div className="flex flex-col items-center gap-2.5">
+          <div className="flex items-center gap-2.5">
+            <TileButton onClick={handleToggleMic} active={isMicOn} icon={isMicOn ? <Mic size={18} /> : <MicOff size={18} />} />
+            <TileButton onClick={handleToggleCam} active={isCamOn} icon={isCamOn ? <Video size={18} /> : <VideoOff size={18} />} />
+          </div>
+          {isCamOn && <CameraSwitcher onSelect={switchToDevice} />}
+        </div>
       ),
     });
 
@@ -529,7 +619,7 @@ export function RoomPage() {
 
     return items;
   }, [consumers, participants, participantLookup, localVideoTrack, deviceId, userId, nickname,
-    isMicOn, isCamOn, localLensCount, cameras, handleToggleMic, handleToggleCam, handleSwitchCurrentCam, handleStopDevice]);
+    isMicOn, isCamOn, cameras, handleToggleMic, handleToggleCam, switchToDevice, handleStopDevice]);
 
   // Screen shares are separate from the camera roster: my current-device screen (local
   // track) plus any screen consumer (mine-other-device or remote).
@@ -580,7 +670,7 @@ export function RoomPage() {
   // Noise gate (Discord "voice activity"): only transmit while my mic level is above the
   // sensitivity threshold. We mute/unmute the published mic track (a clone), so the local
   // analyser keeps reading the original track and can re-open the gate when I speak again.
-  const { noiseGate, sensitivity } = useAudioSettings();
+  const { noiseGate, threshold: micThreshold } = useAudioSettings();
   const myLevel = useVoiceStore((s) => (myVoiceKey ? s.levels[myVoiceKey] ?? 0 : 0));
   const audioProducerId = useDeviceStore((s) => s.audioInput.producerId);
   const gateOpenRef = useRef(true);
@@ -597,13 +687,13 @@ export function RoomPage() {
     }
     const now = Date.now();
     // 600ms hangover so the gate doesn't slam shut between words/syllables.
-    if (myLevel >= sensitivityToThreshold(sensitivity)) gateHoldRef.current = now + 600;
+    if (myLevel >= micThreshold) gateHoldRef.current = now + 600;
     const open = now < gateHoldRef.current;
     if (open !== gateOpenRef.current) {
       gateOpenRef.current = open;
       setTrackMuted(audioProducerId, !open).catch(() => {});
     }
-  }, [noiseGate, sensitivity, myLevel, localAudioTrack, audioProducerId]);
+  }, [noiseGate, micThreshold, myLevel, localAudioTrack, audioProducerId]);
 
   // --- PIN required screen ---
   if (needsPin) {
@@ -765,7 +855,6 @@ export function RoomPage() {
         onToggleMic={handleToggleMic}
         onToggleScreen={handleToggleScreen}
         onLeave={handleLeave}
-        onSwitchLayout={handleSwitchLayout}
         onCloseRoom={isOwner ? handleCloseRoom : undefined}
       />
 

@@ -8,7 +8,7 @@ import { emitWithAck } from '../../lib/socket';
 import { showToast } from '../common/Toast';
 import { BottomSheet, type SheetAction } from '../common/BottomSheet';
 import { useVoiceStore } from '../../services/voiceActivity';
-import { useAudioSettings, sensitivityToThreshold } from '../../stores/audioSettings';
+import { useAudioSettings } from '../../stores/audioSettings';
 import { VoiceBars } from '../common/VoiceBars';
 
 interface MyDeviceDockProps {
@@ -60,7 +60,7 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
   const isReconnecting = useRoomStore((s) => s.isReconnecting);
   const localLensCount = useAlwaysOnCamera((s) => s.availableCameras.length);
   const voiceLevels = useVoiceStore((s) => s.levels);
-  const speakingThreshold = sensitivityToThreshold(useAudioSettings((s) => s.sensitivity));
+  const speakingThreshold = useAudioSettings((s) => s.threshold);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
   const [sheetCamId, setSheetCamId] = useState<string | null>(null);
   // Track which devices we auto-pulled into the room, and which the user explicitly

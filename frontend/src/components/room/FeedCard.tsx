@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { MicOff, Monitor } from 'lucide-react';
 import type { RemoteTrack } from 'livekit-client';
 import { useVoiceStore } from '../../services/voiceActivity';
-import { useAudioSettings, sensitivityToThreshold } from '../../stores/audioSettings';
+import { useAudioSettings } from '../../stores/audioSettings';
 import { VoiceBars } from '../common/VoiceBars';
 
 interface FeedCardProps {
@@ -44,8 +44,8 @@ export const FeedCard = memo(function FeedCard({
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const level = useVoiceStore((s) => (voiceKey ? s.levels[voiceKey] ?? 0 : 0));
-  const sensitivity = useAudioSettings((s) => s.sensitivity);
-  const speaking = level > sensitivityToThreshold(sensitivity);
+  const threshold = useAudioSettings((s) => s.threshold);
+  const speaking = level > threshold;
 
   // Remote video → attach through LiveKit so adaptiveStream observes this element's size
   // and visibility and requests the matching simulcast layer. Local/screen → plain sink.
