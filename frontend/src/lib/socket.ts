@@ -33,15 +33,28 @@ export function disconnectSocket() {
 export function emitWithAck<T>(event: string, data: unknown = {}): Promise<T> {
   return new Promise((resolve, reject) => {
     const s = getSocket();
-    if (!s.connected) {
-      return reject(new Error('Socket not connected'));
-    }
-    s.emit(event, data, (response: T & { error?: string }) => {
-      if (response && typeof response === 'object' && 'error' in response) {
-        reject(new Error(response.error as string));
-      } else {
-        resolve(response);
-      }
-    });
+
+    const send = () => {
+      s.emit(event, data, (response: T & { error?: string }) => {
+        if (response && typeof response === 'object' && 'error' in response) {
+          reject(new Error(response.error as string));
+        } else {
+          resolve(response);
+        }
+      });
+    };
+
+    // Fast path: already connected.
+    if (s.connected) { send(); return; }
+
+    // Otherwise the socket is still connecting (e.g. right after creating a room and
+    // entering, before the global socket finished its handshake). Wait for 'connect'
+    // instead of failing — with a safety timeout so a truly dead socket still rejects.
+    const onConnect = () => { clearTimeout(timer); send(); };
+    const timer = setTimeout(() => {
+      s.off('connect', onConnect);
+      reject(new Error('Socket not connected'));
+    }, 8000);
+    s.once('connect', onConnect);
   });
 }
