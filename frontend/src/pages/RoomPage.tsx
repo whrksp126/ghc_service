@@ -149,6 +149,8 @@ export function RoomPage() {
   const [phase, setPhase] = useState<RoomPhase>('lobby');
   const [isOwner, setIsOwner] = useState(false);
   const [obsOpen, setObsOpen] = useState(false);
+  const openObs = useCallback(() => setObsOpen(true), []);
+  const closeObs = useCallback(() => setObsOpen(false), []);
   const [localVideoTrack, setLocalVideoTrack] = useState<MediaStreamTrack | null>(null);
   const [localScreenTrack, setLocalScreenTrack] = useState<MediaStreamTrack | null>(null);
   const localAudioTrackRef = useRef<MediaStreamTrack | null>(null);
@@ -865,10 +867,10 @@ export function RoomPage() {
         onToggleScreen={handleToggleScreen}
         onLeave={handleLeave}
         onCloseRoom={isOwner ? handleCloseRoom : undefined}
-        onObsLive={isOwner ? () => setObsOpen(true) : undefined}
+        onObsLive={isOwner ? openObs : undefined}
       />
 
-      {slug && <ObsBroadcastModal isOpen={obsOpen} onClose={() => setObsOpen(false)} slug={slug} />}
+      {slug && <ObsBroadcastModal isOpen={obsOpen} onClose={closeObs} slug={slug} />}
 
       <ReconnectingOverlay />
     </div>
