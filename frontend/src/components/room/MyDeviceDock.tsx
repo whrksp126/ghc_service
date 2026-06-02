@@ -244,8 +244,9 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
 
               <div className="flex items-center gap-1 mt-1 px-0.5">
                 <span className="text-white/50 shrink-0"><DeviceIcon type={cam.deviceType} size={11} /></span>
-                <span className="text-[11px] text-white/70 truncate">{cam.cameraName}</span>
-                {isCurrent && <span className="text-[9px] text-primary ml-auto shrink-0">이 기기</span>}
+                <span className={`text-[11px] truncate ${isCurrent ? 'text-primary font-medium' : 'text-white/70'}`}>
+                  {isCurrent ? '이 기기' : '다른 기기'}
+                </span>
               </div>
             </div>
           );
@@ -255,7 +256,7 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
       <BottomSheet
         isOpen={!!sheetCam}
         onClose={() => setSheetCamId(null)}
-        title={sheetCam?.cameraName}
+        title={sheetCam?.isCurrentDevice ? '이 기기' : '다른 기기'}
         actions={sheetActions}
       />
     </div>

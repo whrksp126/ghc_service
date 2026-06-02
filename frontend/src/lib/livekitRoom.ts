@@ -86,6 +86,11 @@ export async function connectToRoom(token: string): Promise<Room> {
     dynacast: true,
     publishDefaults: {
       simulcast: true,
+      // H.264 — phones have hardware H.264 encoders but software-encode VP8, so VP8 at
+      // 1080p melts a phone's CPU and the picture turns blocky. H.264 lets mobile use its
+      // HW encoder for clean video at the same bitrate (what Zoom/Discord do).
+      videoCodec: 'h264',
+      backupCodec: { codec: 'vp8' },
       // 1080p / 540p / 180p simulcast. The top layer is a ceiling, not a fixed rate —
       // LiveKit's send-side congestion control scales it down automatically on a weak
       // link (no stutter), while dynacast only forwards the layer each viewer is actually

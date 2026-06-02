@@ -27,7 +27,6 @@ export const FeedCard = memo(function FeedCard({
   track,
   lkTrack,
   label,
-  deviceLabel,
   isMuted,
   isLocal,
   isScreen,
@@ -97,7 +96,6 @@ export const FeedCard = memo(function FeedCard({
       <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/60 to-transparent opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium truncate">{label}</span>
-          <span className="text-xs text-white/40 truncate">{deviceLabel}</span>
           {isMuted && (
             <span className="ml-auto bg-danger/80 rounded-full w-5 h-5 flex items-center justify-center">
               <MicOff size={12} />

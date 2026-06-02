@@ -20,7 +20,6 @@ export function HomePage() {
   const [roomName, setRoomName] = useState('');
   const [roomPin, setRoomPin] = useState('');
   const [joinSlug, setJoinSlug] = useState('');
-  const [joinPin, setJoinPin] = useState('');
   const [rooms, setRooms] = useState<{ id: string; name: string; slug: string; role: string; hasPin: boolean }[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -50,18 +49,12 @@ export function HomePage() {
     }
   }
 
-  async function handleJoinRoom() {
-    if (!joinSlug.trim()) return;
-    setLoading(true);
-    try {
-      const slug = joinSlug.trim().toLowerCase();
-      await api.joinRoom(slug, joinPin || undefined);
-      navigate(`/room/${slug}`);
-    } catch (err: any) {
-      showToast(err.message, 'error');
-    } finally {
-      setLoading(false);
-    }
+  function handleJoinRoom() {
+    const slug = joinSlug.trim().toLowerCase();
+    if (!slug) return;
+    // Only the room code here — the password (if any) is asked once inside the room.
+    setShowJoinRoom(false);
+    navigate(`/room/${slug}`);
   }
 
   function handleShareRoom(room: { slug: string; name: string; hasPin: boolean }) {
@@ -250,18 +243,7 @@ export function HomePage() {
               autoFocus
             />
           </div>
-          <div>
-            <label className="text-sm text-white/50 mb-1.5 block">비밀번호 (필요시)</label>
-            <input
-              type="text"
-              value={joinPin}
-              onChange={(e) => setJoinPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              placeholder="방 비밀번호"
-              className="w-full bg-dark-700 border border-white/10 rounded-btn px-4 py-3 text-white placeholder:text-white/30 focus:outline-none focus:border-primary/50 transition-colors"
-              inputMode="numeric"
-            />
-          </div>
-          <Button className="w-full" loading={loading} onClick={handleJoinRoom}>
+          <Button className="w-full" onClick={handleJoinRoom}>
             참여하기
           </Button>
         </div>

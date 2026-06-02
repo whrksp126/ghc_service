@@ -44,7 +44,6 @@ type CurrentState = 'live' | 'muted' | 'no_camera' | 'failed' | 'connecting';
  */
 export function CameraPreviewTile({
   camId,
-  cameraName,
   deviceType,
   isOnline,
   isCurrentDevice,
@@ -300,15 +299,16 @@ export function CameraPreviewTile({
       {/* Name footer */}
       <div className="absolute bottom-0 left-0 right-0 p-2 bg-gradient-to-t from-black/70 to-transparent flex items-center gap-1.5">
         <span className="text-white/70"><DeviceIcon type={deviceType} /></span>
-        <span className="text-xs font-medium text-white truncate">{cameraName}</span>
-        {isCurrentDevice && <span className="text-[10px] text-primary ml-auto shrink-0">이 기기</span>}
+        <span className={`text-xs font-medium truncate ${isCurrentDevice ? 'text-primary' : 'text-white'}`}>
+          {isCurrentDevice ? '이 기기' : '다른 기기'}
+        </span>
       </div>
     </motion.button>
 
       <BottomSheet
         isOpen={sheetOpen}
         onClose={() => setSheetOpen(false)}
-        title={cameraName}
+        title={isCurrentDevice ? '이 기기' : '다른 기기'}
         actions={lensActions}
       />
     </div>
