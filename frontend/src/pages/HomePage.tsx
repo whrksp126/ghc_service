@@ -6,6 +6,7 @@ import { Button } from '../components/common/Button';
 import { Modal } from '../components/common/Modal';
 import { showToast } from '../components/common/Toast';
 import { ShareModal } from '../components/room/ShareModal';
+import { QrScanModal } from '../components/room/QrScanModal';
 import { useAuthStore } from '../stores/authStore';
 import { api } from '../lib/api';
 
@@ -16,6 +17,7 @@ export function HomePage() {
   const [showCreateRoom, setShowCreateRoom] = useState(false);
   const [showJoinRoom, setShowJoinRoom] = useState(false);
   const [showShare, setShowShare] = useState(false);
+  const [showScan, setShowScan] = useState(false);
   const [shareRoom, setShareRoom] = useState<{ slug: string; name: string; hasPin: boolean } | null>(null);
   const [roomName, setRoomName] = useState('');
   const [roomPin, setRoomPin] = useState('');
@@ -246,8 +248,23 @@ export function HomePage() {
           <Button className="w-full" onClick={handleJoinRoom}>
             참여하기
           </Button>
+          <button
+            onClick={() => { setShowJoinRoom(false); setShowScan(true); }}
+            className="w-full flex items-center justify-center gap-2 text-sm text-white/60 hover:text-white py-2 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4h4v4H4V4zM16 4h4v4h-4V4zM4 16h4v4H4v-4zM14 14h2v2h-2v-2zM18 14h2v2h-2v-2zM14 18h2v2h-2v-2zM18 18h2v2h-2v-2z" />
+            </svg>
+            QR 코드로 참여
+          </button>
         </div>
       </Modal>
+
+      <QrScanModal
+        isOpen={showScan}
+        onClose={() => setShowScan(false)}
+        onResult={(path) => { setShowScan(false); navigate(path); }}
+      />
 
       {shareRoom && (
         <ShareModal

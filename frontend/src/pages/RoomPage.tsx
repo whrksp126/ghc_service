@@ -82,19 +82,17 @@ export function RoomPage() {
 
     (async () => {
       try {
-        const roomInfo = await api.getRoom(slug);
-        if (roomInfo.room.hasPin && !inviteToken) {
-          setNeedsPin(true);
-        } else {
-          await api.joinRoom(slug, undefined, inviteToken || undefined);
-          setRoomJoined(true);
-        }
+        // Try to join without a PIN first. The server lets existing members (and invite
+        // links) straight in, so a returning member is never re-challenged. Only a
+        // first-time joiner of a PIN room gets 'PIN required' → show the prompt.
+        await api.joinRoom(slug, undefined, inviteToken || undefined);
+        setRoomJoined(true);
       } catch (err: any) {
         if (err.message === 'PIN required') {
           setNeedsPin(true);
         } else {
-          // Already a member, proceed
-          setRoomJoined(true);
+          showToast(err.message || '방을 찾을 수 없습니다', 'error');
+          navigate('/');
         }
       }
     })();

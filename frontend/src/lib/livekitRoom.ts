@@ -12,6 +12,11 @@ import { LIVEKIT_URL } from '../config/constants';
 import { useRoomStore } from '../stores/roomStore';
 import type { ConsumerInfo } from '../types/room';
 
+// Phones can't sustain a 1080p uplink and mobile Chrome's H.264 simulcast is unreliable
+// (often only the lowest layer is actually sent → blocky). So phones publish a single
+// solid 720p H.264 stream; desktops keep 1080p simulcast.
+const isMobile = typeof navigator !== 'undefined' && /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
 // Single LiveKit Room per browser tab. Both the foreground room UI (RoomPage) and the
 // headless "remote-started device" path (backgroundCamera) drive this one connection —
 // LiveKit rejects a second connection from the same identity, so it must be a singleton.
@@ -85,18 +90,14 @@ export async function connectToRoom(token: string): Promise<Room> {
     adaptiveStream: true,
     dynacast: true,
     publishDefaults: {
-      simulcast: true,
-      // H.264 — phones have hardware H.264 encoders but software-encode VP8, so VP8 at
-      // 1080p melts a phone's CPU and the picture turns blocky. H.264 lets mobile use its
-      // HW encoder for clean video at the same bitrate (what Zoom/Discord do).
+      // H.264 uses the phone's hardware encoder (VP8 is software-encoded on mobile and
+      // turns blocky). Desktop keeps simulcast 1080p/540p/180p; mobile sends a single
+      // sustainable 720p stream.
       videoCodec: 'h264',
       backupCodec: { codec: 'vp8' },
-      // 1080p / 540p / 180p simulcast. The top layer is a ceiling, not a fixed rate —
-      // LiveKit's send-side congestion control scales it down automatically on a weak
-      // link (no stutter), while dynacast only forwards the layer each viewer is actually
-      // watching, so a small room stays well under the 100 Mb/s server NIC.
-      videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h540],
-      videoEncoding: { maxBitrate: 3_500_000, maxFramerate: 30 },
+      simulcast: !isMobile,
+      videoSimulcastLayers: isMobile ? [] : [VideoPresets.h180, VideoPresets.h540],
+      videoEncoding: { maxBitrate: isMobile ? 1_700_000 : 3_500_000, maxFramerate: 30 },
       screenShareEncoding: { maxBitrate: 3_000_000, maxFramerate: 15 },
       dtx: true,
       red: true,

@@ -78,11 +78,14 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
     }
 
     try {
-      // Capture 1080p/30. LiveKit publishes 1080p/540p/180p simulcast and adapts the
-      // sent rate to the link, so this is the sharp ceiling, not a fixed cost.
+      // Phones capture 720p (sustainable uplink + clean HW H.264 single-stream); desktops
+      // capture 1080p for the sharp simulcast top layer.
+      const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      const w = isMobile ? 1280 : 1920;
+      const h = isMobile ? 720 : 1080;
       const videoConstraints: MediaTrackConstraints = cameraDeviceId
-        ? { deviceId: { exact: cameraDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 } }
-        : { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 }, facingMode: 'environment' };
+        ? { deviceId: { exact: cameraDeviceId }, width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: 30, max: 30 } }
+        : { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: 30, max: 30 }, facingMode: 'environment' };
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: videoConstraints,

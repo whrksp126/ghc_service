@@ -138,15 +138,17 @@ router.post('/rooms/:slug/join', authMiddleware, async (req, res) => {
       }
     }
 
-    if (room.pin && !bypassPin) {
+    let member = await RoomMember.findOne({
+      where: { room_id: room.id, user_id: userId },
+    });
+
+    // Remember the password: once you've joined (become a member), you never have to
+    // re-enter the PIN. Only first-time joiners of a PIN room are challenged.
+    if (room.pin && !bypassPin && !member) {
       if (!data.pin) return res.status(403).json({ error: 'PIN required' });
       const valid = await bcrypt.compare(data.pin, room.pin);
       if (!valid) return res.status(403).json({ error: 'Invalid PIN' });
     }
-
-    let member = await RoomMember.findOne({
-      where: { room_id: room.id, user_id: userId },
-    });
 
     if (!member) {
       member = await RoomMember.create({
