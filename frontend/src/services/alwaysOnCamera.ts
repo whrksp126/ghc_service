@@ -1,6 +1,11 @@
 import { create } from 'zustand';
 import { micConstraints } from '../stores/audioSettings';
 
+// De-dupes concurrent camera acquisitions. On a cold load into /room, the global socket
+// init and the room lobby both call start() — two parallel getUserMedia calls make the
+// second fail with NotReadableError ("camera already in use"), breaking the preview.
+let inFlight: Promise<void> | null = null;
+
 export interface LocalCamera {
   deviceId: string;
   label: string;
@@ -72,45 +77,59 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
       return;
     }
 
-    // Stop existing stream if switching
-    if (existing) {
-      existing.getTracks().forEach((t) => t.stop());
+    // A start is already acquiring (and we're not switching to a specific lens) — wait for
+    // it instead of firing a second getUserMedia that would fail with NotReadableError.
+    if (inFlight && !cameraDeviceId) {
+      return inFlight;
     }
 
+    inFlight = (async () => {
+      // Stop existing stream if switching
+      if (existing) {
+        existing.getTracks().forEach((t) => t.stop());
+      }
+
+      try {
+        // Phones capture 720p (sustainable uplink + clean HW H.264 single-stream); desktops
+        // capture 1080p for the sharp simulcast top layer.
+        const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        const w = isMobile ? 1280 : 1920;
+        const h = isMobile ? 720 : 1080;
+        const videoConstraints: MediaTrackConstraints = cameraDeviceId
+          ? { deviceId: { exact: cameraDeviceId }, width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: 30, max: 30 } }
+          : { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: 30, max: 30 }, facingMode: 'environment' };
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraints,
+          audio: micConstraints(),
+        });
+
+        const videoTrack = stream.getVideoTracks()[0];
+        const settings = videoTrack?.getSettings();
+        const activeCamId = settings?.deviceId || cameraDeviceId || null;
+
+        videoTrack.onended = () => {
+          set({ isActive: false, stream: null, activeCameraId: null });
+        };
+
+        set({ stream, isActive: true, error: null, errorType: null, activeCameraId: activeCamId });
+
+        // Enumerate after getting permission (labels available after getUserMedia)
+        await get().enumerateCameras();
+      } catch (err: any) {
+        const isPermission = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError';
+        set({
+          error: err.message || '카메라 접근이 거부되었습니다',
+          errorType: isPermission ? 'permission' : 'other',
+          isActive: false,
+        });
+      }
+    })();
+
     try {
-      // Phones capture 720p (sustainable uplink + clean HW H.264 single-stream); desktops
-      // capture 1080p for the sharp simulcast top layer.
-      const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-      const w = isMobile ? 1280 : 1920;
-      const h = isMobile ? 720 : 1080;
-      const videoConstraints: MediaTrackConstraints = cameraDeviceId
-        ? { deviceId: { exact: cameraDeviceId }, width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: 30, max: 30 } }
-        : { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: 30, max: 30 }, facingMode: 'environment' };
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: videoConstraints,
-        audio: micConstraints(),
-      });
-
-      const videoTrack = stream.getVideoTracks()[0];
-      const settings = videoTrack?.getSettings();
-      const activeCamId = settings?.deviceId || cameraDeviceId || null;
-
-      videoTrack.onended = () => {
-        set({ isActive: false, stream: null, activeCameraId: null });
-      };
-
-      set({ stream, isActive: true, error: null, errorType: null, activeCameraId: activeCamId });
-
-      // Enumerate after getting permission (labels available after getUserMedia)
-      await get().enumerateCameras();
-    } catch (err: any) {
-      const isPermission = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError';
-      set({
-        error: err.message || '카메라 접근이 거부되었습니다',
-        errorType: isPermission ? 'permission' : 'other',
-        isActive: false,
-      });
+      await inFlight;
+    } finally {
+      inFlight = null;
     }
   },
 
