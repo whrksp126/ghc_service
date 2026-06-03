@@ -17,6 +17,10 @@ import { attachVoice, detachVoice, useVoiceStore } from '../services/voiceActivi
 import { useAudioSettings, micConstraints } from '../stores/audioSettings';
 import { GridLayout } from '../components/room/GridLayout';
 import { SpotlightLayout } from '../components/room/SpotlightLayout';
+import { FloatingWindowLayer } from '../components/room/FloatingWindowLayer';
+import { MaximizedFeed } from '../components/room/MaximizedFeed';
+import { DocumentPipPortal } from '../components/room/DocumentPipPortal';
+import { useFloatingWindowStore } from '../stores/floatingWindowStore';
 import { TopBar } from '../components/layout/TopBar';
 import { BottomBar } from '../components/layout/BottomBar';
 import { ReconnectingOverlay } from '../components/connection/ReconnectingOverlay';
@@ -157,7 +161,8 @@ export function RoomPage() {
     isCamOn, isMicOn, setVideoTrack, setAudioTrack, setScreenSharing, isScreenSharing, setScreenTrack,
     reset: resetDevice, setAudioProducerId, setVideoProducerId, setScreenProducerId,
   } = useDeviceStore();
-  const { layoutMode, setLayoutMode, spotlightProducerId, setSpotlightProducer } = useUIStore();
+  const { layoutMode, setLayoutMode, spotlightProducerId, setSpotlightProducer, maximizedFeedId, setMaximizedFeed } = useUIStore();
+  const toggleFloating = useFloatingWindowStore((s) => s.toggle);
   const { cameras, fetchCameras } = useCameraStore();
 
   const { connect, disconnect } = useSocket();
@@ -635,7 +640,7 @@ export function RoomPage() {
 
       items.push({
         id: key, track: consumer?.track ?? null, lkTrack: consumer?.lkTrack,
-        label: isMine ? (nickname || '나') : (consumer?.nickname || info?.nickname || '참가자'),
+        label: isMine ? (nickname || '나') : (consumer?.nickname || info?.nickname || (isObs ? 'OBS 라이브' : '참가자')),
         isMuted: false, isLocal: false, isScreen: false, voiceKey: isObs ? undefined : key, controls,
       });
     }
@@ -860,6 +865,8 @@ export function RoomPage() {
                   setLayoutMode('spotlight');
                   setSpotlightProducer(id);
                 }}
+                onPopOut={toggleFloating}
+                onMaximize={setMaximizedFeed}
               />
             )}
             {layoutMode === 'spotlight' && (
@@ -868,6 +875,8 @@ export function RoomPage() {
                 spotlightId={spotlightProducerId}
                 onFeedClick={(id) => setSpotlightProducer(id)}
                 onExit={() => setLayoutMode('grid')}
+                onPopOut={toggleFloating}
+                onMaximize={setMaximizedFeed}
               />
             )}
           </LayoutGroup>
@@ -890,6 +899,17 @@ export function RoomPage() {
       />
 
       {slug && <ObsBroadcastModal isOpen={obsOpen} onClose={closeObs} slug={slug} />}
+
+      {/* In-app theater overlay: fills the viewport but stays in the DOM, so floating camera
+          windows (higher z-index) remain visible on top of it. */}
+      {maximizedFeedId && (
+        <MaximizedFeed feed={allFeeds.find((f) => f.id === maximizedFeedId)} onClose={() => setMaximizedFeed(null)} />
+      )}
+
+      {/* Multi-window camera tiles — in-app on most platforms, hosted in an OS Document-PiP
+          window on desktop Chromium when the user promotes them. */}
+      <FloatingWindowLayer feeds={allFeeds} />
+      <DocumentPipPortal feeds={allFeeds} />
 
       <ReconnectingOverlay />
     </div>

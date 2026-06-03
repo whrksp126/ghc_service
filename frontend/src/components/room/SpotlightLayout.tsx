@@ -2,6 +2,7 @@ import { AnimatePresence } from 'framer-motion';
 import type { ReactNode } from 'react';
 import type { RemoteTrack } from 'livekit-client';
 import { FeedCard } from './FeedCard';
+import { useFloatingWindowStore } from '../../stores/floatingWindowStore';
 
 interface FeedItem {
   id: string;
@@ -21,9 +22,12 @@ interface SpotlightLayoutProps {
   onFeedClick?: (feedId: string) => void;
   /** Double-clicking the big spotlight tile goes back to grid. */
   onExit?: () => void;
+  onPopOut?: (feedId: string) => void;
+  onMaximize?: (feedId: string) => void;
 }
 
-export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit }: SpotlightLayoutProps) {
+export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit, onPopOut, onMaximize }: SpotlightLayoutProps) {
+  const windows = useFloatingWindowStore((s) => s.windows);
   const spotlight = feeds.find((f) => f.id === spotlightId) || feeds[0];
   const sidebar = feeds.filter((f) => f.id !== spotlight?.id);
 
@@ -44,6 +48,9 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit }: Spo
           voiceKey={spotlight.voiceKey}
           controls={spotlight.controls}
           onDoubleClick={onExit}
+          onPopOut={onPopOut ? () => onPopOut(spotlight.id) : undefined}
+          onMaximize={onMaximize ? () => onMaximize(spotlight.id) : undefined}
+          isPoppedOut={!!windows[spotlight.id]}
           fitContain
           className="w-full h-full"
         />
@@ -66,6 +73,9 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit }: Spo
                 voiceKey={feed.voiceKey}
                 controls={feed.controls}
                 onDoubleClick={() => onFeedClick?.(feed.id)}
+                onPopOut={onPopOut ? () => onPopOut(feed.id) : undefined}
+                onMaximize={onMaximize ? () => onMaximize(feed.id) : undefined}
+                isPoppedOut={!!windows[feed.id]}
                 className="w-32 h-24 sm:w-full sm:h-32 shrink-0"
               />
             ))}

@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, memo, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
-import { MicOff, Monitor, Maximize2, Minimize2 } from 'lucide-react';
+import { MicOff, Monitor, Maximize2, Minimize2, Maximize, PictureInPicture2, RotateCcw } from 'lucide-react';
 import type { RemoteTrack } from 'livekit-client';
 import { useVoiceStore } from '../../services/voiceActivity';
 import { useAudioSettings } from '../../stores/audioSettings';
@@ -26,6 +26,12 @@ interface FeedCardProps {
   /** Show the whole frame (object-contain) instead of cropping — spotlight main / screens. */
   fitContain?: boolean;
   className?: string;
+  /** Pop this feed out into a floating multi-window (and back). Adds a control button. */
+  onPopOut?: () => void;
+  /** Maximize this feed as an in-app theater overlay. Adds a control button. */
+  onMaximize?: () => void;
+  /** This tile is currently shown in a floating window — render a placeholder, keep the slot. */
+  isPoppedOut?: boolean;
 }
 
 export const FeedCard = memo(function FeedCard({
@@ -41,9 +47,13 @@ export const FeedCard = memo(function FeedCard({
   onDoubleClick,
   fitContain,
   className = '',
+  onPopOut,
+  onMaximize,
+  isPoppedOut,
 }: FeedCardProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const ambientRef = useRef<HTMLCanvasElement>(null);
   const [showControls, setShowControls] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -64,6 +74,30 @@ export const FeedCard = memo(function FeedCard({
     el.srcObject = new MediaStream([track]);
     return () => { el.srcObject = null; };
   }, [track, lkTrack, isLocal]);
+
+  // YouTube "ambient mode": when the video is letterboxed (object-contain — spotlight main,
+  // screens, fullscreen), bleed its colors into the empty bars. A tiny canvas samples the
+  // current frame at low res/fps; CSS upscales + blurs it into a soft glow behind the video.
+  const ambientOn = !isPoppedOut && !!track && (isScreen || !!fitContain || isFullscreen);
+  useEffect(() => {
+    if (!ambientOn) return;
+    const canvas = ambientRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    canvas.width = 32;
+    canvas.height = 18;
+    const id = setInterval(() => {
+      if (video.readyState < 2 || video.videoWidth === 0) return;
+      try {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      } catch {
+        /* not yet decodable */
+      }
+    }, 125);
+    return () => clearInterval(id);
+  }, [ambientOn, track]);
 
   // Distinguish single (toggle controls overlay) from double (focus) click. The overlay
   // always at least carries the fullscreen button, so it toggles even without parent controls.
@@ -139,13 +173,35 @@ export const FeedCard = memo(function FeedCard({
       className={`feed-card relative group cursor-pointer ${className}`}
       onClick={handleClick}
     >
-      {track ? (
+      {ambientOn && (
+        <canvas
+          ref={ambientRef}
+          aria-hidden
+          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+          style={{ zIndex: -1, filter: 'blur(40px) saturate(1.6)', transform: 'scale(1.18)', opacity: 0.6 }}
+        />
+      )}
+      {isPoppedOut ? (
+        <div className="w-full h-full flex flex-col items-center justify-center gap-3 bg-dark-800 text-white/40">
+          <PictureInPicture2 size={28} strokeWidth={1.5} />
+          <span className="text-xs">멀티 윈도우로 보는 중</span>
+          {onPopOut && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onPopOut(); }}
+              className="flex items-center gap-1.5 text-xs text-white/70 bg-white/10 hover:bg-white/20 rounded-full px-3 py-1.5 transition-colors"
+            >
+              <RotateCcw size={14} /> 되돌리기
+            </button>
+          )}
+        </div>
+      ) : track ? (
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted={isLocal || track.kind === 'video'}
           className={`w-full h-full ${isScreen || fitContain || isFullscreen ? 'object-contain' : 'object-cover'} ${isLocal && !isScreen ? 'scale-x-[-1]' : ''}`}
+          style={ambientOn ? { filter: 'drop-shadow(0 8px 30px rgba(0,0,0,0.5))' } : undefined}
         />
       ) : (
         <div className="w-full h-full flex items-center justify-center bg-dark-800">
@@ -183,6 +239,24 @@ export const FeedCard = memo(function FeedCard({
             onClick={(e) => { e.stopPropagation(); bumpControlsTimer(); }}
           >
             {controls}
+            {!isPoppedOut && onMaximize && (
+              <button
+                onClick={onMaximize}
+                className="w-11 h-11 rounded-full flex items-center justify-center bg-white/15 text-white hover:bg-white/25 transition-colors"
+                title="크게 보기 (시어터)"
+              >
+                <Maximize size={18} />
+              </button>
+            )}
+            {!isPoppedOut && onPopOut && (
+              <button
+                onClick={onPopOut}
+                className="w-11 h-11 rounded-full flex items-center justify-center bg-white/15 text-white hover:bg-white/25 transition-colors"
+                title="멀티 윈도우로 분리"
+              >
+                <PictureInPicture2 size={18} />
+              </button>
+            )}
             <button
               onClick={toggleFullscreen}
               className="w-11 h-11 rounded-full flex items-center justify-center bg-white/15 text-white hover:bg-white/25 transition-colors"

@@ -238,7 +238,9 @@ router.post('/rooms/:slug/ingress', authMiddleware, async (req, res) => {
   });
   if (!room) return res.status(404).json({ error: '방을 찾을 수 없거나 방장이 아닙니다' });
   try {
-    const ingress = await createRoomIngress(room.slug);
+    const parsed = z.object({ name: z.string().trim().min(1).max(30).optional() }).safeParse(req.body ?? {});
+    const name = parsed.success ? parsed.data.name : undefined;
+    const ingress = await createRoomIngress(room.slug, name || 'OBS 라이브');
     res.json({ ingress });
   } catch (err) {
     console.error('createRoomIngress failed:', err);

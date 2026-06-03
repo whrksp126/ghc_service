@@ -2,6 +2,7 @@ import { useMemo, type ReactNode } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import type { RemoteTrack } from 'livekit-client';
 import { FeedCard } from './FeedCard';
+import { useFloatingWindowStore } from '../../stores/floatingWindowStore';
 
 interface FeedItem {
   id: string;
@@ -18,9 +19,12 @@ interface FeedItem {
 interface GridLayoutProps {
   feeds: FeedItem[];
   onFeedClick?: (feedId: string) => void;
+  onPopOut?: (feedId: string) => void;
+  onMaximize?: (feedId: string) => void;
 }
 
-export function GridLayout({ feeds, onFeedClick }: GridLayoutProps) {
+export function GridLayout({ feeds, onFeedClick, onPopOut, onMaximize }: GridLayoutProps) {
+  const windows = useFloatingWindowStore((s) => s.windows);
   const gridClass = useMemo(() => {
     const count = feeds.length;
     if (count === 0) return '';
@@ -48,6 +52,9 @@ export function GridLayout({ feeds, onFeedClick }: GridLayoutProps) {
             voiceKey={feed.voiceKey}
             controls={feed.controls}
             onDoubleClick={() => onFeedClick?.(feed.id)}
+            onPopOut={onPopOut ? () => onPopOut(feed.id) : undefined}
+            onMaximize={onMaximize ? () => onMaximize(feed.id) : undefined}
+            isPoppedOut={!!windows[feed.id]}
           />
         ))}
       </AnimatePresence>

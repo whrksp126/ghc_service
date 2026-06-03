@@ -61,20 +61,40 @@ const CopyField = memo(function CopyField({ label, value }: { label: string; val
  * and shows the server URL + stream key to paste into OBS. The OBS stream then enters the
  * room as an "OBS 라이브" participant tile automatically.
  */
+const DEFAULT_NAME = 'OBS 라이브';
+
 export const ObsBroadcastModal = memo(function ObsBroadcastModal({ isOpen, onClose, slug }: ObsBroadcastModalProps) {
   const [ingress, setIngress] = useState<Ingress | null>(null);
   const [loading, setLoading] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [name, setName] = useState(DEFAULT_NAME);
+  const [applying, setApplying] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
     setIngress(null);
+    setName(DEFAULT_NAME);
     setLoading(true);
-    api.createIngress(slug)
+    api.createIngress(slug, DEFAULT_NAME)
       .then((r) => setIngress(r.ingress))
       .catch((e: any) => showToast(e.message || 'OBS 라이브 설정에 실패했습니다', 'error'))
       .finally(() => setLoading(false));
   }, [isOpen, slug]);
+
+  const applyName = useCallback(async () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setApplying(true);
+    try {
+      const r = await api.createIngress(slug, trimmed);
+      setIngress(r.ingress);
+      showToast('이름을 변경했습니다 (다음 송출부터 적용)', 'success');
+    } catch (e: any) {
+      showToast(e.message || '이름 변경에 실패했습니다', 'error');
+    } finally {
+      setApplying(false);
+    }
+  }, [name, slug]);
 
   const stop = useCallback(async () => {
     if (!ingress) return;
@@ -102,6 +122,24 @@ export const ObsBroadcastModal = memo(function ObsBroadcastModal({ isOpen, onClo
           <p className="text-sm text-white/40 text-center py-8">설정을 준비하는 중...</p>
         ) : ingress ? (
           <>
+            <div>
+              <label className="text-sm text-white/50 mb-1.5 block">방에 표시될 이름</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={name}
+                  maxLength={30}
+                  onChange={(e) => setName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && applyName()}
+                  placeholder={DEFAULT_NAME}
+                  className="flex-1 min-w-0 bg-dark-700 border border-white/10 rounded-btn px-3 py-2.5 text-white text-sm focus:outline-none focus:border-primary/50 transition-colors"
+                />
+                <Button onClick={applyName} disabled={applying || !name.trim()}>
+                  {applying ? '적용 중' : '적용'}
+                </Button>
+              </div>
+            </div>
+
             <CopyField label="서버 (Server)" value={ingress.url} />
             <CopyField label="스트림 키 (Stream Key)" value={ingress.streamKey} />
 

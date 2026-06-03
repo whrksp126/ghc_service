@@ -111,11 +111,11 @@ export const api = {
       method: 'POST',
     }),
 
-  // OBS live broadcast (RTMP ingress) — owner only.
-  createIngress: (slug: string) =>
+  // OBS live broadcast (RTMP ingress) — owner only. `name` sets the room tile label.
+  createIngress: (slug: string, name?: string) =>
     request<{ ingress: { ingressId: string; url: string; streamKey: string } }>(
       `/api/rooms/${slug}/ingress`,
-      { method: 'POST' }
+      { method: 'POST', body: JSON.stringify({ name }) }
     ),
 
   listIngress: (slug: string) =>

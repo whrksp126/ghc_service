@@ -82,11 +82,29 @@ function toRoomIngress(info: { ingressId: string; url: string; streamKey: string
  * shows up like any other participant via the client's auto-subscribe.
  */
 export async function createRoomIngress(roomName: string, displayName = 'OBS 라이브'): Promise<RoomIngress> {
-  // Reuse an existing RTMP ingress for this room so we don't pile up stream keys.
+  // The room UI reads the display name from the participant's *metadata* (nickname), not the
+  // LiveKit `name` field — so we set both. Without metadata the tile falls back to "참가자".
+  const participantMetadata = JSON.stringify({ nickname: displayName, deviceLabel: 'OBS' });
+
+  // Reuse an existing RTMP ingress for this room so we don't pile up stream keys. If the
+  // caller asked for a different name, update it in place (takes effect on the next connect).
   try {
     const existing = await ingressClient.listIngress({ roomName });
     const rtmp = existing.find((i) => i.inputType === IngressInput.RTMP_INPUT && i.streamKey);
-    if (rtmp) return toRoomIngress(rtmp);
+    if (rtmp) {
+      if (rtmp.participantName !== displayName) {
+        try {
+          await ingressClient.updateIngress(rtmp.ingressId, {
+            name: rtmp.name || `${roomName}-obs`,
+            participantName: displayName,
+            participantMetadata,
+          });
+        } catch {
+          // Update unsupported/failed — keep the existing ingress as-is.
+        }
+      }
+      return toRoomIngress(rtmp);
+    }
   } catch {
     // listing failed — fall through to create.
   }
@@ -96,6 +114,7 @@ export async function createRoomIngress(roomName: string, displayName = 'OBS 라
     roomName,
     participantIdentity: `obs:${roomName}`,
     participantName: displayName,
+    participantMetadata,
   });
   return toRoomIngress(info);
 }
