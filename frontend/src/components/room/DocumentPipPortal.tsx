@@ -1,71 +1,51 @@
-import { useEffect, useState } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
+import type { RemoteTrack } from 'livekit-client';
 import { FeedCard } from './FeedCard';
-import type { FloatingFeed } from './FloatingWindow';
 import { useFloatingWindowStore } from '../../stores/floatingWindowStore';
-import { hasDocumentPip, copyStylesTo } from '../../lib/pipSupport';
 
-interface DocumentPipPortalProps {
-  feeds: FloatingFeed[];
+export interface PipFeed {
+  id: string;
+  track: MediaStreamTrack | null;
+  lkTrack?: RemoteTrack;
+  label: string;
+  isMuted?: boolean;
+  isLocal?: boolean;
+  isScreen?: boolean;
+  voiceKey?: string;
+  controls?: ReactNode;
 }
 
-interface DocPipWindow extends Window {
-  close: () => void;
+interface DocumentPipPortalProps {
+  feeds: PipFeed[];
 }
 
 /**
- * Desktop Chromium path: when the user promotes the floating windows to an OS window, open one
- * always-on-top Document Picture-in-Picture window and render all popped-out cameras inside it
- * as a grid (Document PiP allows only one such window at a time). The window floats over other
- * apps and over native fullscreen — the KakaoTalk/Discord-style behavior. Closing it (or the
- * OS window's own close button) returns the cameras to the in-app layer.
+ * Desktop Chromium path for the PiP / multi-window button: popped cameras render into a single
+ * always-on-top Document Picture-in-Picture OS window (grid). The window floats over other apps
+ * and native fullscreen — the KakaoTalk/Discord-style behavior. The window itself is created in
+ * the store's toggle() (within the click gesture); this component just portals content into it.
  */
 export function DocumentPipPortal({ feeds }: DocumentPipPortalProps) {
-  const osWindow = useFloatingWindowStore((s) => s.osWindow);
-  const windows = useFloatingWindowStore((s) => s.windows);
-  const setOsWindow = useFloatingWindowStore((s) => s.setOsWindow);
+  const popped = useFloatingWindowStore((s) => s.popped);
+  const pipWindow = useFloatingWindowStore((s) => s.pipWindow);
   const close = useFloatingWindowStore((s) => s.close);
-  const [pipWin, setPipWin] = useState<DocPipWindow | null>(null);
 
-  // Open the OS window when promotion turns on.
+  // Drop popped feeds whose source has disappeared (camera left / stopped).
   useEffect(() => {
-    if (!osWindow || pipWin) return;
-    if (!hasDocumentPip) { setOsWindow(false); return; }
-    let cancelled = false;
-    (async () => {
-      try {
-        const dpip = (window as unknown as { documentPictureInPicture: { requestWindow: (o: { width: number; height: number }) => Promise<DocPipWindow> } }).documentPictureInPicture;
-        const w = await dpip.requestWindow({ width: 420, height: 320 });
-        if (cancelled) { w.close(); return; }
-        copyStylesTo(w);
-        w.document.body.style.margin = '0';
-        w.document.body.style.background = '#121212';
-        w.addEventListener('pagehide', () => setOsWindow(false));
-        setPipWin(w);
-      } catch {
-        setOsWindow(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [osWindow, pipWin, setOsWindow]);
-
-  // Close the OS window when promotion turns off (or component unmounts).
-  useEffect(() => {
-    if ((!osWindow || Object.keys(windows).length === 0) && pipWin) {
-      try { pipWin.close(); } catch { /* already gone */ }
-      setPipWin(null);
-      if (osWindow && Object.keys(windows).length === 0) setOsWindow(false);
+    const ids = new Set(feeds.map((f) => f.id));
+    for (const id of Object.keys(popped)) {
+      if (!ids.has(id)) close(id);
     }
-  }, [osWindow, windows, pipWin, setOsWindow]);
+  }, [feeds, popped, close]);
 
-  useEffect(() => () => { try { pipWin?.close(); } catch { /* ignore */ } }, [pipWin]);
+  if (!pipWindow) return null;
 
-  if (!pipWin || !osWindow) return null;
-
-  const openFeeds = Object.keys(windows)
+  const openFeeds = Object.keys(popped)
     .map((id) => feeds.find((f) => f.id === id))
-    .filter((f): f is FloatingFeed => !!f);
+    .filter((f): f is PipFeed => !!f);
+  if (openFeeds.length === 0) return null;
 
   const cols = openFeeds.length <= 1 ? 1 : 2;
 
@@ -98,6 +78,6 @@ export function DocumentPipPortal({ feeds }: DocumentPipPortalProps) {
         </div>
       ))}
     </div>,
-    pipWin.document.body
+    pipWindow.document.body
   );
 }

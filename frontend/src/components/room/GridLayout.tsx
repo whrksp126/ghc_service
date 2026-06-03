@@ -14,17 +14,17 @@ interface FeedItem {
   isScreen?: boolean;
   voiceKey?: string;
   controls?: ReactNode;
+  belowControls?: ReactNode;
 }
 
 interface GridLayoutProps {
   feeds: FeedItem[];
   onFeedClick?: (feedId: string) => void;
-  onPopOut?: (feedId: string) => void;
-  onMaximize?: (feedId: string) => void;
+  onPip?: (feedId: string) => void;
 }
 
-export function GridLayout({ feeds, onFeedClick, onPopOut, onMaximize }: GridLayoutProps) {
-  const windows = useFloatingWindowStore((s) => s.windows);
+export function GridLayout({ feeds, onFeedClick, onPip }: GridLayoutProps) {
+  const popped = useFloatingWindowStore((s) => s.popped);
   const gridClass = useMemo(() => {
     const count = feeds.length;
     if (count === 0) return '';
@@ -51,10 +51,10 @@ export function GridLayout({ feeds, onFeedClick, onPopOut, onMaximize }: GridLay
             layoutId={feed.id}
             voiceKey={feed.voiceKey}
             controls={feed.controls}
+            belowControls={feed.belowControls}
             onDoubleClick={() => onFeedClick?.(feed.id)}
-            onPopOut={onPopOut ? () => onPopOut(feed.id) : undefined}
-            onMaximize={onMaximize ? () => onMaximize(feed.id) : undefined}
-            isPoppedOut={!!windows[feed.id]}
+            onPip={onPip ? () => onPip(feed.id) : undefined}
+            isPoppedOut={!!popped[feed.id]}
           />
         ))}
       </AnimatePresence>

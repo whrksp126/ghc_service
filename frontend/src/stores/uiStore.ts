@@ -7,15 +7,15 @@ interface UIState {
   isSidebarOpen: boolean;
   isSettingsOpen: boolean;
   isHomecamMode: boolean;
-  /** Feed id shown as an in-app, full-viewport "theater" overlay (floating windows stay on top). */
-  maximizedFeedId: string | null;
+  /** Participant keys (`${userId}:${deviceId}`) whose audio I've locally muted. */
+  mutedAudio: Record<string, boolean>;
 
   setLayoutMode: (mode: LayoutMode) => void;
   setSpotlightProducer: (producerId: string | null) => void;
   toggleSidebar: () => void;
   toggleSettings: () => void;
   setHomecamMode: (v: boolean) => void;
-  setMaximizedFeed: (id: string | null) => void;
+  toggleAudioMute: (key: string) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -24,12 +24,13 @@ export const useUIStore = create<UIState>((set) => ({
   isSidebarOpen: false,
   isSettingsOpen: false,
   isHomecamMode: false,
-  maximizedFeedId: null,
+  mutedAudio: {},
 
   setLayoutMode: (mode) => set({ layoutMode: mode }),
   setSpotlightProducer: (producerId) => set({ spotlightProducerId: producerId }),
   toggleSidebar: () => set((s) => ({ isSidebarOpen: !s.isSidebarOpen })),
   toggleSettings: () => set((s) => ({ isSettingsOpen: !s.isSettingsOpen })),
   setHomecamMode: (v) => set({ isHomecamMode: v }),
-  setMaximizedFeed: (id) => set({ maximizedFeedId: id }),
+  toggleAudioMute: (key) =>
+    set((s) => ({ mutedAudio: { ...s.mutedAudio, [key]: !s.mutedAudio[key] } })),
 }));

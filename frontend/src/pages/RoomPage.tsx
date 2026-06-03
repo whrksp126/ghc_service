@@ -17,8 +17,6 @@ import { attachVoice, detachVoice, useVoiceStore } from '../services/voiceActivi
 import { useAudioSettings, micConstraints } from '../stores/audioSettings';
 import { GridLayout } from '../components/room/GridLayout';
 import { SpotlightLayout } from '../components/room/SpotlightLayout';
-import { FloatingWindowLayer } from '../components/room/FloatingWindowLayer';
-import { MaximizedFeed } from '../components/room/MaximizedFeed';
 import { DocumentPipPortal } from '../components/room/DocumentPipPortal';
 import { useFloatingWindowStore } from '../stores/floatingWindowStore';
 import { TopBar } from '../components/layout/TopBar';
@@ -29,7 +27,7 @@ import { CameraPreviewTile } from '../components/devices/CameraPreviewTile';
 import { ObsBroadcastModal } from '../components/room/ObsBroadcastModal';
 import { Button } from '../components/common/Button';
 import { showToast } from '../components/common/Toast';
-import { Mic, MicOff, Video, VideoOff, Users, SwitchCamera, Power } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, Users, SwitchCamera, Power, Volume2, VolumeX } from 'lucide-react';
 import { initSounds, playSound } from '../lib/sounds';
 import type { Participant } from '../types/room';
 
@@ -38,6 +36,9 @@ type RoomPhase = 'lobby' | 'connecting' | 'inRoom';
 /** Hidden sink that plays a remote participant's audio track + taps it for voice activity. */
 function RemoteAudio({ track, voiceKey }: { track: MediaStreamTrack; voiceKey: string }) {
   const ref = useRef<HTMLAudioElement>(null);
+  // Local per-participant mute: I can silence someone without affecting anyone else.
+  const muted = useUIStore((s) => !!s.mutedAudio[voiceKey]);
+  useEffect(() => { if (ref.current) ref.current.muted = muted; }, [muted]);
   useEffect(() => {
     const el = ref.current;
     if (el) el.srcObject = new MediaStream([track]);
@@ -60,6 +61,19 @@ function RemoteAudio({ track, voiceKey }: { track: MediaStreamTrack; voiceKey: s
     };
   }, [track, voiceKey]);
   return <audio ref={ref} autoPlay playsInline />;
+}
+
+/** Toggle that locally mutes/unmutes one participant's audio (turns red when muted). */
+function AudioMuteButton({ mutekey }: { mutekey: string }) {
+  const muted = useUIStore((s) => !!s.mutedAudio[mutekey]);
+  const toggle = useUIStore((s) => s.toggleAudioMute);
+  return (
+    <TileButton
+      onClick={() => toggle(mutekey)}
+      active={!muted}
+      icon={muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+    />
+  );
 }
 
 /** Round control button shown inside a feed tile's single-click overlay. */
@@ -161,8 +175,8 @@ export function RoomPage() {
     isCamOn, isMicOn, setVideoTrack, setAudioTrack, setScreenSharing, isScreenSharing, setScreenTrack,
     reset: resetDevice, setAudioProducerId, setVideoProducerId, setScreenProducerId,
   } = useDeviceStore();
-  const { layoutMode, setLayoutMode, spotlightProducerId, setSpotlightProducer, maximizedFeedId, setMaximizedFeed } = useUIStore();
-  const toggleFloating = useFloatingWindowStore((s) => s.toggle);
+  const { layoutMode, setLayoutMode, spotlightProducerId, setSpotlightProducer } = useUIStore();
+  const togglePip = useFloatingWindowStore((s) => s.toggle);
   const { cameras, fetchCameras } = useCameraStore();
 
   const { connect, disconnect } = useSocket();
@@ -605,14 +619,12 @@ export function RoomPage() {
       id: `self:${deviceId}`, track: localVideoTrack, label: nickname || '나',
       isLocal: true, isScreen: false, voiceKey: selfKey,
       controls: (
-        <div className="flex flex-col items-center gap-2.5">
-          <div className="flex items-center gap-2.5">
-            <TileButton onClick={handleToggleMic} active={isMicOn} icon={isMicOn ? <Mic size={18} /> : <MicOff size={18} />} />
-            <TileButton onClick={handleToggleCam} active={isCamOn} icon={isCamOn ? <Video size={18} /> : <VideoOff size={18} />} />
-          </div>
-          {isCamOn && <CameraSwitcher onSelect={switchToDevice} />}
-        </div>
+        <>
+          <TileButton onClick={handleToggleMic} active={isMicOn} icon={isMicOn ? <Mic size={18} /> : <MicOff size={18} />} />
+          <TileButton onClick={handleToggleCam} active={isCamOn} icon={isCamOn ? <Video size={18} /> : <VideoOff size={18} />} />
+        </>
       ),
+      belowControls: isCamOn ? <CameraSwitcher onSelect={switchToDevice} /> : null,
     });
 
     for (const key of keys) {
@@ -636,6 +648,9 @@ export function RoomPage() {
             )}
           </>
         );
+      } else {
+        // Others (incl. OBS): let me locally mute/unmute their audio for myself.
+        controls = <AudioMuteButton mutekey={key} />;
       }
 
       items.push({
@@ -865,8 +880,7 @@ export function RoomPage() {
                   setLayoutMode('spotlight');
                   setSpotlightProducer(id);
                 }}
-                onPopOut={toggleFloating}
-                onMaximize={setMaximizedFeed}
+                onPip={togglePip}
               />
             )}
             {layoutMode === 'spotlight' && (
@@ -875,8 +889,7 @@ export function RoomPage() {
                 spotlightId={spotlightProducerId}
                 onFeedClick={(id) => setSpotlightProducer(id)}
                 onExit={() => setLayoutMode('grid')}
-                onPopOut={toggleFloating}
-                onMaximize={setMaximizedFeed}
+                onPip={togglePip}
               />
             )}
           </LayoutGroup>
@@ -900,15 +913,7 @@ export function RoomPage() {
 
       {slug && <ObsBroadcastModal isOpen={obsOpen} onClose={closeObs} slug={slug} />}
 
-      {/* In-app theater overlay: fills the viewport but stays in the DOM, so floating camera
-          windows (higher z-index) remain visible on top of it. */}
-      {maximizedFeedId && (
-        <MaximizedFeed feed={allFeeds.find((f) => f.id === maximizedFeedId)} onClose={() => setMaximizedFeed(null)} />
-      )}
-
-      {/* Multi-window camera tiles — in-app on most platforms, hosted in an OS Document-PiP
-          window on desktop Chromium when the user promotes them. */}
-      <FloatingWindowLayer feeds={allFeeds} />
+      {/* Desktop Chromium: popped cameras render into a single always-on-top OS window. */}
       <DocumentPipPortal feeds={allFeeds} />
 
       <ReconnectingOverlay />

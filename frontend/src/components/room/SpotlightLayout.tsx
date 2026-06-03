@@ -14,6 +14,7 @@ interface FeedItem {
   isScreen?: boolean;
   voiceKey?: string;
   controls?: ReactNode;
+  belowControls?: ReactNode;
 }
 
 interface SpotlightLayoutProps {
@@ -22,12 +23,11 @@ interface SpotlightLayoutProps {
   onFeedClick?: (feedId: string) => void;
   /** Double-clicking the big spotlight tile goes back to grid. */
   onExit?: () => void;
-  onPopOut?: (feedId: string) => void;
-  onMaximize?: (feedId: string) => void;
+  onPip?: (feedId: string) => void;
 }
 
-export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit, onPopOut, onMaximize }: SpotlightLayoutProps) {
-  const windows = useFloatingWindowStore((s) => s.windows);
+export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit, onPip }: SpotlightLayoutProps) {
+  const popped = useFloatingWindowStore((s) => s.popped);
   const spotlight = feeds.find((f) => f.id === spotlightId) || feeds[0];
   const sidebar = feeds.filter((f) => f.id !== spotlight?.id);
 
@@ -47,10 +47,10 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit, onPop
           layoutId={spotlight.id}
           voiceKey={spotlight.voiceKey}
           controls={spotlight.controls}
+          belowControls={spotlight.belowControls}
           onDoubleClick={onExit}
-          onPopOut={onPopOut ? () => onPopOut(spotlight.id) : undefined}
-          onMaximize={onMaximize ? () => onMaximize(spotlight.id) : undefined}
-          isPoppedOut={!!windows[spotlight.id]}
+          onPip={onPip ? () => onPip(spotlight.id) : undefined}
+          isPoppedOut={!!popped[spotlight.id]}
           fitContain
           className="w-full h-full"
         />
@@ -72,10 +72,10 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit, onPop
                 layoutId={feed.id}
                 voiceKey={feed.voiceKey}
                 controls={feed.controls}
+                belowControls={feed.belowControls}
                 onDoubleClick={() => onFeedClick?.(feed.id)}
-                onPopOut={onPopOut ? () => onPopOut(feed.id) : undefined}
-                onMaximize={onMaximize ? () => onMaximize(feed.id) : undefined}
-                isPoppedOut={!!windows[feed.id]}
+                onPip={onPip ? () => onPip(feed.id) : undefined}
+                isPoppedOut={!!popped[feed.id]}
                 className="w-32 h-24 sm:w-full sm:h-32 shrink-0"
               />
             ))}

@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, memo, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
-import { MicOff, Monitor, Maximize2, Minimize2, Maximize, PictureInPicture2, RotateCcw } from 'lucide-react';
+import { MicOff, Monitor, Maximize2, Minimize2, PictureInPicture2, RotateCcw } from 'lucide-react';
+import { hasDocumentPip, hasVideoPip, enterVideoPip } from '../../lib/pipSupport';
 import type { RemoteTrack } from 'livekit-client';
 import { useVoiceStore } from '../../services/voiceActivity';
 import { useAudioSettings } from '../../stores/audioSettings';
@@ -19,18 +20,18 @@ interface FeedCardProps {
   layoutId?: string;
   /** Participant key (`${userId}:${deviceId}`) for voice-activity glow + waveform. */
   voiceKey?: string;
-  /** Controls overlay (mic/cam/switch…) shown on a single click. */
+  /** Controls overlay (mic/cam/switch…) shown on a single click — laid out in one button row. */
   controls?: ReactNode;
+  /** Extra controls placed on their own row below the button row (e.g. the lens switcher). */
+  belowControls?: ReactNode;
   /** Double click → focus this feed as the spotlight. */
   onDoubleClick?: () => void;
   /** Show the whole frame (object-contain) instead of cropping — spotlight main / screens. */
   fitContain?: boolean;
   className?: string;
-  /** Pop this feed out into a floating multi-window (and back). Adds a control button. */
-  onPopOut?: () => void;
-  /** Maximize this feed as an in-app theater overlay. Adds a control button. */
-  onMaximize?: () => void;
-  /** This tile is currently shown in a floating window — render a placeholder, keep the slot. */
+  /** Desktop Document-PiP toggle (called within the click gesture). Mobile uses video PiP directly. */
+  onPip?: () => void;
+  /** This feed is currently shown in the desktop PiP window — render a placeholder, keep the slot. */
   isPoppedOut?: boolean;
 }
 
@@ -47,8 +48,8 @@ export const FeedCard = memo(function FeedCard({
   onDoubleClick,
   fitContain,
   className = '',
-  onPopOut,
-  onMaximize,
+  belowControls,
+  onPip,
   isPoppedOut,
 }: FeedCardProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -161,6 +162,16 @@ export const FeedCard = memo(function FeedCard({
     return () => { if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; } };
   }, [showControls]);
 
+  // PiP / multi-window: desktop Chromium → Document PiP (handled by the store via onPip), every
+  // other platform → classic single-video PiP on this tile's <video>. Either floats over other
+  // apps and native fullscreen.
+  const pipSupported = (hasDocumentPip || hasVideoPip()) && !!track;
+  const handlePip = () => {
+    setShowControls(false);
+    if (hasDocumentPip) onPip?.();
+    else enterVideoPip(videoRef.current);
+  };
+
   return (
     <motion.div
       ref={rootRef}
@@ -184,10 +195,10 @@ export const FeedCard = memo(function FeedCard({
       {isPoppedOut ? (
         <div className="w-full h-full flex flex-col items-center justify-center gap-3 bg-dark-800 text-white/40">
           <PictureInPicture2 size={28} strokeWidth={1.5} />
-          <span className="text-xs">멀티 윈도우로 보는 중</span>
-          {onPopOut && (
+          <span className="text-xs">PiP 창에서 보는 중</span>
+          {onPip && (
             <button
-              onClick={(e) => { e.stopPropagation(); onPopOut(); }}
+              onClick={(e) => { e.stopPropagation(); onPip(); }}
               className="flex items-center gap-1.5 text-xs text-white/70 bg-white/10 hover:bg-white/20 rounded-full px-3 py-1.5 transition-colors"
             >
               <RotateCcw size={14} /> 되돌리기
@@ -235,35 +246,29 @@ export const FeedCard = memo(function FeedCard({
           onClick={(e) => { e.stopPropagation(); setShowControls(false); }}
         >
           <div
-            className="flex items-center gap-2.5"
+            className="flex flex-col items-center gap-3"
             onClick={(e) => { e.stopPropagation(); bumpControlsTimer(); }}
           >
-            {controls}
-            {!isPoppedOut && onMaximize && (
+            <div className="flex items-center justify-center flex-wrap gap-2.5 max-w-[280px]">
+              {controls}
+              {!isPoppedOut && pipSupported && (
+                <button
+                  onClick={handlePip}
+                  className="w-11 h-11 rounded-full flex items-center justify-center bg-white/15 text-white hover:bg-white/25 transition-colors"
+                  title="PiP (작은 창)"
+                >
+                  <PictureInPicture2 size={18} />
+                </button>
+              )}
               <button
-                onClick={onMaximize}
+                onClick={toggleFullscreen}
                 className="w-11 h-11 rounded-full flex items-center justify-center bg-white/15 text-white hover:bg-white/25 transition-colors"
-                title="크게 보기 (시어터)"
+                title="전체화면"
               >
-                <Maximize size={18} />
+                {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
               </button>
-            )}
-            {!isPoppedOut && onPopOut && (
-              <button
-                onClick={onPopOut}
-                className="w-11 h-11 rounded-full flex items-center justify-center bg-white/15 text-white hover:bg-white/25 transition-colors"
-                title="멀티 윈도우로 분리"
-              >
-                <PictureInPicture2 size={18} />
-              </button>
-            )}
-            <button
-              onClick={toggleFullscreen}
-              className="w-11 h-11 rounded-full flex items-center justify-center bg-white/15 text-white hover:bg-white/25 transition-colors"
-              title="전체화면"
-            >
-              {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-            </button>
+            </div>
+            {belowControls}
           </div>
         </div>
       )}
