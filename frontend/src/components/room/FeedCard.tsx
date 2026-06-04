@@ -99,29 +99,32 @@ export const FeedCard = memo(function FeedCard({
     return () => { el.srcObject = null; };
   }, [track, lkTrack, isLocal, isPoppedOut]);
 
-  // YouTube "ambient mode": every video is object-contain (letterboxed), so bleed its colors into
-  // the empty bars on EVERY surface — grid tiles, spotlight, screens, fullscreen (and PiP draws its
-  // own equivalent). A tiny canvas samples the frame at low res/fps; CSS upscales + blurs it.
-  const ambientOn = !isPoppedOut && !!track;
+  // Ambient glow (à la NikxDa/ambient): a low-res copy of the frame sits in a layer that EXACTLY
+  // overlays the video's letterboxed box (same aspect + object-contain), and a heavy blur lets its
+  // edge colours bleed a little past the video border — a soft halo hugging the edges, not a full
+  // background fill. The canvas keeps its aspect matched to the live frame so the overlay stays
+  // aligned for portrait/landscape/rotated feeds. Mounted persistently so it never flickers off.
+  const ambientOn = !isPoppedOut;
   useEffect(() => {
     if (!ambientOn) return;
     const canvas = ambientRef.current;
-    const video = videoRef.current;
-    if (!canvas || !video) return;
+    if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    canvas.width = 32;
-    canvas.height = 18;
     const id = setInterval(() => {
-      if (video.readyState < 2 || video.videoWidth === 0) return;
+      const video = videoRef.current;
+      if (!video || video.readyState < 2 || !video.videoWidth) return;
+      const w = 64;
+      const h = Math.max(1, Math.round((w * video.videoHeight) / video.videoWidth));
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
       try {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(video, 0, 0, w, h);
       } catch {
         /* not yet decodable */
       }
     }, 125);
     return () => clearInterval(id);
-  }, [ambientOn, track]);
+  }, [ambientOn]);
 
   // Track the rendered tile size: small tiles route controls to a bottom sheet (the centered
   // overlay would clip on a phone grid), big tiles keep the in-place overlay (Discord-style).
@@ -286,8 +289,8 @@ export const FeedCard = memo(function FeedCard({
         <canvas
           ref={ambientRef}
           aria-hidden
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          style={{ zIndex: -1, filter: 'blur(40px) saturate(1.6)', transform: 'scale(1.18)', opacity: 0.6 }}
+          className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+          style={{ zIndex: -1, filter: 'blur(45px) saturate(1.4)', opacity: 0.75 }}
         />
       )}
       {isPoppedOut ? (
