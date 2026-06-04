@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Smartphone, Tablet, Monitor, Camera,
+  Smartphone, Camera,
   ChevronLeft, WifiOff, Power, RefreshCw,
   MoreHorizontal, SwitchCamera, Pencil,
 } from 'lucide-react';
@@ -16,19 +16,9 @@ import { requestPreview, type PreviewConnection, type PreviewStatus } from '../s
 import { getSocket } from '../lib/socket';
 import { api } from '../lib/api';
 
-function DeviceIcon({ type, size = 18 }: { type: string; size?: number }) {
-  switch (type) {
-    case 'phone': return <Smartphone size={size} />;
-    case 'tablet': return <Tablet size={size} />;
-    case 'desktop': return <Monitor size={size} />;
-    default: return <Camera size={size} />;
-  }
-}
-
 function RemoteCameraPreview({
   camId,
   cameraName,
-  deviceType,
   isOnline,
   isCameraActive,
   remoteCameraCount,
@@ -37,7 +27,6 @@ function RemoteCameraPreview({
 }: {
   camId: string;
   cameraName: string;
-  deviceType: string;
   isOnline: boolean;
   isCameraActive: boolean;
   remoteCameraCount: number;
@@ -178,11 +167,6 @@ function RemoteCameraPreview({
         )}
       </div>
 
-      <div className="p-3 flex items-center gap-2 text-white/60">
-        <DeviceIcon type={deviceType} />
-        <span className="font-medium text-sm text-white truncate">{cameraName}</span>
-      </div>
-
       <BottomSheet
         isOpen={sheetOpen}
         onClose={() => setSheetOpen(false)}
@@ -303,32 +287,25 @@ export function CamerasPage() {
               </button>
             </div>
 
-            {currentDevice && (
+            {currentDevice && editingId === currentDevice.id && (
               <div className="p-4">
-                {editingId === currentDevice.id ? (
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={editName}
-                      onChange={(e) => setEditName(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && saveName(currentDevice.id)}
-                      className="flex-1 bg-dark-700 border border-white/10 rounded-btn px-3 py-2 text-white text-sm focus:outline-none focus:border-primary/50"
-                      autoFocus
-                      maxLength={100}
-                    />
-                    <Button size="sm" loading={saving} onClick={() => saveName(currentDevice.id)}>
-                      저장
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
-                      취소
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2 text-white/60">
-                    <DeviceIcon type={currentDevice.deviceType} />
-                    <span className="font-medium text-white">{currentDevice.cameraName}</span>
-                  </div>
-                )}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && saveName(currentDevice.id)}
+                    className="flex-1 bg-dark-700 border border-white/10 rounded-btn px-3 py-2 text-white text-sm focus:outline-none focus:border-primary/50"
+                    autoFocus
+                    maxLength={100}
+                  />
+                  <Button size="sm" loading={saving} onClick={() => saveName(currentDevice.id)}>
+                    저장
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
+                    취소
+                  </Button>
+                </div>
               </div>
             )}
           </div>
@@ -409,7 +386,6 @@ export function CamerasPage() {
                       <RemoteCameraPreview
                         camId={cam.id}
                         cameraName={cam.cameraName}
-                        deviceType={cam.deviceType}
                         isOnline={cam.isOnline}
                         isCameraActive={cam.isCameraActive}
                         remoteCameraCount={cam.remoteCameraCount}

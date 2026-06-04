@@ -7,6 +7,7 @@ import { useVoiceStore } from '../../services/voiceActivity';
 import { useAudioSettings } from '../../stores/audioSettings';
 import { VoiceBars } from '../common/VoiceBars';
 import { showToast } from '../common/Toast';
+import { BottomSheet } from '../common/BottomSheet';
 
 interface FeedCardProps {
   track: MediaStreamTrack | null;
@@ -56,6 +57,9 @@ export const FeedCard = memo(function FeedCard({
   const rootRef = useRef<HTMLDivElement>(null);
   const ambientRef = useRef<HTMLCanvasElement>(null);
   const [showControls, setShowControls] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  // Small tiles can't fit the centered control overlay, so they open a bottom sheet instead.
+  const [isSmall, setIsSmall] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -65,6 +69,9 @@ export const FeedCard = memo(function FeedCard({
 
   // Remote video → attach through LiveKit so adaptiveStream observes this element's size
   // and visibility and requests the matching simulcast layer. Local/screen → plain sink.
+  // `isPoppedOut` is a dep so that returning from Document-PiP (true→false) re-runs the
+  // effect and re-binds the track to the freshly remounted <video> — otherwise the restored
+  // tile stays black until the track/source identity happens to change.
   useEffect(() => {
     const el = videoRef.current;
     if (!el || !track) return;
@@ -74,7 +81,7 @@ export const FeedCard = memo(function FeedCard({
     }
     el.srcObject = new MediaStream([track]);
     return () => { el.srcObject = null; };
-  }, [track, lkTrack, isLocal]);
+  }, [track, lkTrack, isLocal, isPoppedOut]);
 
   // YouTube "ambient mode": when the video is letterboxed (object-contain — spotlight main,
   // screens, fullscreen), bleed its colors into the empty bars. A tiny canvas samples the
@@ -100,19 +107,35 @@ export const FeedCard = memo(function FeedCard({
     return () => clearInterval(id);
   }, [ambientOn, track]);
 
-  // Distinguish single (toggle controls overlay) from double (focus) click. The overlay
-  // always at least carries the fullscreen button, so it toggles even without parent controls.
+  // Track the rendered tile size: small tiles route controls to a bottom sheet (the centered
+  // overlay would clip on a phone grid), big tiles keep the in-place overlay (Discord-style).
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (!r) return;
+      setIsSmall(r.height < 200 || r.width < 260);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Distinguish single (reveal controls) from double (focus) click. Small tiles open the
+  // bottom sheet; bigger tiles toggle the in-place overlay (always carries fullscreen).
   const handleClick = () => {
     if (clickTimer.current) {
       clearTimeout(clickTimer.current);
       clickTimer.current = null;
       setShowControls(false);
+      setSheetOpen(false);
       onDoubleClick?.();
       return;
     }
     clickTimer.current = setTimeout(() => {
       clickTimer.current = null;
-      setShowControls((v) => !v);
+      if (isSmall) setSheetOpen(true);
+      else setShowControls((v) => !v);
     }, 230);
   };
 
@@ -120,6 +143,7 @@ export const FeedCard = memo(function FeedCard({
   // desktop keep our custom overlay); iOS Safari can't fullscreen a <div>, so fall back to
   // the <video> element's native fullscreen player.
   const toggleFullscreen = () => {
+    setSheetOpen(false);
     const root = rootRef.current as any;
     const video = videoRef.current as any;
     const doc = document as any;
@@ -168,11 +192,37 @@ export const FeedCard = memo(function FeedCard({
   const pipSupported = (hasDocumentPip || hasVideoPip()) && !!track;
   const handlePip = () => {
     setShowControls(false);
+    setSheetOpen(false);
     if (hasDocumentPip) onPip?.();
     else enterVideoPip(videoRef.current);
   };
 
+  // Shared control buttons (parent mic/cam/switch + PiP + fullscreen), reused by the in-place
+  // overlay and the small-tile bottom sheet.
+  const controlButtons = (
+    <>
+      {controls}
+      {!isPoppedOut && pipSupported && (
+        <button
+          onClick={handlePip}
+          className="w-11 h-11 rounded-full flex items-center justify-center bg-white/15 text-white hover:bg-white/25 transition-colors"
+          title="PiP (작은 창)"
+        >
+          <PictureInPicture2 size={18} />
+        </button>
+      )}
+      <button
+        onClick={toggleFullscreen}
+        className="w-11 h-11 rounded-full flex items-center justify-center bg-white/15 text-white hover:bg-white/25 transition-colors"
+        title="전체화면"
+      >
+        {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+      </button>
+    </>
+  );
+
   return (
+    <>
     <motion.div
       ref={rootRef}
       layout
@@ -250,23 +300,7 @@ export const FeedCard = memo(function FeedCard({
             onClick={(e) => { e.stopPropagation(); bumpControlsTimer(); }}
           >
             <div className="flex items-center justify-center flex-wrap gap-2.5 max-w-[280px]">
-              {controls}
-              {!isPoppedOut && pipSupported && (
-                <button
-                  onClick={handlePip}
-                  className="w-11 h-11 rounded-full flex items-center justify-center bg-white/15 text-white hover:bg-white/25 transition-colors"
-                  title="PiP (작은 창)"
-                >
-                  <PictureInPicture2 size={18} />
-                </button>
-              )}
-              <button
-                onClick={toggleFullscreen}
-                className="w-11 h-11 rounded-full flex items-center justify-center bg-white/15 text-white hover:bg-white/25 transition-colors"
-                title="전체화면"
-              >
-                {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-              </button>
+              {controlButtons}
             </div>
             {belowControls}
           </div>
@@ -290,5 +324,18 @@ export const FeedCard = memo(function FeedCard({
         </div>
       </div>
     </motion.div>
+
+    {/* Small-tile controls live OUTSIDE the tile so the bottom sheet's `position: fixed` is
+        relative to the viewport (a transformed framer-motion ancestor would otherwise break it).
+        Tapping a control keeps it open to toggle several; PiP/fullscreen and the backdrop dismiss. */}
+    <BottomSheet isOpen={sheetOpen} onClose={() => setSheetOpen(false)} title={label}>
+      <div className="px-4 pb-2 flex items-center justify-center flex-wrap gap-3">
+        {controlButtons}
+      </div>
+      {belowControls && (
+        <div className="px-4 pb-2 flex items-center justify-center">{belowControls}</div>
+      )}
+    </BottomSheet>
+    </>
   );
 });

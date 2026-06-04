@@ -1,19 +1,10 @@
 import { useEffect, useRef, useState, useCallback, type MouseEvent as ReactMouseEvent } from 'react';
 import { motion } from 'framer-motion';
-import { Smartphone, Tablet, Monitor, Camera, WifiOff, Check, RefreshCw, MoreHorizontal, SwitchCamera } from 'lucide-react';
+import { Camera, WifiOff, Check, RefreshCw, MoreHorizontal, SwitchCamera } from 'lucide-react';
 import { requestPreview, type PreviewConnection, type PreviewStatus } from '../../services/previewStream';
 import { useAlwaysOnCamera } from '../../services/alwaysOnCamera';
 import { emitWithAck } from '../../lib/socket';
 import { BottomSheet, type SheetAction } from '../common/BottomSheet';
-
-function DeviceIcon({ type, size = 16 }: { type: string; size?: number }) {
-  switch (type) {
-    case 'phone': return <Smartphone size={size} />;
-    case 'tablet': return <Tablet size={size} />;
-    case 'desktop': return <Monitor size={size} />;
-    default: return <Camera size={size} />;
-  }
-}
 
 interface CameraPreviewTileProps {
   camId: string;
@@ -44,7 +35,6 @@ type CurrentState = 'live' | 'muted' | 'no_camera' | 'failed' | 'connecting';
  */
 export function CameraPreviewTile({
   camId,
-  deviceType,
   isOnline,
   isCurrentDevice,
   camOn = true,
@@ -280,7 +270,7 @@ export function CameraPreviewTile({
         <span
           role="button"
           onClick={(e: ReactMouseEvent) => { e.stopPropagation(); setSheetOpen(true); }}
-          className="absolute bottom-9 right-2 w-7 h-7 rounded-full bg-black/55 backdrop-blur-sm flex items-center justify-center text-white/80 hover:text-white"
+          className="absolute bottom-2 right-2 w-7 h-7 rounded-full bg-black/55 backdrop-blur-sm flex items-center justify-center text-white/80 hover:text-white"
           title="더보기"
         >
           <MoreHorizontal size={15} />
@@ -294,14 +284,6 @@ export function CameraPreviewTile({
         }`}
       >
         {selected && <Check size={14} strokeWidth={3} />}
-      </div>
-
-      {/* Name footer */}
-      <div className="absolute bottom-0 left-0 right-0 p-2 bg-gradient-to-t from-black/70 to-transparent flex items-center gap-1.5">
-        <span className="text-white/70"><DeviceIcon type={deviceType} /></span>
-        <span className={`text-xs font-medium truncate ${isCurrentDevice ? 'text-primary' : 'text-white'}`}>
-          {isCurrentDevice ? '이 기기' : '다른 기기'}
-        </span>
       </div>
     </motion.button>
 
