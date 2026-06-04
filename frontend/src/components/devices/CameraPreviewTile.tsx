@@ -259,10 +259,11 @@ export function CameraPreviewTile({
         </div>
       )}
 
-      {/* On-viewer lens switcher (front/back + zoom) */}
+      {/* On-viewer lens switcher (front/back + zoom). Bounded to the tile width + compact size so
+          it wraps instead of overflowing on small lobby tiles. */}
       {showLens && (
-        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10">
-          <CameraLensControl lenses={lensList} activeKey={lensActiveKey} onSelect={onSelectLens} />
+        <div className="absolute bottom-2 inset-x-2 z-10 flex justify-center">
+          <CameraLensControl lenses={lensList} activeKey={lensActiveKey} onSelect={onSelectLens} size="sm" />
         </div>
       )}
 

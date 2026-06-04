@@ -9,6 +9,8 @@ interface CameraLensControlProps {
   /** Selecting a lens (flip button or a zoom chip) calls this with the lens key. */
   onSelect: (key: string) => void;
   disabled?: boolean;
+  /** Compact sizing for small viewers (lobby grid tiles) so it never overflows the tile. */
+  size?: 'sm' | 'md';
   className?: string;
 }
 
@@ -16,21 +18,26 @@ interface CameraLensControlProps {
  * Shared smartphone-style lens switcher used on every camera viewer (room tiles, lobby preview,
  * camera manager). Front/back toggle (only when both facings exist) + zoom-lens chips for the
  * active facing. Pure presentation — the caller maps `key` back to a deviceId or a remote index.
+ * Wraps to a second row rather than overflowing when the viewer is narrow.
  */
-export function CameraLensControl({ lenses, activeKey, onSelect, disabled, className = '' }: CameraLensControlProps) {
+export function CameraLensControl({ lenses, activeKey, onSelect, disabled, size = 'md', className = '' }: CameraLensControlProps) {
   if (lenses.length <= 1) return null;
   const { canToggleFacing, currentFacing, group, flipTarget } = buildRoster(lenses, activeKey);
 
+  const sm = size === 'sm';
+  const flipCls = sm ? 'h-7 px-2 text-[11px] gap-0.5' : 'h-9 px-3 text-xs gap-1';
+  const chipCls = sm ? 'h-6 min-w-[1.75rem] px-1.5 text-[11px]' : 'h-8 min-w-[2rem] px-2 text-xs';
+
   return (
-    <div className={`flex items-center gap-2 ${className}`}>
+    <div className={`flex flex-wrap items-center justify-center ${sm ? 'gap-1' : 'gap-2'} max-w-full ${className}`}>
       {canToggleFacing && flipTarget && (
         <button
           type="button"
           disabled={disabled}
           onClick={(e) => { e.stopPropagation(); onSelect(flipTarget.key); }}
-          className="h-9 px-3 rounded-full bg-white/15 text-white text-xs font-medium flex items-center gap-1 hover:bg-white/25 transition-colors disabled:opacity-50"
+          className={`${flipCls} rounded-full bg-white/15 text-white font-medium flex items-center hover:bg-white/25 transition-colors disabled:opacity-50`}
         >
-          <SwitchCamera size={15} />
+          <SwitchCamera size={sm ? 13 : 15} />
           {currentFacing === 'user' ? '후면' : '전면'}
         </button>
       )}
@@ -44,7 +51,7 @@ export function CameraLensControl({ lenses, activeKey, onSelect, disabled, class
                 type="button"
                 disabled={disabled}
                 onClick={(e) => { e.stopPropagation(); onSelect(lens.key); }}
-                className={`h-8 min-w-[2rem] px-2 rounded-full text-xs font-semibold transition-colors disabled:opacity-50 ${
+                className={`${chipCls} rounded-full font-semibold transition-colors disabled:opacity-50 ${
                   isActive ? 'bg-white text-dark-900' : 'text-white/80 hover:bg-white/10'
                 }`}
               >

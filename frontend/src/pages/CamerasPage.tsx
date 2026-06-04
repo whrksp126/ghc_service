@@ -216,6 +216,31 @@ export function CamerasPage() {
   const [currentSheetOpen, setCurrentSheetOpen] = useState(false);
   const previewRef = useRef<HTMLVideoElement>(null);
 
+  // Temporary lens-detection diagnostic: open /cameras?debug=cam to dump the raw camera labels
+  // this device reports plus how we classify them, so device-specific facing can be calibrated.
+  const showDebug = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === 'cam';
+  const [dbgLines, setDbgLines] = useState<string[]>([]);
+  useEffect(() => {
+    if (!showDebug) return;
+    (async () => {
+      const lines: string[] = [];
+      const track = stream?.getVideoTracks()[0];
+      if (track) {
+        const s = track.getSettings();
+        const caps = (track.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { facingMode?: string[] };
+        lines.push(`active: settings.facingMode=${s.facingMode || '-'} caps.facingMode=${caps.facingMode?.join('|') || '-'}`);
+      }
+      try {
+        const devs = await navigator.mediaDevices.enumerateDevices();
+        devs.filter((d) => d.kind === 'videoinput').forEach((d, i) =>
+          lines.push(`raw[${i}] id=${d.deviceId.slice(0, 6)} "${d.label}"`));
+      } catch { /* ignore */ }
+      availableCameras.forEach((c, i) =>
+        lines.push(`cls[${i}] facing=${c.facing} zoom=${c.zoomRank} "${c.label}"`));
+      setDbgLines(lines);
+    })();
+  }, [showDebug, stream, availableCameras]);
+
   useEffect(() => {
     fetchCameras(deviceId);
     enumerateCameras();
@@ -261,6 +286,12 @@ export function CamerasPage() {
       </header>
 
       <main className="flex-1 px-6 pb-20 max-w-lg mx-auto w-full space-y-6">
+        {showDebug && (
+          <pre className="glass rounded-xl p-3 text-[10px] leading-relaxed text-secondary whitespace-pre-wrap break-all">
+            {dbgLines.length ? dbgLines.join('\n') : '카메라 진단 수집 중… (카메라를 켜주세요)'}
+          </pre>
+        )}
+
         {/* Current device */}
         <div>
           <h3 className="text-sm font-semibold text-white/40 uppercase tracking-wider mb-3">이 기기</h3>
