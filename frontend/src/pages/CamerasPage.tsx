@@ -266,17 +266,17 @@ export function CamerasPage() {
         <div>
           <h3 className="text-sm font-semibold text-white/40 uppercase tracking-wider mb-3">이 기기</h3>
           <div className="glass rounded-xl overflow-hidden">
-            <div className="bg-dark-800 relative">
+            <div className="bg-dark-800 relative aspect-video">
               {isActive && stream ? (
                 <video
                   ref={previewRef}
                   autoPlay
                   muted
                   playsInline
-                  className="w-full block mirror"
+                  className="absolute inset-0 w-full h-full object-contain mirror"
                 />
               ) : (
-                <div className="aspect-video flex items-center justify-center text-white/30">
+                <div className="absolute inset-0 flex items-center justify-center text-white/30">
                   <div className="text-center">
                     <Camera className="w-12 h-12 mx-auto mb-2 opacity-50" strokeWidth={1.5} />
                     <p className="text-sm">{isActive ? '불러오는 중...' : '카메라 꺼짐'}</p>
