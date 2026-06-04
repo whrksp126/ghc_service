@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react';
+import { useMemo, useRef, useState, useEffect, type ReactNode } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import type { RemoteTrack } from 'livekit-client';
 import { FeedCard } from './FeedCard';
@@ -24,21 +24,61 @@ interface GridLayoutProps {
   onPip?: (feedId: string) => void;
 }
 
+/**
+ * Pick the column count that makes the tiles as large as possible for the CURRENT container shape.
+ * On a tall/narrow viewport 2 landscape tiles stack top-to-bottom (1 col); on a wide one they sit
+ * side-by-side (2 cols) — and likewise for any feed count. Ties favour more columns (fills width).
+ */
+function bestColumns(n: number, W: number, H: number, aspect = 16 / 9): number {
+  if (n <= 1) return 1;
+  let best = 1;
+  let bestArea = -1;
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    const cellW = W / cols;
+    const cellH = H / rows;
+    const w = Math.min(cellW, cellH * aspect); // largest 16:9 box that fits the cell
+    const area = w * (w / aspect);
+    if (area >= bestArea) {
+      bestArea = area;
+      best = cols;
+    }
+  }
+  return best;
+}
+
 export function GridLayout({ feeds, onFeedClick, onPip }: GridLayoutProps) {
   const popped = useFloatingWindowStore((s) => s.popped);
-  const gridClass = useMemo(() => {
-    const count = feeds.length;
-    if (count === 0) return '';
-    if (count === 1) return 'grid-cols-1 grid-rows-1';
-    if (count === 2) return 'grid-cols-1 grid-rows-2 sm:grid-cols-2 sm:grid-rows-1';
-    if (count <= 4) return 'grid-cols-2 grid-rows-2';
-    if (count <= 6) return 'grid-cols-3 grid-rows-2';
-    if (count <= 9) return 'grid-cols-3 grid-rows-3';
-    return 'grid-cols-4 grid-rows-4';
-  }, [feeds.length]);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+
+  // Re-pick the layout whenever the container resizes (rotation, window resize, sidebar toggle).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (r) setSize({ w: r.width, h: r.height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const cols = useMemo(
+    () => bestColumns(feeds.length, size.w || 1, size.h || 1),
+    [feeds.length, size.w, size.h],
+  );
+  const rows = Math.max(1, Math.ceil(feeds.length / cols));
 
   return (
-    <div className={`grid gap-2 w-full h-full p-2 ${gridClass}`}>
+    <div
+      ref={containerRef}
+      className="grid gap-2 w-full h-full p-2"
+      style={{
+        gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+        gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+      }}
+    >
       <AnimatePresence mode="popLayout">
         {feeds.map((feed) => (
           <FeedCard

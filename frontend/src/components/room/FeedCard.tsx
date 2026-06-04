@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, memo, type ReactNode } from 'react';
+import { useRef, useEffect, useState, useId, memo, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import { MicOff, Monitor, Maximize2, Minimize2, PictureInPicture2, RotateCcw } from 'lucide-react';
 import { hasDocumentPip, hasVideoPip, enterVideoPip } from '../../lib/pipSupport';
@@ -9,6 +9,7 @@ import { useAudioSettings } from '../../stores/audioSettings';
 import { VoiceBars } from '../common/VoiceBars';
 import { showToast } from '../common/Toast';
 import { BottomSheet } from '../common/BottomSheet';
+import { useActiveTile } from '../../stores/activeTileStore';
 
 interface FeedCardProps {
   track: MediaStreamTrack | null;
@@ -54,7 +55,6 @@ export const FeedCard = memo(function FeedCard({
   voiceKey,
   controls,
   onDoubleClick,
-  fitContain,
   className = '',
   belowControls,
   onPip,
@@ -65,10 +65,17 @@ export const FeedCard = memo(function FeedCard({
   const videoRef = useRef<HTMLVideoElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const ambientRef = useRef<HTMLCanvasElement>(null);
-  const [showControls, setShowControls] = useState(false);
-  const [sheetOpen, setSheetOpen] = useState(false);
+  // Only one tile shows its controls at a time (shared store) — opening another, or clicking
+  // outside, closes this one. `ctrlId` is this tile's stable identity in that store.
+  const reactId = useId();
+  const ctrlId = pipId ?? layoutId ?? reactId;
+  const activeId = useActiveTile((s) => s.activeId);
+  const setActive = useActiveTile((s) => s.setActive);
+  const isActive = activeId === ctrlId;
   // Small tiles can't fit the centered control overlay, so they open a bottom sheet instead.
   const [isSmall, setIsSmall] = useState(false);
+  const showControls = isActive && !isSmall;
+  const sheetOpen = isActive && isSmall;
   const [isFullscreen, setIsFullscreen] = useState(false);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -92,10 +99,10 @@ export const FeedCard = memo(function FeedCard({
     return () => { el.srcObject = null; };
   }, [track, lkTrack, isLocal, isPoppedOut]);
 
-  // YouTube "ambient mode": when the video is letterboxed (object-contain — spotlight main,
-  // screens, fullscreen), bleed its colors into the empty bars. A tiny canvas samples the
-  // current frame at low res/fps; CSS upscales + blurs it into a soft glow behind the video.
-  const ambientOn = !isPoppedOut && !!track && (isScreen || !!fitContain || isFullscreen);
+  // YouTube "ambient mode": every video is object-contain (letterboxed), so bleed its colors into
+  // the empty bars on EVERY surface — grid tiles, spotlight, screens, fullscreen (and PiP draws its
+  // own equivalent). A tiny canvas samples the frame at low res/fps; CSS upscales + blurs it.
+  const ambientOn = !isPoppedOut && !!track;
   useEffect(() => {
     if (!ambientOn) return;
     const canvas = ambientRef.current;
@@ -136,15 +143,13 @@ export const FeedCard = memo(function FeedCard({
     if (clickTimer.current) {
       clearTimeout(clickTimer.current);
       clickTimer.current = null;
-      setShowControls(false);
-      setSheetOpen(false);
+      setActive(null);
       onDoubleClick?.();
       return;
     }
     clickTimer.current = setTimeout(() => {
       clickTimer.current = null;
-      if (isSmall) setSheetOpen(true);
-      else setShowControls((v) => !v);
+      setActive(isActive ? null : ctrlId); // open this tile's controls (closes any other)
     }, 230);
   };
 
@@ -152,7 +157,7 @@ export const FeedCard = memo(function FeedCard({
   // desktop keep our custom overlay); iOS Safari can't fullscreen a <div>, so fall back to
   // the <video> element's native fullscreen player.
   const toggleFullscreen = () => {
-    setSheetOpen(false);
+    setActive(null);
     const root = rootRef.current as any;
     const video = videoRef.current as any;
     const doc = document as any;
@@ -184,7 +189,7 @@ export const FeedCard = memo(function FeedCard({
   // (tap on a button or the backdrop) calls bumpControlsTimer to extend the window.
   const bumpControlsTimer = () => {
     if (hideTimer.current) clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(() => setShowControls(false), 3000);
+    hideTimer.current = setTimeout(() => setActive(null), 3000);
   };
   useEffect(() => {
     if (!showControls) {
@@ -195,6 +200,21 @@ export const FeedCard = memo(function FeedCard({
     return () => { if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; } };
   }, [showControls]);
 
+  // Click/tap anywhere outside this tile (another tile, empty space, the bars) closes its controls.
+  // Only the active tile mounts this, so there's a single listener. Deferred a tick so the opening
+  // click doesn't immediately re-close it.
+  useEffect(() => {
+    if (!isActive) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node | null;
+      if (t && rootRef.current?.contains(t)) return; // inside the tile (video/buttons/backdrop)
+      if (t && (t as HTMLElement).closest?.('[data-feed-sheet]')) return; // inside this tile's sheet
+      setActive(null);
+    };
+    const tid = window.setTimeout(() => document.addEventListener('pointerdown', onDown, true), 0);
+    return () => { clearTimeout(tid); document.removeEventListener('pointerdown', onDown, true); };
+  }, [isActive, setActive]);
+
   // PiP / multi-window: desktop Chromium → Document PiP (a real OS window that holds several tiles,
   // handled by the store via onPip). Mobile/Safari can host only ONE classic video PiP, so to show
   // several feeds at once we composite the "popped" feeds onto a single canvas and PiP that (see
@@ -202,8 +222,7 @@ export const FeedCard = memo(function FeedCard({
   // desktop popped model.
   const pipSupported = (hasDocumentPip || hasVideoPip()) && !!track;
   const handlePip = () => {
-    setShowControls(false);
-    setSheetOpen(false);
+    setActive(null);
     if (hasDocumentPip) {
       onPip?.();
       return;
@@ -319,7 +338,7 @@ export const FeedCard = memo(function FeedCard({
       {showControls && (
         <div
           className="absolute inset-0 z-30 flex items-center justify-center bg-black/45 backdrop-blur-sm"
-          onClick={(e) => { e.stopPropagation(); setShowControls(false); }}
+          onClick={(e) => { e.stopPropagation(); setActive(null); }}
         >
           <div
             className="flex flex-col items-center gap-3"
@@ -354,8 +373,8 @@ export const FeedCard = memo(function FeedCard({
     {/* Small-tile controls live OUTSIDE the tile so the bottom sheet's `position: fixed` is
         relative to the viewport (a transformed framer-motion ancestor would otherwise break it).
         Tapping a control keeps it open to toggle several; PiP/fullscreen and the backdrop dismiss. */}
-    <BottomSheet isOpen={sheetOpen} onClose={() => setSheetOpen(false)} title={label}>
-      <div className="px-4 pb-2 flex items-center justify-center flex-wrap gap-3">
+    <BottomSheet isOpen={sheetOpen} onClose={() => setActive(null)} title={label}>
+      <div data-feed-sheet className="px-4 pb-2 flex items-center justify-center flex-wrap gap-3">
         {controlButtons}
       </div>
       {belowControls && (

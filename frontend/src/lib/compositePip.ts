@@ -197,6 +197,17 @@ class CompositePipController {
       ctx.rect(cx, cy, cw, ch);
       ctx.clip();
       if (vw && vh && s.video.readyState >= 2) {
+        // Ambient backdrop: a blurred, zoomed COVER fill bleeds the video's colours into the
+        // letterbox bars — the same effect as the in-grid tiles' ambient canvas (clipped to cell).
+        const coverScale = Math.max(cw / vw, ch / vh);
+        const bw = vw * coverScale;
+        const bh = vh * coverScale;
+        ctx.save();
+        ctx.filter = 'blur(18px)';
+        ctx.globalAlpha = 0.55;
+        ctx.drawImage(s.video, cx + (cw - bw) / 2, cy + (ch - bh) / 2, bw, bh);
+        ctx.restore();
+
         // object-contain: fit the whole frame inside the cell (letterbox), never crop. Mirror
         // front/selfie cells so the composite matches the in-grid view (back stays readable).
         const scale = Math.min(cw / vw, ch / vh);

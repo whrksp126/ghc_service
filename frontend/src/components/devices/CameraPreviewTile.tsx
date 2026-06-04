@@ -219,7 +219,7 @@ export function CameraPreviewTile({
           autoPlay
           muted
           playsInline
-          className={`absolute inset-0 w-full h-full object-cover ${isCurrentDevice ? 'scale-x-[-1]' : ''} ${
+          className={`absolute inset-0 w-full h-full object-contain ${isCurrentDevice ? 'scale-x-[-1]' : ''} ${
             overlay ? 'opacity-0' : 'opacity-100'
           }`}
         />
