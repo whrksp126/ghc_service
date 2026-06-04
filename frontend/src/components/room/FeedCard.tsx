@@ -268,10 +268,13 @@ export const FeedCard = memo(function FeedCard({
 
   return (
     <>
+    {/* No `layoutId`: a shared-element morph between the unmounting grid tile and the mounting
+        spotlight tile was capturing/cross-fading the live <video>, leaving the focused camera black
+        (and killing the ambient sample). A clean mount + simple fade is reliable. `layout` stays
+        for smooth in-grid reflow when the responsive column count changes. */}
     <motion.div
       ref={rootRef}
       layout
-      layoutId={layoutId}
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
