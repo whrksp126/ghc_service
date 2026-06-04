@@ -1,3 +1,4 @@
+import { SwitchCamera } from 'lucide-react';
 import { buildRoster, lensChipLabel, type DisplayLens } from '../../lib/cameraLenses';
 
 interface CameraLensControlProps {
@@ -25,34 +26,22 @@ export function CameraLensControl({ lenses, activeKey, onSelect, disabled, size 
 
   const sm = size === 'sm';
   const chipCls = sm ? 'h-6 min-w-[1.75rem] px-1.5 text-[11px]' : 'h-8 min-w-[2rem] px-2 text-xs';
-  // Segmented 전면/후면 toggle highlights the CURRENT facing (not the target), so users always
-  // read it as "this is the camera I'm on" — avoids the flipped-label confusion.
-  const facingCls = (active: boolean) =>
-    `${chipCls} rounded-full font-semibold transition-colors disabled:opacity-50 ${
-      active ? 'bg-white text-dark-900' : 'text-white/80 hover:bg-white/10'
-    }`;
+  // Plain flip icon (no front/back text) toggles to the other facing — the viewer itself shows
+  // which camera you're on, so a label only invited confusion.
+  const flipTarget = currentFacing === 'user' ? backFirst : frontFirst;
 
   return (
     <div className={`flex flex-wrap items-center justify-center ${sm ? 'gap-1' : 'gap-2'} max-w-full ${className}`}>
-      {canToggleFacing && (
-        <div className="flex items-center gap-1 bg-black/35 rounded-full p-0.5">
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={(e) => { e.stopPropagation(); if (frontFirst) onSelect(frontFirst.key); }}
-            className={facingCls(currentFacing === 'user')}
-          >
-            전면
-          </button>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={(e) => { e.stopPropagation(); if (backFirst) onSelect(backFirst.key); }}
-            className={facingCls(currentFacing === 'environment')}
-          >
-            후면
-          </button>
-        </div>
+      {canToggleFacing && flipTarget && (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={(e) => { e.stopPropagation(); onSelect(flipTarget.key); }}
+          title="카메라 전환"
+          className={`${sm ? 'w-7 h-7' : 'w-9 h-9'} rounded-full bg-white/15 text-white flex items-center justify-center hover:bg-white/25 transition-colors disabled:opacity-50`}
+        >
+          <SwitchCamera size={sm ? 14 : 17} />
+        </button>
       )}
       {group.length > 1 && (
         <div className="flex items-center gap-1 bg-black/35 rounded-full p-0.5">
