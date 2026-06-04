@@ -217,7 +217,7 @@ export const FeedCard = memo(function FeedCard({
       compositePip.remove(id);
       onPip?.(); // clears popped[id] → restores the in-grid tile
     } else {
-      compositePip.add(id, track, label, !!mirror);
+      compositePip.add(id, track, label, !!mirror, lkTrack);
       compositePip.enter(); // requestPictureInPicture within this gesture (no-op if already open)
       onPip?.(); // marks popped[id] → tile shows the "in PiP" placeholder
     }

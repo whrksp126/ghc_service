@@ -7,17 +7,26 @@
 // Desktop Chromium uses Document PiP instead (real DOM in an OS window) — see floatingWindowStore
 // + DocumentPipPortal. This module is only the mobile/Safari fallback.
 
+import type { RemoteTrack } from 'livekit-client';
+
 interface Source {
   label: string;
   /** Mirror this cell horizontally (front/selfie cameras only). */
   mirror: boolean;
-  /** Offscreen <video> bound to the feed's track; sampled into the canvas each frame. */
+  /** Raw track (used for local feeds via srcObject). */
+  track: MediaStreamTrack;
+  /** LiveKit remote track, when this is a peer's feed — attached so adaptiveStream keeps it live. */
+  lkTrack?: RemoteTrack;
+  /** <video> bound to the feed's track; sampled into the canvas each frame. */
   video: HTMLVideoElement;
 }
 
-// Offscreen but attached to the DOM: some mobile browsers won't decode frames from a detached
-// <video>, which would leave the canvas (and thus the PiP) blank.
-const OFFSCREEN = 'position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0;pointer-events:none;';
+// The PiP output video can sit fully off-viewport (it's a canvas captureStream, not a LiveKit track).
+const OUT_HIDDEN = 'position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0;pointer-events:none;';
+// Source videos MUST stay inside the viewport (opacity:0, behind everything). LiveKit adaptiveStream
+// pauses a remote track when no *visible* element displays it; an off-viewport element counts as
+// hidden → the tile freezes in the PiP. Keeping them in-viewport (just invisible) keeps frames flowing.
+const SOURCE_HIDDEN = 'position:fixed;top:0;left:0;width:320px;height:180px;opacity:0;pointer-events:none;z-index:-1;';
 
 function mkVideo(): HTMLVideoElement {
   const v = document.createElement('video');
@@ -25,7 +34,6 @@ function mkVideo(): HTMLVideoElement {
   v.autoplay = true;
   v.setAttribute('playsinline', '');
   (v as HTMLVideoElement & { playsInline?: boolean }).playsInline = true;
-  v.style.cssText = OFFSCREEN;
   return v;
 }
 
@@ -35,13 +43,27 @@ class CompositePipController {
   private out = mkVideo();
   private outAttached = false;
   private sources = new Map<string, Source>();
-  private raf = 0;
+  private timer = 0;
   private onExitCb: (() => void) | null = null;
 
   constructor() {
     this.canvas.width = 1280;
     this.canvas.height = 720;
+    this.out.style.cssText = OUT_HIDDEN;
     this.out.addEventListener('leavepictureinpicture', () => this.clear());
+  }
+
+  private bind(s: Source): void {
+    if (s.lkTrack) s.lkTrack.attach(s.video);
+    else s.video.srcObject = new MediaStream([s.track]);
+    s.video.play().catch(() => {});
+  }
+
+  private unbind(s: Source): void {
+    if (s.lkTrack) {
+      try { s.lkTrack.detach(s.video); } catch { /* ignore */ }
+    }
+    s.video.srcObject = null;
   }
 
   /** Called once so the room can restore in-grid tiles when the user closes the OS PiP. */
@@ -57,20 +79,26 @@ class CompositePipController {
     return this.sources.size;
   }
 
-  /** Add (or replace the track of) a feed in the composite. Safe to call repeatedly. */
-  add(id: string, track: MediaStreamTrack, label: string, mirror = false): void {
+  /** Add (or replace the track of) a feed in the composite. Safe to call repeatedly. Pass the
+   *  LiveKit RemoteTrack for peer feeds so adaptiveStream keeps the subscription flowing. */
+  add(id: string, track: MediaStreamTrack, label: string, mirror = false, lkTrack?: RemoteTrack): void {
     const existing = this.sources.get(id);
     if (existing) {
-      const cur = (existing.video.srcObject as MediaStream | null)?.getVideoTracks()[0];
-      if (cur !== track) existing.video.srcObject = new MediaStream([track]);
       existing.label = label;
       existing.mirror = mirror;
+      if (existing.track !== track || existing.lkTrack !== lkTrack) {
+        this.unbind(existing);
+        existing.track = track;
+        existing.lkTrack = lkTrack;
+        this.bind(existing);
+      }
     } else {
       const video = mkVideo();
-      video.srcObject = new MediaStream([track]);
+      video.style.cssText = SOURCE_HIDDEN;
       document.body.appendChild(video);
-      video.play().catch(() => {});
-      this.sources.set(id, { label, mirror, video });
+      const s: Source = { label, mirror, track, lkTrack, video };
+      this.sources.set(id, s);
+      this.bind(s);
     }
     this.drawOnce(); // give captureStream a frame immediately (so requestPictureInPicture is ready)
     this.startLoop();
@@ -85,7 +113,7 @@ class CompositePipController {
   remove(id: string): void {
     const s = this.sources.get(id);
     if (!s) return;
-    s.video.srcObject = null;
+    this.unbind(s);
     s.video.remove();
     this.sources.delete(id);
     if (this.sources.size === 0) this.clear();
@@ -122,12 +150,11 @@ class CompositePipController {
   }
 
   private startLoop(): void {
-    if (this.raf) return;
-    const tick = () => {
-      this.raf = requestAnimationFrame(tick);
-      this.drawOnce();
-    };
-    this.raf = requestAnimationFrame(tick);
+    if (this.timer) return;
+    // setInterval (not requestAnimationFrame) so the composite keeps redrawing even when the tab is
+    // backgrounded — which is exactly when PiP is used. Background tabs throttle it but don't pause
+    // it outright, so the PiP stays live instead of freezing on the last frame.
+    this.timer = window.setInterval(() => this.drawOnce(), 1000 / 24);
   }
 
   private drawOnce(): void {
@@ -203,12 +230,12 @@ class CompositePipController {
 
   /** Tear everything down (called when the last feed leaves or the user closes the OS PiP). */
   private clear(): void {
-    if (this.raf) {
-      cancelAnimationFrame(this.raf);
-      this.raf = 0;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = 0;
     }
     for (const s of this.sources.values()) {
-      s.video.srcObject = null;
+      this.unbind(s);
       s.video.remove();
     }
     this.sources.clear();
