@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Trash2, MoreHorizontal, Share2, Pencil, LogOut, Video } from 'lucide-react';
+import { Trash2, MoreHorizontal, Share2, Pencil, LogOut } from 'lucide-react';
 import { Button } from '../components/common/Button';
 import { Modal } from '../components/common/Modal';
 import { BottomSheet, type SheetAction } from '../components/common/BottomSheet';
@@ -143,12 +143,6 @@ export function HomePage() {
                   <p className="text-sm font-medium truncate">{nickname}</p>
                   <p className="text-[11px] text-white/40 mt-0.5">개인 설정</p>
                 </div>
-                <button
-                  onClick={() => { setShowUserMenu(false); navigate('/cameras'); }}
-                  className="w-full flex items-center gap-2.5 text-left px-4 py-2.5 text-sm text-white/85 hover:bg-white/5 transition-colors"
-                >
-                  <Video size={16} /> 카메라 관리
-                </button>
                 <button
                   onClick={() => { setShowUserMenu(false); logout(); navigate('/login'); }}
                   className="w-full flex items-center gap-2.5 text-left px-4 py-2.5 text-sm text-danger hover:bg-danger/10 transition-colors"

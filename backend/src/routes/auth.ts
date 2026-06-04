@@ -143,8 +143,8 @@ router.get('/auth/google/callback', async (req, res) => {
 
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
         code,
         client_id: GOOGLE_CLIENT_ID,
         client_secret: GOOGLE_CLIENT_SECRET,
@@ -152,9 +152,10 @@ router.get('/auth/google/callback', async (req, res) => {
         grant_type: 'authorization_code',
       }),
     });
-    const tokenData = await tokenRes.json() as { access_token?: string };
+    const tokenData = await tokenRes.json() as { access_token?: string; error?: string; error_description?: string };
 
     if (!tokenData.access_token) {
+      console.error('Google token exchange failed:', tokenData.error, tokenData.error_description);
       return res.redirect(`${FRONTEND_URL}/login?error=google_token_failed`);
     }
 
