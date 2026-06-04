@@ -130,18 +130,34 @@ class CompositePipController {
   private drawOnce(): void {
     const ctx = this.canvas.getContext('2d');
     if (!ctx) return;
-    const { width: W, height: H } = this.canvas;
-    ctx.fillStyle = '#121212';
-    ctx.fillRect(0, 0, W, H);
 
     const items = [...this.sources.values()];
     const n = items.length;
-    if (n === 0) return;
+    if (n === 0) {
+      ctx.fillStyle = '#121212';
+      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      return;
+    }
 
-    const cols = n === 1 ? 1 : 2;
+    // Stack feeds TOP-TO-BOTTOM (1 column) so each gets a full-width 16:9 cell — the PiP window
+    // grows taller with each feed instead of squeezing them side-by-side. Fall back to a 2-column
+    // grid only past 3 feeds so it doesn't become absurdly tall. The canvas (and thus the PiP
+    // aspect ratio) is resized to match the layout.
+    const CELL_W = 640;
+    const CELL_H = 360; // 16:9 — matches the published track shape (1280×720)
+    const cols = n <= 3 ? 1 : 2;
     const rows = Math.ceil(n / cols);
-    const cw = W / cols;
-    const ch = H / rows;
+    const W = cols * CELL_W;
+    const H = rows * CELL_H;
+    if (this.canvas.width !== W || this.canvas.height !== H) {
+      this.canvas.width = W;
+      this.canvas.height = H;
+    }
+    ctx.fillStyle = '#121212';
+    ctx.fillRect(0, 0, W, H);
+
+    const cw = CELL_W;
+    const ch = CELL_H;
 
     items.forEach((s, i) => {
       const cx = (i % cols) * cw;
