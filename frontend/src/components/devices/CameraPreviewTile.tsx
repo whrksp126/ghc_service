@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, useCallback, type MouseEvent as ReactMouseEvent } from 'react';
 import { motion } from 'framer-motion';
-import { Camera, WifiOff, Check, RefreshCw, MoreHorizontal, SwitchCamera } from 'lucide-react';
+import { Camera, WifiOff, Check, RefreshCw } from 'lucide-react';
 import { requestPreview, type PreviewConnection, type PreviewStatus } from '../../services/previewStream';
 import { useAlwaysOnCamera } from '../../services/alwaysOnCamera';
 import { emitWithAck } from '../../lib/socket';
-import { BottomSheet, type SheetAction } from '../common/BottomSheet';
+import { CameraLensControl, lensesFromLocal, lensesFromRemote } from '../common/CameraLensControl';
+import type { RemoteLensMeta } from '../../stores/cameraStore';
 
 interface CameraPreviewTileProps {
   camId: string;
@@ -17,6 +18,7 @@ interface CameraPreviewTileProps {
   /** Remote-device lens switching (from cameraStore). */
   remoteCameraCount?: number;
   remoteCameraActiveIndex?: number;
+  remoteLenses?: RemoteLensMeta[];
   selected: boolean;
   disabled?: boolean;
   onToggle: () => void;
@@ -40,6 +42,7 @@ export function CameraPreviewTile({
   camOn = true,
   remoteCameraCount = 0,
   remoteCameraActiveIndex = 0,
+  remoteLenses,
   selected,
   disabled,
   onToggle,
@@ -48,7 +51,6 @@ export function CameraPreviewTile({
   const connRef = useRef<PreviewConnection | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [status, setStatus] = useState<PreviewStatus>('connecting');
-  const [sheetOpen, setSheetOpen] = useState(false);
   // Bumped whenever the current device's track changes mute/ended state so the render
   // re-derives liveness from the (mutated-in-place) MediaStreamTrack.
   const [, setTick] = useState(0);
@@ -172,27 +174,17 @@ export function CameraPreviewTile({
     return null;
   })();
 
-  // Lens switching
-  const localLensIndex = availableCameras.findIndex((c) => c.deviceId === activeCameraId);
-  const lensCount = isCurrentDevice ? availableCameras.length : remoteCameraCount;
-  const lensActive = isCurrentDevice ? localLensIndex : remoteCameraActiveIndex;
-  const showLens = (isCurrentDevice ? currentState === 'live' : status === 'live' && isOnline) && lensCount > 1;
+  // Lens switching — same shared front/back + zoom control everywhere. Keys are deviceIds for
+  // my current device (switch the local track) or stringified indices for a remote device
+  // (ask it to switch by index over the socket).
+  const lensList = isCurrentDevice ? lensesFromLocal(availableCameras) : lensesFromRemote(remoteLenses, remoteCameraCount);
+  const lensActiveKey = isCurrentDevice ? activeCameraId : String(remoteCameraActiveIndex);
+  const showLens = (isCurrentDevice ? currentState === 'live' : status === 'live' && isOnline) && lensList.length > 1;
 
-  const selectLens = (i: number) => {
-    if (i === lensActive) return;
-    if (isCurrentDevice) {
-      useAlwaysOnCamera.getState().switchCamera(availableCameras[i].deviceId).catch(() => {});
-    } else {
-      emitWithAck('camera:requestSwitchCamera', { targetDeviceId: camId, cameraIndex: i }).catch(() => {});
-    }
+  const onSelectLens = (key: string) => {
+    if (isCurrentDevice) useAlwaysOnCamera.getState().switchCamera(key).catch(() => {});
+    else emitWithAck('camera:requestSwitchCamera', { targetDeviceId: camId, cameraIndex: Number(key) }).catch(() => {});
   };
-
-  const lensActions: SheetAction[] = Array.from({ length: lensCount }, (_, i) => ({
-    icon: <SwitchCamera size={18} />,
-    label: `카메라 ${i + 1}`,
-    active: i === lensActive,
-    onClick: () => selectLens(i),
-  }));
 
   const retry = (e: ReactMouseEvent) => {
     e.stopPropagation();
@@ -202,12 +194,14 @@ export function CameraPreviewTile({
   };
 
   return (
-    <div className="relative">
-    <motion.button
-      type="button"
+    // role=button (not a real <button>) so the on-viewer lens control can nest interactive
+    // buttons without invalid markup.
+    <motion.div
+      role="button"
+      tabIndex={disabled ? -1 : 0}
+      aria-pressed={selected}
       whileTap={disabled ? undefined : { scale: 0.97 }}
       onClick={() => !disabled && onToggle()}
-      disabled={disabled}
       className={`relative w-full aspect-video rounded-xl overflow-hidden bg-dark-800 text-left transition-colors border-2 ${
         selected ? 'border-primary' : 'border-transparent'
       } ${offline || disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
@@ -265,16 +259,11 @@ export function CameraPreviewTile({
         </div>
       )}
 
-      {/* More menu (lens switching) */}
+      {/* On-viewer lens switcher (front/back + zoom) */}
       {showLens && (
-        <span
-          role="button"
-          onClick={(e: ReactMouseEvent) => { e.stopPropagation(); setSheetOpen(true); }}
-          className="absolute bottom-2 right-2 w-7 h-7 rounded-full bg-black/55 backdrop-blur-sm flex items-center justify-center text-white/80 hover:text-white"
-          title="더보기"
-        >
-          <MoreHorizontal size={15} />
-        </span>
+        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10">
+          <CameraLensControl lenses={lensList} activeKey={lensActiveKey} onSelect={onSelectLens} />
+        </div>
       )}
 
       {/* Selection check */}
@@ -285,14 +274,6 @@ export function CameraPreviewTile({
       >
         {selected && <Check size={14} strokeWidth={3} />}
       </div>
-    </motion.button>
-
-      <BottomSheet
-        isOpen={sheetOpen}
-        onClose={() => setSheetOpen(false)}
-        title={isCurrentDevice ? '이 기기' : '다른 기기'}
-        actions={lensActions}
-      />
-    </div>
+    </motion.div>
   );
 }

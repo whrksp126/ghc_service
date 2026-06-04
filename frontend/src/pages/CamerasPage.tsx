@@ -4,12 +4,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Smartphone, Camera,
   ChevronLeft, WifiOff, Power, RefreshCw,
-  MoreHorizontal, SwitchCamera, Pencil,
+  MoreHorizontal, Pencil,
 } from 'lucide-react';
 import { Button } from '../components/common/Button';
-import { BottomSheet, type SheetAction } from '../components/common/BottomSheet';
+import { BottomSheet } from '../components/common/BottomSheet';
+import { CameraLensControl, lensesFromLocal, lensesFromRemote } from '../components/common/CameraLensControl';
 import { showToast } from '../components/common/Toast';
-import { useCameraStore } from '../stores/cameraStore';
+import { useCameraStore, type RemoteLensMeta } from '../stores/cameraStore';
 import { useAuthStore } from '../stores/authStore';
 import { useAlwaysOnCamera } from '../services/alwaysOnCamera';
 import { requestPreview, type PreviewConnection, type PreviewStatus } from '../services/previewStream';
@@ -23,6 +24,7 @@ function RemoteCameraPreview({
   isCameraActive,
   remoteCameraCount,
   remoteCameraActiveIndex,
+  remoteLenses,
   onEditName,
 }: {
   camId: string;
@@ -31,6 +33,7 @@ function RemoteCameraPreview({
   isCameraActive: boolean;
   remoteCameraCount: number;
   remoteCameraActiveIndex: number;
+  remoteLenses?: RemoteLensMeta[];
   onEditName: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -165,6 +168,17 @@ function RemoteCameraPreview({
             <MoreHorizontal size={16} />
           </button>
         )}
+
+        {/* On-viewer lens switcher (front/back + zoom) — same control as the room */}
+        {previewStatus === 'live' && isOnline && (
+          <div className="absolute bottom-2 left-1/2 -translate-x-1/2">
+            <CameraLensControl
+              lenses={lensesFromRemote(remoteLenses, remoteCameraCount)}
+              activeKey={String(remoteCameraActiveIndex)}
+              onSelect={(key) => handleSwitchCamera(Number(key))}
+            />
+          </div>
+        )}
       </div>
 
       <BottomSheet
@@ -179,14 +193,6 @@ function RemoteCameraPreview({
             danger: isCameraActive,
             disabled: powerToggling,
           },
-          ...(isCameraActive && remoteCameraCount > 1
-            ? Array.from({ length: remoteCameraCount }, (_, i): SheetAction => ({
-                icon: <SwitchCamera size={18} />,
-                label: `카메라 ${i + 1}`,
-                onClick: () => handleSwitchCamera(i),
-                active: i === remoteCameraActiveIndex,
-              }))
-            : []),
           { icon: <Pencil size={18} />, label: '이름 변경', onClick: onEditName },
         ]}
       />
@@ -243,7 +249,6 @@ export function CamerasPage() {
 
   const currentDevice = cameras.find((c) => c.isCurrentDevice);
   const otherDevices = cameras.filter((c) => !c.isCurrentDevice);
-  const activeLensIndex = availableCameras.findIndex((c) => c.deviceId === activeCameraId);
 
   return (
     <div className="min-h-screen bg-dark-900 flex flex-col">
@@ -285,6 +290,24 @@ export function CamerasPage() {
               >
                 <MoreHorizontal size={18} />
               </button>
+
+              {/* On-viewer lens switcher (front/back + zoom) — same control as the room */}
+              {isActive && stream && (
+                <div className="absolute bottom-3 left-1/2 -translate-x-1/2">
+                  <CameraLensControl
+                    lenses={lensesFromLocal(availableCameras)}
+                    activeKey={activeCameraId}
+                    disabled={switching}
+                    onSelect={(key) => {
+                      if (key === activeCameraId) return;
+                      setSwitching(true);
+                      switchCamera(key)
+                        .catch((err: any) => showToast(err.message || '전환 실패', 'error'))
+                        .finally(() => setSwitching(false));
+                    }}
+                  />
+                </div>
+              )}
             </div>
 
             {currentDevice && editingId === currentDevice.id && (
@@ -321,27 +344,12 @@ export function CamerasPage() {
                 onClick: () => (isActive ? stop() : start()),
                 danger: isActive,
               },
-              ...(isActive && availableCameras.length > 1
-                ? availableCameras.map((_, i): SheetAction => ({
-                    icon: <SwitchCamera size={18} />,
-                    label: `카메라 ${i + 1}`,
-                    active: i === activeLensIndex,
-                    disabled: switching,
-                    onClick: () => {
-                      if (i === activeLensIndex) return;
-                      setSwitching(true);
-                      switchCamera(availableCameras[i].deviceId)
-                        .catch((err: any) => showToast(err.message || '전환 실패', 'error'))
-                        .finally(() => setSwitching(false));
-                    },
-                  }))
-                : []),
               ...(currentDevice
                 ? [{
                     icon: <Pencil size={18} />,
                     label: '이름 변경',
                     onClick: () => startEditing(currentDevice.id, currentDevice.cameraName),
-                  } as SheetAction]
+                  }]
                 : []),
             ]}
           />
@@ -390,6 +398,7 @@ export function CamerasPage() {
                         isCameraActive={cam.isCameraActive}
                         remoteCameraCount={cam.remoteCameraCount}
                         remoteCameraActiveIndex={cam.remoteCameraActiveIndex}
+                        remoteLenses={cam.remoteLenses}
                         onEditName={() => startEditing(cam.id, cam.cameraName)}
                       />
                     )}

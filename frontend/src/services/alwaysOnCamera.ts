@@ -1,16 +1,15 @@
 import { create } from 'zustand';
 import { micConstraints } from '../stores/audioSettings';
+import { classifyCameras, type CameraLens, type Facing } from '../lib/cameraLenses';
 
 // De-dupes concurrent camera acquisitions. On a cold load into /room, the global socket
 // init and the room lobby both call start() — two parallel getUserMedia calls make the
 // second fail with NotReadableError ("camera already in use"), breaking the preview.
 let inFlight: Promise<void> | null = null;
 
-export interface LocalCamera {
-  deviceId: string;
-  label: string;
-  facing: 'user' | 'environment' | 'unknown';
-}
+// LocalCamera is the cleaned lens shape from the shared classifier (facing + zoom inferred,
+// virtual combo cameras dropped). `availableCameras` order is the canonical lens index.
+export type LocalCamera = CameraLens;
 
 interface AlwaysOnCameraState {
   stream: MediaStream | null;
@@ -27,13 +26,6 @@ interface AlwaysOnCameraState {
   getAudioTrack: () => MediaStreamTrack | null;
 }
 
-function guessFacing(label: string): 'user' | 'environment' | 'unknown' {
-  const l = label.toLowerCase();
-  if (l.includes('front') || l.includes('전면') || l.includes('facetime') || l.includes('user')) return 'user';
-  if (l.includes('back') || l.includes('rear') || l.includes('후면') || l.includes('environment')) return 'environment';
-  return 'unknown';
-}
-
 export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
   stream: null,
   isActive: false,
@@ -45,20 +37,15 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
   enumerateCameras: async () => {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const seen = new Set<string>();
-      const cameras: LocalCamera[] = [];
-      let idx = 0;
-      for (const d of devices) {
-        if (d.kind !== 'videoinput') continue;
-        if (d.deviceId && seen.has(d.deviceId)) continue;
-        if (d.deviceId) seen.add(d.deviceId);
-        cameras.push({
-          deviceId: d.deviceId,
-          label: d.label || `카메라 ${idx + 1}`,
-          facing: guessFacing(d.label),
-        });
-        idx++;
-      }
+      // The active track's real facingMode is the one signal we can trust on iOS, where labels
+      // are opaque/localized — use it to fix the live camera's facing.
+      const activeTrack = get().stream?.getVideoTracks()[0];
+      const s = activeTrack?.getSettings();
+      const activeFacing = (s?.facingMode as Facing | undefined) || undefined;
+      const cameras = classifyCameras(devices, {
+        activeDeviceId: get().activeCameraId,
+        activeFacing,
+      });
       set({ availableCameras: cameras });
     } catch {
       set({ availableCameras: [] });

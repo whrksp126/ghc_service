@@ -30,6 +30,7 @@ export function useGlobalSocket() {
           socket.emit('camera:cameraListUpdate', {
             cameraCount: availableCameras.length,
             activeIndex: Math.max(0, activeIndex),
+            lenses: availableCameras.map((c) => ({ facing: c.facing, zoomRank: c.zoomRank })),
           });
         }
       }
@@ -70,6 +71,7 @@ export function useGlobalSocket() {
         socket.emit('camera:cameraListUpdate', {
           cameraCount: availableCameras.length,
           activeIndex: Math.max(0, activeIndex),
+          lenses: availableCameras.map((c) => ({ facing: c.facing, zoomRank: c.zoomRank })),
         });
       }
     });
@@ -93,17 +95,21 @@ export function useGlobalSocket() {
       }
 
       await cam.switchCamera(availableCameras[nextIdx].deviceId);
+      // Re-read the (possibly re-enumerated) roster so the lens metadata matches the new index.
+      const after = useAlwaysOnCamera.getState().availableCameras;
       socket.emit('camera:activeStatusUpdate', { isActive: true });
       socket.emit('camera:cameraListUpdate', {
-        cameraCount: availableCameras.length,
+        cameraCount: after.length,
         activeIndex: nextIdx,
+        lenses: after.map((c) => ({ facing: c.facing, zoomRank: c.zoomRank })),
       });
     });
 
-    socket.on('camera:cameraListUpdate', ({ deviceId: id, cameraCount, activeIndex }: any) => {
+    socket.on('camera:cameraListUpdate', ({ deviceId: id, cameraCount, activeIndex, lenses }: any) => {
       useCameraStore.getState().updateCamera(id, {
         remoteCameraCount: cameraCount,
         remoteCameraActiveIndex: activeIndex,
+        remoteLenses: lenses,
       });
     });
 

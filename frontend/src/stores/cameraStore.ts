@@ -1,5 +1,12 @@
 import { create } from 'zustand';
 import { api } from '../lib/api';
+import type { Facing } from '../lib/cameraLenses';
+
+/** Per-lens metadata a remote device reports so peers can show the same front/back + zoom UI. */
+export interface RemoteLensMeta {
+  facing: Facing;
+  zoomRank: number;
+}
 
 export interface CameraDevice {
   id: string;
@@ -14,6 +21,8 @@ export interface CameraDevice {
   lastSeenAt: string | null;
   remoteCameraCount: number;
   remoteCameraActiveIndex: number;
+  /** Classified lenses from the remote device (undefined for older clients → count fallback). */
+  remoteLenses?: RemoteLensMeta[];
 }
 
 interface CameraState {
@@ -59,6 +68,7 @@ export const useCameraStore = create<CameraState>()((set, get) => ({
           lastSeenAt: d.last_seen_at,
           remoteCameraCount: existing?.remoteCameraCount ?? 0,
           remoteCameraActiveIndex: existing?.remoteCameraActiveIndex ?? 0,
+          remoteLenses: existing?.remoteLenses,
         };
       });
       // Always include THIS device. The REST list only has currently-online devices, and
@@ -80,6 +90,7 @@ export const useCameraStore = create<CameraState>()((set, get) => ({
           lastSeenAt: existing?.lastSeenAt ?? null,
           remoteCameraCount: existing?.remoteCameraCount ?? 0,
           remoteCameraActiveIndex: existing?.remoteCameraActiveIndex ?? 0,
+          remoteLenses: existing?.remoteLenses,
         });
       }
       set({ cameras, loading: false });

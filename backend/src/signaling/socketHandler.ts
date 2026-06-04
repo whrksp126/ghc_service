@@ -201,11 +201,14 @@ export function setupSocketHandlers(io: Server) {
       }
     });
 
-    socket.on('camera:cameraListUpdate', ({ cameraCount, activeIndex }) => {
+    socket.on('camera:cameraListUpdate', ({ cameraCount, activeIndex, lenses }) => {
       socket.to(`user:${user.userId}`).emit('camera:cameraListUpdate', {
         deviceId,
         cameraCount,
         activeIndex,
+        // Per-lens facing/zoom metadata so peers render the same front/back + lens UI.
+        // Optional — older clients omit it and peers fall back to a plain lens count.
+        lenses,
       });
     });
 

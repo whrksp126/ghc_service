@@ -9,7 +9,8 @@ import { useRoomStore } from '../stores/roomStore';
 import { useDeviceStore } from '../stores/deviceStore';
 import { useUIStore } from '../stores/uiStore';
 import { useAuthStore } from '../stores/authStore';
-import { useCameraStore } from '../stores/cameraStore';
+import { useCameraStore, type CameraDevice } from '../stores/cameraStore';
+import { CameraLensControl, lensesFromLocal, lensesFromRemote } from '../components/common/CameraLensControl';
 import { emitWithAck } from '../lib/socket';
 import { api } from '../lib/api';
 import { useAlwaysOnCamera } from '../services/alwaysOnCamera';
@@ -27,7 +28,7 @@ import { CameraPreviewTile } from '../components/devices/CameraPreviewTile';
 import { ObsBroadcastModal } from '../components/room/ObsBroadcastModal';
 import { Button } from '../components/common/Button';
 import { showToast } from '../components/common/Toast';
-import { Mic, MicOff, Video, VideoOff, Users, SwitchCamera, Power, Volume2, VolumeX } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, Users, Power, Volume2, VolumeX } from 'lucide-react';
 import { initSounds, playSound } from '../lib/sounds';
 import type { Participant } from '../types/room';
 
@@ -90,76 +91,31 @@ function TileButton({ onClick, icon, danger, active }: { onClick: () => void; ic
   );
 }
 
-// Phone lenses show up as separate camera devices; order/label them by zoom from the OS
-// label (ultrawide → 0.5×, wide/main → 1×, telephoto → 2×). Heuristic — falls back to
-// "렌즈 N" when the label gives no hint.
-const ZOOM_BY_RANK = ['0.5×', '1×', '2×'];
-function lensZoomRank(label: string): number {
-  const l = label.toLowerCase();
-  if (/(ultra|초광각)/.test(l)) return 0;
-  if (/(tele|telephoto|망원)/.test(l)) return 2;
-  return 1;
-}
-
 /**
- * Smartphone-style camera switcher for my current device's tile: a front/back toggle (when
- * both facings exist) plus zoom-lens chips for the active facing. Reads the always-on
- * camera roster directly; onSelect hot-swaps the published track.
+ * My current device's lens switcher — reads the always-on roster and hot-swaps the published
+ * track via onSelect(deviceId). Thin wrapper over the shared CameraLensControl so every surface
+ * (room / lobby / manager) renders the identical front/back + zoom UI.
  */
 function CameraSwitcher({ onSelect }: { onSelect: (deviceId: string) => void }) {
   const cameras = useAlwaysOnCamera((s) => s.availableCameras);
   const activeId = useAlwaysOnCamera((s) => s.activeCameraId);
-  if (cameras.length <= 1) return null;
+  return <CameraLensControl lenses={lensesFromLocal(cameras)} activeKey={activeId} onSelect={onSelect} />;
+}
 
-  const active = cameras.find((c) => c.deviceId === activeId);
-  const front = cameras.filter((c) => c.facing === 'user');
-  const back = cameras.filter((c) => c.facing === 'environment');
-  const canToggleFacing = front.length > 0 && back.length > 0;
-
-  // Which facing are we in now? Unknown active → default to back (rear is the common case).
-  const currentFacing: 'user' | 'environment' = active?.facing === 'user' ? 'user' : 'environment';
-  // Lens chips come from the current facing group (or all cameras if we can't split them).
-  const group = canToggleFacing ? (currentFacing === 'user' ? front : back) : cameras;
-  const lenses = [...group].sort((a, b) => lensZoomRank(a.label) - lensZoomRank(b.label));
-  // Use ×-labels only when at least one lens is clearly non-default (otherwise plain ordinals).
-  const hasZoomHint = lenses.some((c) => lensZoomRank(c.label) !== 1);
-
-  const flipFacing = () => {
-    const target = currentFacing === 'user' ? back[0] : front[0];
-    if (target) onSelect(target.deviceId);
-  };
-
+/**
+ * Another of MY devices, shown in the room from its reported lens metadata. Selecting a lens
+ * asks that device to switch by index (the order it enumerated and broadcast).
+ */
+function RemoteLensControl({ cam }: { cam: CameraDevice }) {
+  const lenses = lensesFromRemote(cam.remoteLenses, cam.remoteCameraCount);
   return (
-    <div className="flex items-center gap-2">
-      {canToggleFacing && (
-        <button
-          onClick={flipFacing}
-          className="h-9 px-3 rounded-full bg-white/15 text-white text-xs font-medium flex items-center gap-1 hover:bg-white/25 transition-colors"
-        >
-          <SwitchCamera size={15} />
-          {currentFacing === 'user' ? '후면' : '전면'}
-        </button>
-      )}
-      {lenses.length > 1 && (
-        <div className="flex items-center gap-1 bg-black/35 rounded-full p-0.5">
-          {lenses.map((c, i) => {
-            const isActiveLens = c.deviceId === activeId;
-            const label = hasZoomHint ? (ZOOM_BY_RANK[lensZoomRank(c.label)] ?? `${i + 1}×`) : `렌즈 ${i + 1}`;
-            return (
-              <button
-                key={c.deviceId}
-                onClick={() => onSelect(c.deviceId)}
-                className={`h-8 min-w-[2rem] px-2 rounded-full text-xs font-semibold transition-colors ${
-                  isActiveLens ? 'bg-white text-dark-900' : 'text-white/80 hover:bg-white/10'
-                }`}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
+    <CameraLensControl
+      lenses={lenses}
+      activeKey={String(cam.remoteCameraActiveIndex)}
+      onSelect={(key) =>
+        emitWithAck('camera:requestSwitchCamera', { targetDeviceId: cam.id, cameraIndex: Number(key) }).catch(() => {})
+      }
+    />
   );
 }
 
@@ -638,16 +594,13 @@ export function RoomPage() {
       const isObs = uid === 'obs';
 
       let controls: ReactNode | undefined;
+      let belowControls: ReactNode | undefined;
       if (isMine) {
         const cam = cameras.find((x) => x.id === did);
-        controls = (
-          <>
-            <TileButton danger onClick={() => handleStopDevice(did)} icon={<Power size={18} />} />
-            {(cam?.remoteCameraCount ?? 0) > 1 && (
-              <TileButton onClick={() => emitWithAck('camera:requestSwitchCamera', { targetDeviceId: did }).catch(() => {})} icon={<SwitchCamera size={18} />} />
-            )}
-          </>
-        );
+        controls = <TileButton danger onClick={() => handleStopDevice(did)} icon={<Power size={18} />} />;
+        // Same on-viewer front/back + lens picker as my current device, driven by the metadata
+        // this device broadcasts. Replaces the old single "cycle camera" button.
+        belowControls = cam ? <RemoteLensControl cam={cam} /> : undefined;
       } else {
         // Others (incl. OBS): let me locally mute/unmute their audio for myself.
         controls = <AudioMuteButton mutekey={key} />;
@@ -656,7 +609,7 @@ export function RoomPage() {
       items.push({
         id: key, track: consumer?.track ?? null, lkTrack: consumer?.lkTrack,
         label: isMine ? (nickname || '나') : (consumer?.nickname || info?.nickname || (isObs ? 'OBS 라이브' : '참가자')),
-        isMuted: false, isLocal: false, isScreen: false, voiceKey: isObs ? undefined : key, controls,
+        isMuted: false, isLocal: false, isScreen: false, voiceKey: isObs ? undefined : key, controls, belowControls,
       });
     }
 
@@ -808,6 +761,7 @@ export function RoomPage() {
                     camOn={lobbyCamOn}
                     remoteCameraCount={cam.remoteCameraCount}
                     remoteCameraActiveIndex={cam.remoteCameraActiveIndex}
+                    remoteLenses={cam.remoteLenses}
                     selected={selectedCameras.has(cam.id)}
                     disabled={!cam.isOnline && !cam.isCurrentDevice}
                     onToggle={() => toggleCamera(cam.id)}
