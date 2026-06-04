@@ -15,6 +15,7 @@ export interface PipFeed {
   isScreen?: boolean;
   voiceKey?: string;
   controls?: ReactNode;
+  mirror?: boolean;
 }
 
 interface DocumentPipPortalProps {
@@ -65,7 +66,7 @@ export function DocumentPipPortal({ feeds }: DocumentPipPortalProps) {
             isScreen={feed.isScreen}
             voiceKey={feed.voiceKey}
             controls={feed.controls}
-            noMirror
+            mirror={feed.mirror}
             fitContain
             className="w-full h-full"
           />

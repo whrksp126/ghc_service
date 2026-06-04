@@ -15,6 +15,7 @@ interface FeedItem {
   voiceKey?: string;
   controls?: ReactNode;
   belowControls?: ReactNode;
+  mirror?: boolean;
 }
 
 interface GridLayoutProps {
@@ -52,6 +53,7 @@ export function GridLayout({ feeds, onFeedClick, onPip }: GridLayoutProps) {
             voiceKey={feed.voiceKey}
             controls={feed.controls}
             belowControls={feed.belowControls}
+            mirror={feed.mirror}
             onDoubleClick={() => onFeedClick?.(feed.id)}
             onPip={onPip ? () => onPip(feed.id) : undefined}
             isPoppedOut={!!popped[feed.id]}

@@ -9,6 +9,8 @@
 
 interface Source {
   label: string;
+  /** Mirror this cell horizontally (front/selfie cameras only). */
+  mirror: boolean;
   /** Offscreen <video> bound to the feed's track; sampled into the canvas each frame. */
   video: HTMLVideoElement;
 }
@@ -56,18 +58,19 @@ class CompositePipController {
   }
 
   /** Add (or replace the track of) a feed in the composite. Safe to call repeatedly. */
-  add(id: string, track: MediaStreamTrack, label: string): void {
+  add(id: string, track: MediaStreamTrack, label: string, mirror = false): void {
     const existing = this.sources.get(id);
     if (existing) {
       const cur = (existing.video.srcObject as MediaStream | null)?.getVideoTracks()[0];
       if (cur !== track) existing.video.srcObject = new MediaStream([track]);
       existing.label = label;
+      existing.mirror = mirror;
     } else {
       const video = mkVideo();
       video.srcObject = new MediaStream([track]);
       document.body.appendChild(video);
       video.play().catch(() => {});
-      this.sources.set(id, { label, video });
+      this.sources.set(id, { label, mirror, video });
     }
     this.drawOnce(); // give captureStream a frame immediately (so requestPictureInPicture is ready)
     this.startLoop();
@@ -169,14 +172,22 @@ class CompositePipController {
       ctx.rect(cx + 2, cy + 2, cw - 4, ch - 4);
       ctx.clip();
       if (vw && vh && s.video.readyState >= 2) {
-        // object-cover: scale to fill the cell, center-crop. Drawn un-mirrored on purpose so
-        // a self-camera's text reads correctly in the PiP (fixes the mirrored-text complaint).
+        // object-cover: scale to fill the cell, center-crop. Mirror front/selfie cells horizontally
+        // so the composite matches the in-grid view (back cameras stay un-mirrored → readable text).
         const scale = Math.max(cw / vw, ch / vh);
         const dw = vw * scale;
         const dh = vh * scale;
-        const dx = cx + (cw - dw) / 2;
         const dy = cy + (ch - dh) / 2;
-        ctx.drawImage(s.video, dx, dy, dw, dh);
+        if (s.mirror) {
+          // Flip horizontally within this cell, isolated so the label below isn't mirrored.
+          ctx.save();
+          ctx.translate(cx + cw, 0);
+          ctx.scale(-1, 1);
+          ctx.drawImage(s.video, cw - (cw - dw) / 2 - dw, dy, dw, dh);
+          ctx.restore();
+        } else {
+          ctx.drawImage(s.video, cx + (cw - dw) / 2, dy, dw, dh);
+        }
       }
       // Label chip (bottom-left of the cell).
       ctx.font = '600 22px system-ui, sans-serif';

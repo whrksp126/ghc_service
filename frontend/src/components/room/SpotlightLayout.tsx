@@ -15,6 +15,7 @@ interface FeedItem {
   voiceKey?: string;
   controls?: ReactNode;
   belowControls?: ReactNode;
+  mirror?: boolean;
 }
 
 interface SpotlightLayoutProps {
@@ -48,6 +49,7 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit, onPip
           voiceKey={spotlight.voiceKey}
           controls={spotlight.controls}
           belowControls={spotlight.belowControls}
+          mirror={spotlight.mirror}
           onDoubleClick={onExit}
           onPip={onPip ? () => onPip(spotlight.id) : undefined}
           isPoppedOut={!!popped[spotlight.id]}
@@ -73,6 +75,7 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit, onPip
                 voiceKey={feed.voiceKey}
                 controls={feed.controls}
                 belowControls={feed.belowControls}
+                mirror={feed.mirror}
                 onDoubleClick={() => onFeedClick?.(feed.id)}
                 onPip={onPip ? () => onPip(feed.id) : undefined}
                 isPoppedOut={!!popped[feed.id]}

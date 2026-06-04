@@ -564,6 +564,13 @@ export function RoomPage() {
     return m;
   }, [participants]);
 
+  // Facing of my current camera — mirror the tile ONLY for the front (selfie) lens so I see a
+  // natural mirror; back cameras stay un-mirrored so real-world text reads correctly.
+  const selfFacing = useAlwaysOnCamera((s) => {
+    const c = s.availableCameras.find((x) => x.deviceId === s.activeCameraId);
+    return c?.facing ?? 'unknown';
+  });
+
   // Camera tiles are roster-driven: one tile per participant device (mine + others), so a
   // device that turns its camera off keeps its slot (FeedCard renders an avatar placeholder
   // when track is null) instead of vanishing. The video consumer's track is attached when
@@ -598,6 +605,7 @@ export function RoomPage() {
         </>
       ),
       belowControls: isCamOn ? <CameraSwitcher onSelect={switchToDevice} /> : null,
+      mirror: selfFacing === 'user',
     });
 
     for (const key of keys) {
@@ -610,14 +618,19 @@ export function RoomPage() {
       // FX (speaking ring + waveform); those are only for connected users.
       const isObs = uid === 'obs';
 
+      // Facing is only known for MY OWN devices (broadcast over camera:cameraListUpdate → cameraStore).
+      // Mirror their front (selfie) lens to match how that device shows itself; other users / OBS have
+      // no facing metadata yet, so they stay un-mirrored (standard "see others as in person").
+      const camDev = cameras.find((x) => x.id === did);
+      const mirror = camDev?.remoteLenses?.[camDev.remoteCameraActiveIndex]?.facing === 'user';
+
       let controls: ReactNode | undefined;
       let belowControls: ReactNode | undefined;
       if (isMine) {
-        const cam = cameras.find((x) => x.id === did);
         controls = <TileButton danger onClick={() => handleStopDevice(did)} icon={<Power size={18} />} />;
         // Same on-viewer front/back + lens picker as my current device, driven by the metadata
         // this device broadcasts. Replaces the old single "cycle camera" button.
-        belowControls = cam ? <RemoteLensControl cam={cam} /> : undefined;
+        belowControls = camDev ? <RemoteLensControl cam={camDev} /> : undefined;
       } else {
         // Others (incl. OBS): let me locally mute/unmute their audio for myself.
         controls = <AudioMuteButton mutekey={key} />;
@@ -627,12 +640,13 @@ export function RoomPage() {
         id: key, track: consumer?.track ?? null, lkTrack: consumer?.lkTrack,
         label: isMine ? (nickname || '나') : (consumer?.nickname || info?.nickname || (isObs ? 'OBS 라이브' : '참가자')),
         isMuted: false, isLocal: false, isScreen: false, voiceKey: isObs ? undefined : key, controls, belowControls,
+        mirror,
       });
     }
 
     return items;
   }, [consumers, participants, participantLookup, localVideoTrack, deviceId, userId, nickname,
-    isMicOn, isCamOn, cameras, handleToggleMic, handleToggleCam, switchToDevice, handleStopDevice]);
+    isMicOn, isCamOn, cameras, selfFacing, handleToggleMic, handleToggleCam, switchToDevice, handleStopDevice]);
 
   // Screen shares are separate from the camera roster: my current-device screen (local
   // track) plus any screen consumer (mine-other-device or remote).

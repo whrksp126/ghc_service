@@ -37,8 +37,10 @@ interface FeedCardProps {
   isPoppedOut?: boolean;
   /** Stable feed id used to add/remove this feed from the mobile composite PiP. */
   pipId?: string;
-  /** Suppress the self-view mirror (used inside PiP so a self-camera's text reads correctly). */
-  noMirror?: boolean;
+  /** Mirror the video horizontally — set ONLY for front (selfie) cameras so the subject sees a
+   *  natural mirror; back cameras stay un-mirrored so real-world text reads correctly. Applied
+   *  identically in-grid, in PiP and (via the composite) for viewers, so everyone sees the same. */
+  mirror?: boolean;
 }
 
 export const FeedCard = memo(function FeedCard({
@@ -58,7 +60,7 @@ export const FeedCard = memo(function FeedCard({
   onPip,
   isPoppedOut,
   pipId,
-  noMirror,
+  mirror,
 }: FeedCardProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -215,7 +217,7 @@ export const FeedCard = memo(function FeedCard({
       compositePip.remove(id);
       onPip?.(); // clears popped[id] → restores the in-grid tile
     } else {
-      compositePip.add(id, track, label);
+      compositePip.add(id, track, label, !!mirror);
       compositePip.enter(); // requestPictureInPicture within this gesture (no-op if already open)
       onPip?.(); // marks popped[id] → tile shows the "in PiP" placeholder
     }
@@ -285,7 +287,7 @@ export const FeedCard = memo(function FeedCard({
           autoPlay
           playsInline
           muted={isLocal || track.kind === 'video'}
-          className={`w-full h-full ${isScreen || fitContain || isFullscreen ? 'object-contain' : 'object-cover'} ${isLocal && !isScreen && !noMirror ? 'scale-x-[-1]' : ''}`}
+          className={`w-full h-full ${isScreen || fitContain || isFullscreen ? 'object-contain' : 'object-cover'} ${mirror ? 'scale-x-[-1]' : ''}`}
           style={ambientOn ? { filter: 'drop-shadow(0 8px 30px rgba(0,0,0,0.5))' } : undefined}
         />
       ) : (
