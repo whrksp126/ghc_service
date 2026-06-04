@@ -1,4 +1,3 @@
-import { SwitchCamera } from 'lucide-react';
 import { buildRoster, lensChipLabel, type DisplayLens } from '../../lib/cameraLenses';
 
 interface CameraLensControlProps {
@@ -22,24 +21,38 @@ interface CameraLensControlProps {
  */
 export function CameraLensControl({ lenses, activeKey, onSelect, disabled, size = 'md', className = '' }: CameraLensControlProps) {
   if (lenses.length <= 1) return null;
-  const { canToggleFacing, currentFacing, group, flipTarget } = buildRoster(lenses, activeKey);
+  const { canToggleFacing, currentFacing, group, frontFirst, backFirst } = buildRoster(lenses, activeKey);
 
   const sm = size === 'sm';
-  const flipCls = sm ? 'h-7 px-2 text-[11px] gap-0.5' : 'h-9 px-3 text-xs gap-1';
   const chipCls = sm ? 'h-6 min-w-[1.75rem] px-1.5 text-[11px]' : 'h-8 min-w-[2rem] px-2 text-xs';
+  // Segmented 전면/후면 toggle highlights the CURRENT facing (not the target), so users always
+  // read it as "this is the camera I'm on" — avoids the flipped-label confusion.
+  const facingCls = (active: boolean) =>
+    `${chipCls} rounded-full font-semibold transition-colors disabled:opacity-50 ${
+      active ? 'bg-white text-dark-900' : 'text-white/80 hover:bg-white/10'
+    }`;
 
   return (
     <div className={`flex flex-wrap items-center justify-center ${sm ? 'gap-1' : 'gap-2'} max-w-full ${className}`}>
-      {canToggleFacing && flipTarget && (
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={(e) => { e.stopPropagation(); onSelect(flipTarget.key); }}
-          className={`${flipCls} rounded-full bg-white/15 text-white font-medium flex items-center hover:bg-white/25 transition-colors disabled:opacity-50`}
-        >
-          <SwitchCamera size={sm ? 13 : 15} />
-          {currentFacing === 'user' ? '후면' : '전면'}
-        </button>
+      {canToggleFacing && (
+        <div className="flex items-center gap-1 bg-black/35 rounded-full p-0.5">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={(e) => { e.stopPropagation(); if (frontFirst) onSelect(frontFirst.key); }}
+            className={facingCls(currentFacing === 'user')}
+          >
+            전면
+          </button>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={(e) => { e.stopPropagation(); if (backFirst) onSelect(backFirst.key); }}
+            className={facingCls(currentFacing === 'environment')}
+          >
+            후면
+          </button>
+        </div>
       )}
       {group.length > 1 && (
         <div className="flex items-center gap-1 bg-black/35 rounded-full p-0.5">

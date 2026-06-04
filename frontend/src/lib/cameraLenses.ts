@@ -116,8 +116,9 @@ export interface LensRoster {
   currentFacing: Facing;
   /** The lens chips to show for the current facing (or all lenses when ungrouped). */
   group: DisplayLens[];
-  /** First lens of the opposite facing, for the flip button. */
-  flipTarget: DisplayLens | null;
+  /** First lens of each facing — the segmented 전면/후면 toggle switches to these. */
+  frontFirst: DisplayLens | null;
+  backFirst: DisplayLens | null;
 }
 
 /** Derive what the switcher should render for a lens list + the currently active key. */
@@ -142,9 +143,7 @@ export function buildRoster(lenses: DisplayLens[], activeKey: string | null): Le
     : lenses;
   const sorted = [...group].sort((a, b) => a.zoomRank - b.zoomRank);
 
-  const flipTarget = canToggleFacing ? (currentFacing === 'user' ? back[0] : front[0]) ?? null : null;
-
-  return { canToggleFacing, currentFacing, group: sorted, flipTarget };
+  return { canToggleFacing, currentFacing, group: sorted, frontFirst: front[0] ?? null, backFirst: back[0] ?? null };
 }
 
 /** Chip label for a lens within its group: ×-zoom labels when at least one lens is clearly
