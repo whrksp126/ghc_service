@@ -287,7 +287,7 @@ export const FeedCard = memo(function FeedCard({
           autoPlay
           playsInline
           muted={isLocal || track.kind === 'video'}
-          className={`w-full h-full ${isScreen || fitContain || isFullscreen ? 'object-contain' : 'object-cover'} ${mirror ? 'scale-x-[-1]' : ''}`}
+          className={`w-full h-full object-contain ${mirror ? 'scale-x-[-1]' : ''}`}
           style={ambientOn ? { filter: 'drop-shadow(0 8px 30px rgba(0,0,0,0.5))' } : undefined}
         />
       ) : (
