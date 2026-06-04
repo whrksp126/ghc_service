@@ -3,7 +3,7 @@ import { LayoutGroup } from 'framer-motion';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useSocket } from '../hooks/useSocket';
 import {
-  connectToRoom, publishTrack, unpublishTrack, setTrackMuted, replacePublishedTrack, disconnectRoom,
+  connectToRoom, publishTrack, unpublishTrack, setTrackMuted, replacePublishedTrack, disconnectRoom, setLocalFacing,
 } from '../lib/livekitRoom';
 import { useRoomStore } from '../stores/roomStore';
 import { useDeviceStore } from '../stores/deviceStore';
@@ -571,6 +571,12 @@ export function RoomPage() {
     return c?.facing ?? 'unknown';
   });
 
+  // Publish my active camera's facing into LiveKit metadata so peers mirror my front/selfie feed
+  // exactly as I see myself ("보이는 대로"). Updates live on a front↔back switch.
+  useEffect(() => {
+    if (phase === 'inRoom') setLocalFacing(selfFacing);
+  }, [phase, selfFacing]);
+
   // Camera tiles are roster-driven: one tile per participant device (mine + others), so a
   // device that turns its camera off keeps its slot (FeedCard renders an avatar placeholder
   // when track is null) instead of vanishing. The video consumer's track is attached when
@@ -618,11 +624,12 @@ export function RoomPage() {
       // FX (speaking ring + waveform); those are only for connected users.
       const isObs = uid === 'obs';
 
-      // Facing is only known for MY OWN devices (broadcast over camera:cameraListUpdate → cameraStore).
-      // Mirror their front (selfie) lens to match how that device shows itself; other users / OBS have
-      // no facing metadata yet, so they stay un-mirrored (standard "see others as in person").
+      // Mirror a front (selfie) feed so it matches how the sender sees themselves. Facing comes
+      // from the sender's LiveKit metadata (works across users); fall back to my own device's
+      // broadcast lens metadata. OBS / unknown → un-mirrored.
       const camDev = cameras.find((x) => x.id === did);
-      const mirror = camDev?.remoteLenses?.[camDev.remoteCameraActiveIndex]?.facing === 'user';
+      const feedFacing = consumer?.facing ?? camDev?.remoteLenses?.[camDev.remoteCameraActiveIndex]?.facing;
+      const mirror = feedFacing === 'user';
 
       let controls: ReactNode | undefined;
       let belowControls: ReactNode | undefined;

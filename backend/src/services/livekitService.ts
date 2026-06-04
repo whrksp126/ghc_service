@@ -31,6 +31,9 @@ export async function createJoinToken(opts: {
     canPublish: true,
     canSubscribe: true,
     canPublishData: true,
+    // Lets the device update its own metadata at runtime (e.g. the active camera's facing,
+    // so peers can mirror a front/selfie feed to match how the sender sees themselves).
+    canUpdateOwnMetadata: true,
   });
   return at.toJwt();
 }

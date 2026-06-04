@@ -26,6 +26,8 @@ export interface ConsumerInfo {
   // separate Socket.IO roster lookup.
   nickname?: string;
   deviceLabel?: string;
+  /** Active camera facing from the sender's LiveKit metadata — peers mirror a 'user' (front) feed. */
+  facing?: 'user' | 'environment' | 'unknown';
   source?: 'camera' | 'screen' | 'microphone' | 'unknown';
   // The LiveKit RemoteTrack. Video feeds attach via this so adaptiveStream can pick the
   // right simulcast layer from the element's on-screen size/visibility.

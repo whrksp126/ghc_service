@@ -31,7 +31,7 @@ function parseIdentity(identity: string): { userId: string; deviceId: string } {
   return { userId: identity.slice(0, i), deviceId: identity.slice(i + 1) };
 }
 
-function metaOf(p: RemoteParticipant): { nickname?: string; deviceLabel?: string } {
+function metaOf(p: RemoteParticipant): { nickname?: string; deviceLabel?: string; facing?: ConsumerInfo['facing'] } {
   try {
     return p.metadata ? JSON.parse(p.metadata) : {};
   } catch {
@@ -62,6 +62,7 @@ function onTrackSubscribed(track: RemoteTrack, pub: RemoteTrackPublication, part
     paused: false,
     nickname: meta.nickname,
     deviceLabel: meta.deviceLabel,
+    facing: meta.facing,
     source: sourceOf(pub),
     lkTrack: track,
   });
@@ -113,12 +114,51 @@ export async function connectToRoom(token: string): Promise<Room> {
       useRoomStore.getState().removeConsumer(pub.trackSid);
     }
   });
+  // A peer switched camera (front↔back) → its participant metadata changes. Propagate the new
+  // facing onto that device's consumers so viewers re-mirror (front=selfie) to match the sender.
+  r.on(RoomEvent.ParticipantMetadataChanged, (_prev, participant) => {
+    const { userId, deviceId } = parseIdentity(participant.identity);
+    let facing: ConsumerInfo['facing'];
+    try {
+      facing = participant.metadata ? JSON.parse(participant.metadata).facing : undefined;
+    } catch {
+      facing = undefined;
+    }
+    const store = useRoomStore.getState();
+    for (const c of store.consumers) {
+      if (c.userId === userId && c.deviceId === deviceId && c.facing !== facing) {
+        store.updateConsumer(c.consumerId, { facing });
+      }
+    }
+  });
   r.on(RoomEvent.Reconnecting, () => useRoomStore.getState().setReconnecting(true));
   r.on(RoomEvent.Reconnected, () => useRoomStore.getState().setReconnecting(false));
 
   await r.connect(LIVEKIT_URL, token);
   room = r;
   return r;
+}
+
+/**
+ * Publish this device's active camera facing into its LiveKit participant metadata (merged with
+ * the existing nickname/deviceLabel) so peers can mirror a front/selfie feed. Needs the token's
+ * canUpdateOwnMetadata grant; no-ops before connect or when unchanged.
+ */
+export async function setLocalFacing(facing: ConsumerInfo['facing']): Promise<void> {
+  const lp = room?.localParticipant;
+  if (!lp) return;
+  let meta: Record<string, unknown> = {};
+  try {
+    meta = lp.metadata ? JSON.parse(lp.metadata) : {};
+  } catch {
+    meta = {};
+  }
+  if (meta.facing === facing) return;
+  try {
+    await lp.setMetadata(JSON.stringify({ ...meta, facing }));
+  } catch {
+    /* no grant / not connected yet — ignore */
+  }
 }
 
 export async function disconnectRoom(): Promise<void> {
