@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/common/Button';
 import { BottomSheet } from '../components/common/BottomSheet';
-import { CameraLensControl, lensesFromLocal, lensesFromRemote } from '../components/common/CameraLensControl';
+import { CameraLensControl, CameraZoomControl, lensesFromLocal, lensesFromRemote } from '../components/common/CameraLensControl';
 import { showToast } from '../components/common/Toast';
 import { useCameraStore, type RemoteLensMeta } from '../stores/cameraStore';
 import { useAuthStore } from '../stores/authStore';
@@ -227,8 +227,9 @@ export function CamerasPage() {
       const track = stream?.getVideoTracks()[0];
       if (track) {
         const s = track.getSettings();
-        const caps = (track.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { facingMode?: string[]; zoom?: unknown };
-        lines.push(`active: facingMode=${s.facingMode || '-'} caps.facing=${caps.facingMode?.join('|') || '-'} zoomCap=${caps.zoom ? 'yes' : 'no'}`);
+        const caps = (track.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { facingMode?: string[]; zoom?: { min: number; max: number } };
+        const z = caps.zoom ? `${caps.zoom.min}-${caps.zoom.max}` : 'no';
+        lines.push(`active: facingMode=${s.facingMode || '-'} caps.facing=${caps.facingMode?.join('|') || '-'} zoom=${z}`);
       }
       try {
         const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
@@ -322,9 +323,9 @@ export function CamerasPage() {
                 <MoreHorizontal size={18} />
               </button>
 
-              {/* On-viewer lens switcher (front/back + zoom) — same control as the room */}
+              {/* On-viewer lens + zoom switcher — same control as the room */}
               {isActive && stream && (
-                <div className="absolute bottom-3 left-1/2 -translate-x-1/2">
+                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5">
                   <CameraLensControl
                     lenses={lensesFromLocal(availableCameras)}
                     activeKey={activeCameraId}
@@ -337,6 +338,7 @@ export function CamerasPage() {
                         .finally(() => setSwitching(false));
                     }}
                   />
+                  <CameraZoomControl disabled={switching} />
                 </div>
               )}
             </div>

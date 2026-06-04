@@ -11,6 +11,12 @@ let inFlight: Promise<void> | null = null;
 // virtual combo cameras dropped). `availableCameras` order is the canonical lens index.
 export type LocalCamera = CameraLens;
 
+export interface ZoomRange {
+  min: number;
+  max: number;
+  step: number;
+}
+
 interface AlwaysOnCameraState {
   stream: MediaStream | null;
   isActive: boolean;
@@ -18,9 +24,13 @@ interface AlwaysOnCameraState {
   errorType: 'permission' | 'other' | null;
   availableCameras: LocalCamera[];
   activeCameraId: string | null;
+  /** Active camera's zoom (e.g. Note 9 rear telephoto = zoom on the single rear cam), or null. */
+  zoom: number | null;
+  zoomRange: ZoomRange | null;
   start: (cameraDeviceId?: string) => Promise<void>;
   stop: () => void;
   switchCamera: (cameraDeviceId: string) => Promise<void>;
+  setZoom: (z: number) => Promise<void>;
   enumerateCameras: () => Promise<void>;
   getVideoTrack: () => MediaStreamTrack | null;
   getAudioTrack: () => MediaStreamTrack | null;
@@ -33,6 +43,8 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
   errorType: null,
   availableCameras: [],
   activeCameraId: null,
+  zoom: null,
+  zoomRange: null,
 
   enumerateCameras: async () => {
     try {
@@ -110,11 +122,22 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
         const settings = videoTrack?.getSettings();
         const activeCamId = settings?.deviceId || cameraDeviceId || null;
 
+        // Optical/digital zoom on the active camera. On phones whose extra rear lens (e.g. Note 9
+        // telephoto) is NOT exposed as a separate deviceId, it's reachable only as zoom here.
+        const caps = (videoTrack?.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { zoom?: { min: number; max: number; step?: number } };
+        const sAny = (settings ?? {}) as MediaTrackSettings & { zoom?: number };
+        let zoomRange: ZoomRange | null = null;
+        let zoom: number | null = null;
+        if (caps.zoom && typeof caps.zoom.max === 'number' && typeof caps.zoom.min === 'number' && caps.zoom.max > caps.zoom.min) {
+          zoomRange = { min: caps.zoom.min, max: caps.zoom.max, step: caps.zoom.step || 0.1 };
+          zoom = typeof sAny.zoom === 'number' ? sAny.zoom : caps.zoom.min;
+        }
+
         videoTrack.onended = () => {
-          set({ isActive: false, stream: null, activeCameraId: null });
+          set({ isActive: false, stream: null, activeCameraId: null, zoom: null, zoomRange: null });
         };
 
-        set({ stream, isActive: true, error: null, errorType: null, activeCameraId: activeCamId });
+        set({ stream, isActive: true, error: null, errorType: null, activeCameraId: activeCamId, zoom, zoomRange });
 
         // Enumerate after getting permission (labels available after getUserMedia)
         await get().enumerateCameras();
@@ -140,11 +163,24 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
     if (stream) {
       stream.getTracks().forEach((t) => t.stop());
     }
-    set({ stream: null, isActive: false, error: null, activeCameraId: null });
+    set({ stream: null, isActive: false, error: null, activeCameraId: null, zoom: null, zoomRange: null });
   },
 
   switchCamera: async (cameraDeviceId: string) => {
     await get().start(cameraDeviceId);
+  },
+
+  // Apply zoom on the live track in place — the published/preview track is the same object, so
+  // the FOV change is reflected everywhere without re-acquiring the camera.
+  setZoom: async (z: number) => {
+    const track = get().stream?.getVideoTracks()[0];
+    const range = get().zoomRange;
+    if (!track || !range) return;
+    const clamped = Math.min(range.max, Math.max(range.min, z));
+    try {
+      await track.applyConstraints({ advanced: [{ zoom: clamped } as unknown as MediaTrackConstraintSet] });
+      set({ zoom: clamped });
+    } catch { /* device rejected the zoom value — ignore */ }
   },
 
   getVideoTrack: () => {
