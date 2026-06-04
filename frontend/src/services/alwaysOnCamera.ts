@@ -42,11 +42,26 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
       const activeTrack = get().stream?.getVideoTracks()[0];
       const s = activeTrack?.getSettings();
       const activeFacing = (s?.facingMode as Facing | undefined) || undefined;
-      const cameras = classifyCameras(devices, {
+      const fresh = classifyCameras(devices, {
         activeDeviceId: get().activeCameraId,
         activeFacing,
       });
-      set({ availableCameras: cameras });
+
+      // Android exposes only a SUBSET of lenses per enumerate call (it depends on which camera
+      // is currently open), so replacing the list drops lenses that were visible a moment ago.
+      // Accumulate instead: once a lens has been seen it stays (its facing/zoom refreshed from
+      // the latest read). Switching cameras re-enumerates and fills in the rest. Only merge once
+      // we have real deviceIds — pre-permission entries have empty ids and shouldn't accumulate.
+      const prev = get().availableCameras;
+      const haveIds = fresh.length > 0 && fresh.every((c) => c.deviceId);
+      if (!haveIds || prev.length === 0) {
+        set({ availableCameras: fresh });
+        return;
+      }
+      const freshById = new Map(fresh.map((c) => [c.deviceId, c]));
+      const merged: CameraLens[] = prev.map((p) => freshById.get(p.deviceId) ?? p);
+      for (const c of fresh) if (!prev.some((p) => p.deviceId === c.deviceId)) merged.push(c);
+      set({ availableCameras: merged });
     } catch {
       set({ availableCameras: [] });
     }
