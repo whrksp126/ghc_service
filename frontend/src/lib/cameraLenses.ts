@@ -54,6 +54,10 @@ export interface CameraLens {
   facing: Facing;
   /** 0 ultra-wide · 1 wide/main · 2 tele · 3 periscope. */
   zoomRank: number;
+  /** Set ONLY for synthetic zoom-lenses (Android optical ultra-wide reached via applyConstraints,
+   *  not a distinct deviceId). When present, switching means applyConstraints({ zoom }) on the
+   *  same track rather than re-acquiring a new deviceId. See expandWithZoom(). */
+  zoom?: number;
 }
 
 /**
@@ -100,6 +104,67 @@ export function classifyCameras(
   return cleaned.map(({ deviceId, label, facing, zoomRank }) => ({ deviceId, label, facing, zoomRank }));
 }
 
+// ---- Android optical ultra-wide via zoom ------------------------------------------------
+//
+// Android Chrome exposes only ONE logical back camera per facing — it does NOT enumerate the
+// physical ultra-wide/tele lenses as distinct deviceIds (unlike iOS 16.3+). The one genuinely
+// OPTICAL path the web exposes is the zoom constraint: on Android 11+ (CONTROL_ZOOM_RATIO) a
+// zoom range whose min < 1.0 means there IS a physical ultra-wide, and going below 1.0 cannot be
+// done digitally — the OS must switch to that physical lens. So `zoom.min < 1.0` is a reliable
+// "real optical ultra-wide present" signal. (Tele is NOT surfaced: we can't tell from the web
+// API which zoom ratio crosses to the optical tele lens vs a digital crop.)
+//
+// We expand the active back camera into TWO synthetic lenses (0.5× = zoom.min, 1× = main) that
+// share the SAME deviceId; selecting one calls applyConstraints({ zoom }) on the live track
+// (no re-acquire, no SFU renegotiation). Devices without sub-1.0 zoom (Note9-class, single-lens,
+// digital-only) get NOTHING extra — exactly the "real optical only, no fakes" requirement.
+
+/** Stable key for a lens: a synthetic zoom-lens keys on its zoom ratio, a real lens on deviceId.
+ *  Opaque to the UI — passed straight back to onSelect. */
+export function lensKey(l: { deviceId: string; zoom?: number }): string {
+  return l.zoom != null ? `z:${l.zoom}` : l.deviceId;
+}
+
+/**
+ * Expand the active back camera into optical zoom-lenses when (and only when) the device reports
+ * a sub-1.0 zoom range. Returns the input unchanged otherwise. The result order is canonical:
+ * device and peers MUST run this same function so a remote `cameraIndex` resolves identically.
+ */
+export function expandWithZoom(
+  cameras: CameraLens[],
+  opts: { activeDeviceId: string | null; zoom: { min: number; max: number } | null },
+): CameraLens[] {
+  const { activeDeviceId, zoom } = opts;
+  if (!zoom || zoom.min >= 1.0 || !activeDeviceId) return cameras;
+  const idx = cameras.findIndex((c) => c.deviceId === activeDeviceId);
+  if (idx < 0) return cameras;
+  const base = cameras[idx];
+  // Only the back logical camera gains an optical ultra-wide step.
+  if (base.facing === 'user') return cameras;
+  const ultra: CameraLens = { ...base, zoom: zoom.min, zoomRank: 0 }; // 0.5×
+  const wide: CameraLens = { ...base, zoom: 1.0, zoomRank: 1 }; // 1×
+  const out = [...cameras];
+  out.splice(idx, 1, ultra, wide);
+  return out;
+}
+
+/** The lens key currently live: the zoom-lens nearest the active zoom when expanded, else the
+ *  active deviceId. Used to highlight the active chip and to index the broadcast lens list. */
+export function activeLensKey(
+  expanded: CameraLens[],
+  activeDeviceId: string | null,
+  activeZoom: number,
+): string | null {
+  const zoomLenses = expanded.filter((c) => c.zoom != null && c.deviceId === activeDeviceId);
+  if (zoomLenses.length) {
+    const best = zoomLenses.reduce((a, b) =>
+      Math.abs((b.zoom as number) - activeZoom) < Math.abs((a.zoom as number) - activeZoom) ? b : a,
+    );
+    return lensKey(best);
+  }
+  return activeDeviceId;
+}
+
 // ---- Display roster (shared by the CameraLensControl UI) --------------------------------
 
 /** A lens as the switcher UI consumes it. `key` is a deviceId (local) or a stringified index
@@ -108,6 +173,8 @@ export interface DisplayLens {
   key: string;
   facing: Facing;
   zoomRank: number;
+  /** Present for synthetic optical zoom-lenses (informational; chips render by zoomRank). */
+  zoom?: number;
 }
 
 export interface LensRoster {

@@ -1,5 +1,5 @@
 import { SwitchCamera } from 'lucide-react';
-import { buildRoster, lensChipLabel, type DisplayLens } from '../../lib/cameraLenses';
+import { buildRoster, lensChipLabel, lensKey, type CameraLens, type DisplayLens } from '../../lib/cameraLenses';
 
 interface CameraLensControlProps {
   /** Lenses to offer. `key` is opaque (deviceId for local, index string for remote). */
@@ -67,19 +67,21 @@ export function CameraLensControl({ lenses, activeKey, onSelect, disabled, size 
   );
 }
 
-/** Map the local always-on roster to DisplayLens[] (key = deviceId). */
-export function lensesFromLocal(cameras: { deviceId: string; facing: DisplayLens['facing']; zoomRank: number }[]): DisplayLens[] {
-  return cameras.map((c) => ({ key: c.deviceId, facing: c.facing, zoomRank: c.zoomRank }));
+/** Map the local always-on roster (already run through expandWithZoom) to DisplayLens[]. Key is
+ *  a deviceId for real lenses or `z:<zoom>` for a synthetic optical zoom-lens. */
+export function lensesFromLocal(cameras: CameraLens[]): DisplayLens[] {
+  return cameras.map((c) => ({ key: lensKey(c), facing: c.facing, zoomRank: c.zoomRank, zoom: c.zoom }));
 }
 
-/** Map a remote device's reported lens metadata to DisplayLens[] (key = index string). When a
- *  device reports only a count (older client), fall back to N undistinguished lenses. */
+/** Map a remote device's reported lens metadata to DisplayLens[] (key = index string into the
+ *  device's broadcast list). When a device reports only a count (older client), fall back to N
+ *  undistinguished lenses. */
 export function lensesFromRemote(
-  remoteLenses: { facing: DisplayLens['facing']; zoomRank: number }[] | undefined,
+  remoteLenses: { facing: DisplayLens['facing']; zoomRank: number; zoom?: number }[] | undefined,
   count: number,
 ): DisplayLens[] {
   if (remoteLenses && remoteLenses.length) {
-    return remoteLenses.map((l, i) => ({ key: String(i), facing: l.facing, zoomRank: l.zoomRank }));
+    return remoteLenses.map((l, i) => ({ key: String(i), facing: l.facing, zoomRank: l.zoomRank, zoom: l.zoom }));
   }
   return Array.from({ length: count }, (_, i) => ({ key: String(i), facing: 'unknown' as const, zoomRank: 1 }));
 }

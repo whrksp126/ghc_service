@@ -4,6 +4,7 @@ import { useCameraStore } from '../../stores/cameraStore';
 import { useRoomStore } from '../../stores/roomStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useAlwaysOnCamera } from '../../services/alwaysOnCamera';
+import { expandWithZoom } from '../../lib/cameraLenses';
 import { emitWithAck } from '../../lib/socket';
 import { showToast } from '../common/Toast';
 import { BottomSheet, type SheetAction } from '../common/BottomSheet';
@@ -58,7 +59,11 @@ export function MyDeviceDock({ roomSlug, isCurrentCamOn, onToggleCurrentCam, onS
   const { userId, deviceId } = useAuthStore();
   const consumers = useRoomStore((s) => s.consumers);
   const isReconnecting = useRoomStore((s) => s.isReconnecting);
-  const localLensCount = useAlwaysOnCamera((s) => s.availableCameras.length);
+  // Count the zoom-expanded roster so the current device's "전환" action appears when an optical
+  // ultra-wide lens exists even though Chrome enumerates a single back deviceId.
+  const localLensCount = useAlwaysOnCamera((s) =>
+    expandWithZoom(s.availableCameras, { activeDeviceId: s.activeCameraId, zoom: s.zoomCaps }).length,
+  );
   const voiceLevels = useVoiceStore((s) => s.levels);
   const speakingThreshold = useAudioSettings((s) => s.threshold);
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set());

@@ -6,6 +6,8 @@ import type { Facing } from '../lib/cameraLenses';
 export interface RemoteLensMeta {
   facing: Facing;
   zoomRank: number;
+  /** Optical zoom ratio for synthetic Android ultra-wide lenses (informational on the peer side). */
+  zoom?: number;
 }
 
 export interface CameraDevice {

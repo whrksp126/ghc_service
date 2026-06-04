@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useAuthStore } from '../stores/authStore';
 import { useCameraStore } from '../stores/cameraStore';
-import { useAlwaysOnCamera } from '../services/alwaysOnCamera';
+import { useAlwaysOnCamera, buildCameraListPayload, applyRemoteLensSwitch } from '../services/alwaysOnCamera';
 import { getSocket, disconnectSocket } from '../lib/socket';
 import { useBackgroundCamera } from '../services/backgroundCamera';
 import { setupPreviewStreamer, setupCameraChangeListener, cleanupAllOutgoing } from '../services/previewStream';
@@ -24,15 +24,8 @@ export function useGlobalSocket() {
     useAlwaysOnCamera.getState().start().then(() => {
       if (socket.connected) {
         socket.emit('camera:activeStatusUpdate', { isActive: true });
-        const { availableCameras, activeCameraId } = useAlwaysOnCamera.getState();
-        if (availableCameras.length > 0) {
-          const activeIndex = availableCameras.findIndex((c) => c.deviceId === activeCameraId);
-          socket.emit('camera:cameraListUpdate', {
-            cameraCount: availableCameras.length,
-            activeIndex: Math.max(0, activeIndex),
-            lenses: availableCameras.map((c) => ({ facing: c.facing, zoomRank: c.zoomRank })),
-          });
-        }
+        const payload = buildCameraListPayload();
+        if (payload.cameraCount > 0) socket.emit('camera:cameraListUpdate', payload);
       }
     });
 
@@ -65,15 +58,8 @@ export function useGlobalSocket() {
     socket.on('camera:powerOn', async () => {
       await useAlwaysOnCamera.getState().start();
       socket.emit('camera:activeStatusUpdate', { isActive: true });
-      const { availableCameras, activeCameraId } = useAlwaysOnCamera.getState();
-      if (availableCameras.length > 0) {
-        const activeIndex = availableCameras.findIndex((c) => c.deviceId === activeCameraId);
-        socket.emit('camera:cameraListUpdate', {
-          cameraCount: availableCameras.length,
-          activeIndex: Math.max(0, activeIndex),
-          lenses: availableCameras.map((c) => ({ facing: c.facing, zoomRank: c.zoomRank })),
-        });
-      }
+      const payload = buildCameraListPayload();
+      if (payload.cameraCount > 0) socket.emit('camera:cameraListUpdate', payload);
     });
 
     socket.on('camera:powerOff', () => {
@@ -82,27 +68,11 @@ export function useGlobalSocket() {
     });
 
     socket.on('camera:switchRequested', async ({ cameraIndex }: { cameraIndex?: number }) => {
-      const cam = useAlwaysOnCamera.getState();
-      const { availableCameras, activeCameraId } = cam;
-      if (availableCameras.length <= 1) return;
-
-      let nextIdx: number;
-      if (cameraIndex !== undefined && cameraIndex >= 0 && cameraIndex < availableCameras.length) {
-        nextIdx = cameraIndex;
-      } else {
-        const currentIdx = availableCameras.findIndex((c) => c.deviceId === activeCameraId);
-        nextIdx = (currentIdx + 1) % availableCameras.length;
-      }
-
-      await cam.switchCamera(availableCameras[nextIdx].deviceId);
-      // Re-read the (possibly re-enumerated) roster so the lens metadata matches the new index.
-      const after = useAlwaysOnCamera.getState().availableCameras;
+      const changed = await applyRemoteLensSwitch(cameraIndex);
+      if (!changed) return;
+      // Re-broadcast the (possibly re-enumerated / re-zoomed) roster so peers' active lens matches.
       socket.emit('camera:activeStatusUpdate', { isActive: true });
-      socket.emit('camera:cameraListUpdate', {
-        cameraCount: after.length,
-        activeIndex: nextIdx,
-        lenses: after.map((c) => ({ facing: c.facing, zoomRank: c.zoomRank })),
-      });
+      socket.emit('camera:cameraListUpdate', buildCameraListPayload());
     });
 
     socket.on('camera:cameraListUpdate', ({ deviceId: id, cameraCount, activeIndex, lenses }: any) => {

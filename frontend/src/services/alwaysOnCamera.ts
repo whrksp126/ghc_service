@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { micConstraints } from '../stores/audioSettings';
-import { classifyCameras, type CameraLens, type Facing } from '../lib/cameraLenses';
+import {
+  classifyCameras, expandWithZoom, activeLensKey, lensKey,
+  type CameraLens, type Facing,
+} from '../lib/cameraLenses';
 
 // De-dupes concurrent camera acquisitions. On a cold load into /room, the global socket
 // init and the room lobby both call start() — two parallel getUserMedia calls make the
@@ -18,9 +21,18 @@ interface AlwaysOnCameraState {
   errorType: 'permission' | 'other' | null;
   availableCameras: LocalCamera[];
   activeCameraId: string | null;
+  /** Optical zoom range of the live BACK track when it exposes a sub-1.0 (ultra-wide) range;
+   *  null otherwise. Drives the synthetic 0.5×/1× lenses (see expandWithZoom). */
+  zoomCaps: { min: number; max: number } | null;
+  /** Currently applied zoom ratio (1 = main lens). */
+  activeZoom: number;
   start: (cameraDeviceId?: string) => Promise<void>;
   stop: () => void;
   switchCamera: (cameraDeviceId: string) => Promise<void>;
+  /** Apply an optical zoom ratio to the live track in place (no re-acquire, no SFU renegotiation). */
+  applyZoom: (zoom: number) => Promise<void>;
+  /** Select a lens by its UI key — `z:<zoom>` applies optical zoom, anything else switches deviceId. */
+  selectLocalLens: (key: string) => Promise<void>;
   enumerateCameras: () => Promise<void>;
   getVideoTrack: () => MediaStreamTrack | null;
   getAudioTrack: () => MediaStreamTrack | null;
@@ -33,6 +45,8 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
   errorType: null,
   availableCameras: [],
   activeCameraId: null,
+  zoomCaps: null,
+  activeZoom: 1,
 
   enumerateCameras: async () => {
     try {
@@ -110,11 +124,25 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
         const settings = videoTrack?.getSettings();
         const activeCamId = settings?.deviceId || cameraDeviceId || null;
 
+        // Detect an optical ultra-wide on the BACK lens (Android 11+ CONTROL_ZOOM_RATIO): a zoom
+        // range whose min < 1.0 can only be reached with a real wide-angle lens, so it's the one
+        // genuinely-optical extra lens the web exposes. Front cameras don't get this. `zoom` is a
+        // Chrome-only constrainable not in the standard TS lib types → cast through any.
+        const facing = (settings?.facingMode as Facing | undefined) || undefined;
+        const caps = (videoTrack?.getCapabilities?.() as any)?.zoom as
+          | { min: number; max: number }
+          | undefined;
+        const zoomCaps =
+          caps && typeof caps.min === 'number' && caps.min < 1.0 && facing !== 'user'
+            ? { min: caps.min, max: caps.max }
+            : null;
+        const activeZoom = (settings as any)?.zoom ?? 1;
+
         videoTrack.onended = () => {
-          set({ isActive: false, stream: null, activeCameraId: null });
+          set({ isActive: false, stream: null, activeCameraId: null, zoomCaps: null, activeZoom: 1 });
         };
 
-        set({ stream, isActive: true, error: null, errorType: null, activeCameraId: activeCamId });
+        set({ stream, isActive: true, error: null, errorType: null, activeCameraId: activeCamId, zoomCaps, activeZoom });
 
         // Enumerate after getting permission (labels available after getUserMedia)
         await get().enumerateCameras();
@@ -140,11 +168,29 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
     if (stream) {
       stream.getTracks().forEach((t) => t.stop());
     }
-    set({ stream: null, isActive: false, error: null, activeCameraId: null });
+    set({ stream: null, isActive: false, error: null, activeCameraId: null, zoomCaps: null, activeZoom: 1 });
   },
 
   switchCamera: async (cameraDeviceId: string) => {
     await get().start(cameraDeviceId);
+  },
+
+  applyZoom: async (zoom: number) => {
+    const track = get().stream?.getVideoTracks()[0];
+    if (!track) return;
+    try {
+      // Mutates the live track in place — the SAME MediaStreamTrack stays published, so the SFU
+      // and all viewers see the new field of view with no track replacement / renegotiation.
+      await track.applyConstraints({ advanced: [{ zoom }] } as any);
+      set({ activeZoom: zoom });
+    } catch {
+      // Device rejected the zoom (unsupported) — leave state untouched.
+    }
+  },
+
+  selectLocalLens: async (key: string) => {
+    if (key.startsWith('z:')) await get().applyZoom(parseFloat(key.slice(2)));
+    else await get().switchCamera(key);
   },
 
   getVideoTrack: () => {
@@ -157,3 +203,52 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
     return stream?.getAudioTracks()[0] ?? null;
   },
 }));
+
+/**
+ * The `camera:cameraListUpdate` payload for THIS device, computed over the zoom-expanded lens list
+ * so peers index the same canonical order (front/back + optical 0.5×/1× chips). Used by every
+ * broadcast site so device and peers stay in lockstep.
+ */
+export function buildCameraListPayload() {
+  const { availableCameras, activeCameraId, zoomCaps, activeZoom } = useAlwaysOnCamera.getState();
+  const expanded = expandWithZoom(availableCameras, { activeDeviceId: activeCameraId, zoom: zoomCaps });
+  const activeKey = activeLensKey(expanded, activeCameraId, activeZoom);
+  const activeIndex = Math.max(0, expanded.findIndex((c) => lensKey(c) === activeKey));
+  return {
+    cameraCount: expanded.length,
+    activeIndex,
+    lenses: expanded.map((c) => ({ facing: c.facing, zoomRank: c.zoomRank, zoom: c.zoom })),
+  };
+}
+
+/**
+ * Apply a peer's `camera:switchRequested`: resolve `cameraIndex` against the same zoom-expanded
+ * list, then either applyZoom (synthetic optical lens on the live track) or switchCamera (real
+ * deviceId). Falls back to cycling when no index is given. Returns false when there's nothing to
+ * switch (≤1 lens). Lives here so the socket handler stays a thin relay over the canonical list.
+ */
+export async function applyRemoteLensSwitch(cameraIndex?: number): Promise<boolean> {
+  const cam = useAlwaysOnCamera.getState();
+  const expanded = expandWithZoom(cam.availableCameras, {
+    activeDeviceId: cam.activeCameraId,
+    zoom: cam.zoomCaps,
+  });
+  if (expanded.length <= 1) return false;
+
+  let target: CameraLens;
+  if (cameraIndex !== undefined && cameraIndex >= 0 && cameraIndex < expanded.length) {
+    target = expanded[cameraIndex];
+  } else {
+    const curKey = activeLensKey(expanded, cam.activeCameraId, cam.activeZoom);
+    const curIdx = expanded.findIndex((c) => lensKey(c) === curKey);
+    target = expanded[(curIdx + 1) % expanded.length];
+  }
+
+  if (target.zoom != null && target.deviceId === cam.activeCameraId) {
+    await cam.applyZoom(target.zoom);
+  } else {
+    await cam.switchCamera(target.deviceId);
+    if (target.zoom != null) await useAlwaysOnCamera.getState().applyZoom(target.zoom);
+  }
+  return true;
+}

@@ -5,6 +5,7 @@ import { requestPreview, type PreviewConnection, type PreviewStatus } from '../.
 import { useAlwaysOnCamera } from '../../services/alwaysOnCamera';
 import { emitWithAck } from '../../lib/socket';
 import { CameraLensControl, lensesFromLocal, lensesFromRemote } from '../common/CameraLensControl';
+import { expandWithZoom, activeLensKey } from '../../lib/cameraLenses';
 import type { RemoteLensMeta } from '../../stores/cameraStore';
 
 interface CameraPreviewTileProps {
@@ -61,6 +62,8 @@ export function CameraPreviewTile({
   const aoError = useAlwaysOnCamera((s) => s.error);
   const availableCameras = useAlwaysOnCamera((s) => s.availableCameras);
   const activeCameraId = useAlwaysOnCamera((s) => s.activeCameraId);
+  const zoomCaps = useAlwaysOnCamera((s) => s.zoomCaps);
+  const activeZoom = useAlwaysOnCamera((s) => s.activeZoom);
 
   // ---- Current device --------------------------------------------------------------------
   // Make sure the camera is running (once per camOn flip).
@@ -174,15 +177,19 @@ export function CameraPreviewTile({
     return null;
   })();
 
-  // Lens switching — same shared front/back + zoom control everywhere. Keys are deviceIds for
-  // my current device (switch the local track) or stringified indices for a remote device
-  // (ask it to switch by index over the socket).
-  const lensList = isCurrentDevice ? lensesFromLocal(availableCameras) : lensesFromRemote(remoteLenses, remoteCameraCount);
-  const lensActiveKey = isCurrentDevice ? activeCameraId : String(remoteCameraActiveIndex);
+  // Lens switching — same shared front/back + zoom control everywhere. For my current device the
+  // roster is zoom-expanded (so an optical 0.5× ultra-wide shows as its own chip); keys are
+  // deviceIds or `z:<zoom>`. For a remote device, keys are stringified indices into its broadcast
+  // list (ask it to switch by index over the socket).
+  const localExpanded = isCurrentDevice
+    ? expandWithZoom(availableCameras, { activeDeviceId: activeCameraId, zoom: zoomCaps })
+    : [];
+  const lensList = isCurrentDevice ? lensesFromLocal(localExpanded) : lensesFromRemote(remoteLenses, remoteCameraCount);
+  const lensActiveKey = isCurrentDevice ? activeLensKey(localExpanded, activeCameraId, activeZoom) : String(remoteCameraActiveIndex);
   const showLens = (isCurrentDevice ? currentState === 'live' : status === 'live' && isOnline) && lensList.length > 1;
 
   const onSelectLens = (key: string) => {
-    if (isCurrentDevice) useAlwaysOnCamera.getState().switchCamera(key).catch(() => {});
+    if (isCurrentDevice) useAlwaysOnCamera.getState().selectLocalLens(key).catch(() => {});
     else emitWithAck('camera:requestSwitchCamera', { targetDeviceId: camId, cameraIndex: Number(key) }).catch(() => {});
   };
 

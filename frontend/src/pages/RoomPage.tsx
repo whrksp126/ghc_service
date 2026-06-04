@@ -11,9 +11,10 @@ import { useUIStore } from '../stores/uiStore';
 import { useAuthStore } from '../stores/authStore';
 import { useCameraStore, type CameraDevice } from '../stores/cameraStore';
 import { CameraLensControl, lensesFromLocal, lensesFromRemote } from '../components/common/CameraLensControl';
-import { emitWithAck } from '../lib/socket';
+import { expandWithZoom, activeLensKey } from '../lib/cameraLenses';
+import { emitWithAck, getSocket } from '../lib/socket';
 import { api } from '../lib/api';
-import { useAlwaysOnCamera } from '../services/alwaysOnCamera';
+import { useAlwaysOnCamera, buildCameraListPayload } from '../services/alwaysOnCamera';
 import { attachVoice, detachVoice, useVoiceStore } from '../services/voiceActivity';
 import { useAudioSettings, micConstraints } from '../stores/audioSettings';
 import { GridLayout } from '../components/room/GridLayout';
@@ -96,10 +97,19 @@ function TileButton({ onClick, icon, danger, active }: { onClick: () => void; ic
  * track via onSelect(deviceId). Thin wrapper over the shared CameraLensControl so every surface
  * (room / lobby / manager) renders the identical front/back + zoom UI.
  */
-function CameraSwitcher({ onSelect }: { onSelect: (deviceId: string) => void }) {
+function CameraSwitcher({ onSelect }: { onSelect: (key: string) => void }) {
   const cameras = useAlwaysOnCamera((s) => s.availableCameras);
   const activeId = useAlwaysOnCamera((s) => s.activeCameraId);
-  return <CameraLensControl lenses={lensesFromLocal(cameras)} activeKey={activeId} onSelect={onSelect} />;
+  const zoomCaps = useAlwaysOnCamera((s) => s.zoomCaps);
+  const activeZoom = useAlwaysOnCamera((s) => s.activeZoom);
+  const expanded = expandWithZoom(cameras, { activeDeviceId: activeId, zoom: zoomCaps });
+  return (
+    <CameraLensControl
+      lenses={lensesFromLocal(expanded)}
+      activeKey={activeLensKey(expanded, activeId, activeZoom)}
+      onSelect={onSelect}
+    />
+  );
 }
 
 /**
@@ -429,21 +439,27 @@ export function RoomPage() {
     }
   }, [setVideoTrack, setVideoProducerId]);
 
-  // Switch the current device to a specific camera (front/back or a zoom lens) in-room:
-  // re-acquire that lens and hot-swap the live publication's track so others (and the
-  // dock) see the new lens immediately.
-  const switchToDevice = useCallback(async (targetDeviceId: string) => {
+  // Switch the current device to a specific lens (front/back deviceId, or a synthetic optical
+  // zoom-lens `z:<zoom>`) in-room. A deviceId switch re-acquires the lens and hot-swaps the live
+  // publication's track; a zoom switch applies the constraint on the SAME track (no republish,
+  // no renegotiation). Either way we re-broadcast the lens list so peers' active-chip stays correct.
+  const switchToDevice = useCallback(async (key: string) => {
     const ao = useAlwaysOnCamera.getState();
-    if (!targetDeviceId || ao.activeCameraId === targetDeviceId) return;
     try {
-      await ao.switchCamera(targetDeviceId);
-      const newTrack = useAlwaysOnCamera.getState().stream?.getVideoTracks()[0];
-      const videoProducerId = useDeviceStore.getState().videoInput.producerId;
-      if (newTrack) {
-        await replacePublishedTrack(videoProducerId, newTrack);
-        setVideoTrack(newTrack);
-        setLocalVideoTrack(newTrack);
+      if (key.startsWith('z:')) {
+        await ao.applyZoom(parseFloat(key.slice(2)));
+      } else {
+        if (!key || ao.activeCameraId === key) return;
+        await ao.switchCamera(key);
+        const newTrack = useAlwaysOnCamera.getState().stream?.getVideoTracks()[0];
+        const videoProducerId = useDeviceStore.getState().videoInput.producerId;
+        if (newTrack) {
+          await replacePublishedTrack(videoProducerId, newTrack);
+          setVideoTrack(newTrack);
+          setLocalVideoTrack(newTrack);
+        }
       }
+      getSocket().emit('camera:cameraListUpdate', buildCameraListPayload());
     } catch {
       showToast('카메라 전환에 실패했습니다', 'error');
     }

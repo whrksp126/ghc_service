@@ -9,6 +9,7 @@ import {
 import { Button } from '../components/common/Button';
 import { BottomSheet } from '../components/common/BottomSheet';
 import { CameraLensControl, lensesFromLocal, lensesFromRemote } from '../components/common/CameraLensControl';
+import { expandWithZoom, activeLensKey } from '../lib/cameraLenses';
 import { showToast } from '../components/common/Toast';
 import { useCameraStore, type RemoteLensMeta } from '../stores/cameraStore';
 import { useAuthStore } from '../stores/authStore';
@@ -205,8 +206,8 @@ export function CamerasPage() {
   const { deviceId } = useAuthStore();
   const { cameras, fetchCameras } = useCameraStore();
   const {
-    stream, isActive, availableCameras, activeCameraId,
-    switchCamera, enumerateCameras, start, stop,
+    stream, isActive, availableCameras, activeCameraId, zoomCaps, activeZoom,
+    selectLocalLens, enumerateCameras, start, stop,
   } = useAlwaysOnCamera();
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -294,18 +295,24 @@ export function CamerasPage() {
               {/* On-viewer lens switcher (real lens deviceIds only) — same control as the room */}
               {isActive && stream && (
                 <div className="absolute bottom-3 left-1/2 -translate-x-1/2">
-                  <CameraLensControl
-                    lenses={lensesFromLocal(availableCameras)}
-                    activeKey={activeCameraId}
-                    disabled={switching}
-                    onSelect={(key) => {
-                      if (key === activeCameraId) return;
-                      setSwitching(true);
-                      switchCamera(key)
-                        .catch((err: any) => showToast(err.message || '전환 실패', 'error'))
-                        .finally(() => setSwitching(false));
-                    }}
-                  />
+                  {(() => {
+                    const expanded = expandWithZoom(availableCameras, { activeDeviceId: activeCameraId, zoom: zoomCaps });
+                    const lensActiveKey = activeLensKey(expanded, activeCameraId, activeZoom);
+                    return (
+                      <CameraLensControl
+                        lenses={lensesFromLocal(expanded)}
+                        activeKey={lensActiveKey}
+                        disabled={switching}
+                        onSelect={(key) => {
+                          if (key === lensActiveKey) return;
+                          setSwitching(true);
+                          selectLocalLens(key)
+                            .catch((err: any) => showToast(err.message || '전환 실패', 'error'))
+                            .finally(() => setSwitching(false));
+                        }}
+                      />
+                    );
+                  })()}
                 </div>
               )}
             </div>
