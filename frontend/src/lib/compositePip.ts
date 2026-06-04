@@ -169,16 +169,42 @@ class CompositePipController {
       return;
     }
 
-    // Stack feeds TOP-TO-BOTTOM (1 column) so each gets a full-width 16:9 cell — the PiP window
-    // grows taller with each feed instead of squeezing them side-by-side. Fall back to a 2-column
-    // grid only past 3 feeds so it doesn't become absurdly tall. The canvas (and thus the PiP
-    // aspect ratio) is resized to match the layout.
-    const CELL_W = 640;
-    const CELL_H = 360; // 16:9 — matches the published track shape (1280×720)
-    const cols = n <= 3 ? 1 : 2;
-    const rows = Math.ceil(n / cols);
-    const W = cols * CELL_W;
-    const H = rows * CELL_H;
+    // Lay out by each feed's REAL aspect ratio (videoWidth/videoHeight) so portrait and landscape
+    // feeds keep their natural shape — neither stretched nor heavily cropped. ≤3 feeds stack
+    // top-to-bottom with per-feed heights (the PiP grows in the matching direction); 4+ fall back
+    // to a uniform 2-column grid (fitting them all matters more than exact shape). The canvas — and
+    // thus the PiP window's aspect ratio — is resized to match.
+    const aspectOf = (s: Source) =>
+      s.video.videoWidth && s.video.videoHeight ? s.video.videoWidth / s.video.videoHeight : 16 / 9;
+
+    type Cell = { cx: number; cy: number; cw: number; ch: number };
+    let layout: Cell[];
+    let W: number;
+    let H: number;
+    if (n <= 3) {
+      W = 480;
+      let y = 0;
+      layout = items.map((s) => {
+        // Cell height from the feed's own aspect, clamped so one extreme ratio can't blow up the PiP.
+        const ch = Math.min(Math.max(Math.round(W / aspectOf(s)), 180), 960);
+        const cell: Cell = { cx: 0, cy: y, cw: W, ch };
+        y += ch;
+        return cell;
+      });
+      H = y;
+    } else {
+      const cols = 2;
+      const cellW = 480;
+      const cellH = 270; // uniform 16:9 for crowded grids
+      W = cols * cellW;
+      H = Math.ceil(n / cols) * cellH;
+      layout = items.map((_, i) => ({
+        cx: (i % cols) * cellW,
+        cy: Math.floor(i / cols) * cellH,
+        cw: cellW,
+        ch: cellH,
+      }));
+    }
     if (this.canvas.width !== W || this.canvas.height !== H) {
       this.canvas.width = W;
       this.canvas.height = H;
@@ -186,12 +212,8 @@ class CompositePipController {
     ctx.fillStyle = '#121212';
     ctx.fillRect(0, 0, W, H);
 
-    const cw = CELL_W;
-    const ch = CELL_H;
-
     items.forEach((s, i) => {
-      const cx = (i % cols) * cw;
-      const cy = Math.floor(i / cols) * ch;
+      const { cx, cy, cw, ch } = layout[i];
       const vw = s.video.videoWidth;
       const vh = s.video.videoHeight;
       ctx.save();
