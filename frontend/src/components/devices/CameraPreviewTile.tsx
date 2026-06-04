@@ -4,7 +4,7 @@ import { Camera, WifiOff, Check, RefreshCw } from 'lucide-react';
 import { requestPreview, type PreviewConnection, type PreviewStatus } from '../../services/previewStream';
 import { useAlwaysOnCamera } from '../../services/alwaysOnCamera';
 import { emitWithAck } from '../../lib/socket';
-import { CameraLensControl, CameraZoomControl, lensesFromLocal, lensesFromRemote } from '../common/CameraLensControl';
+import { CameraLensControl, lensesFromLocal, lensesFromRemote } from '../common/CameraLensControl';
 import type { RemoteLensMeta } from '../../stores/cameraStore';
 
 interface CameraPreviewTileProps {
@@ -259,12 +259,11 @@ export function CameraPreviewTile({
         </div>
       )}
 
-      {/* On-viewer lens + zoom switcher. Bounded to the tile width + compact size so it wraps
-          instead of overflowing on small lobby tiles. Zoom only applies to my current device. */}
-      {(showLens || (isCurrentDevice && currentState === 'live')) && (
-        <div className="absolute bottom-2 inset-x-2 z-10 flex flex-col items-center gap-1">
-          {showLens && <CameraLensControl lenses={lensList} activeKey={lensActiveKey} onSelect={onSelectLens} size="sm" />}
-          {isCurrentDevice && currentState === 'live' && <CameraZoomControl size="sm" />}
+      {/* On-viewer lens switcher (real lens deviceIds only). Bounded to the tile width + compact
+          size so it wraps instead of overflowing on small lobby tiles. */}
+      {showLens && (
+        <div className="absolute bottom-2 inset-x-2 z-10 flex justify-center">
+          <CameraLensControl lenses={lensList} activeKey={lensActiveKey} onSelect={onSelectLens} size="sm" />
         </div>
       )}
 

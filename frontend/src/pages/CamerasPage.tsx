@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/common/Button';
 import { BottomSheet } from '../components/common/BottomSheet';
-import { CameraLensControl, CameraZoomControl, lensesFromLocal, lensesFromRemote } from '../components/common/CameraLensControl';
+import { CameraLensControl, lensesFromLocal, lensesFromRemote } from '../components/common/CameraLensControl';
 import { showToast } from '../components/common/Toast';
 import { useCameraStore, type RemoteLensMeta } from '../stores/cameraStore';
 import { useAuthStore } from '../stores/authStore';
@@ -216,32 +216,6 @@ export function CamerasPage() {
   const [currentSheetOpen, setCurrentSheetOpen] = useState(false);
   const previewRef = useRef<HTMLVideoElement>(null);
 
-  // Temporary lens diagnostic: /cameras?debug=cam dumps the raw enumerate + accumulated list so
-  // device-specific lens exposure can be verified. Switch cameras to see the list fill in.
-  const showDebug = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === 'cam';
-  const [dbgLines, setDbgLines] = useState<string[]>([]);
-  useEffect(() => {
-    if (!showDebug) return;
-    (async () => {
-      const lines: string[] = [];
-      const track = stream?.getVideoTracks()[0];
-      if (track) {
-        const s = track.getSettings();
-        const caps = (track.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { facingMode?: string[]; zoom?: { min: number; max: number } };
-        const z = caps.zoom ? `${caps.zoom.min}-${caps.zoom.max}` : 'no';
-        lines.push(`active: facingMode=${s.facingMode || '-'} caps.facing=${caps.facingMode?.join('|') || '-'} zoom=${z}`);
-      }
-      try {
-        const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
-        lines.push(`raw(${devs.length}):`);
-        devs.forEach((d, i) => lines.push(`  raw[${i}] id=${d.deviceId.slice(0, 6)} "${d.label}"`));
-      } catch { /* ignore */ }
-      lines.push(`accumulated(${availableCameras.length}):`);
-      availableCameras.forEach((c, i) => lines.push(`  cls[${i}] ${c.facing}/zoom${c.zoomRank} "${c.label}"`));
-      setDbgLines(lines);
-    })();
-  }, [showDebug, stream, availableCameras]);
-
   useEffect(() => {
     fetchCameras(deviceId);
     enumerateCameras();
@@ -287,12 +261,6 @@ export function CamerasPage() {
       </header>
 
       <main className="flex-1 px-6 pb-20 max-w-lg mx-auto w-full space-y-6">
-        {showDebug && (
-          <pre className="glass rounded-xl p-3 text-[10px] leading-relaxed text-secondary whitespace-pre-wrap break-all">
-            {dbgLines.length ? dbgLines.join('\n') : '카메라 진단 수집 중… (카메라를 켜주세요)'}
-          </pre>
-        )}
-
         {/* Current device */}
         <div>
           <h3 className="text-sm font-semibold text-white/40 uppercase tracking-wider mb-3">이 기기</h3>
@@ -323,9 +291,9 @@ export function CamerasPage() {
                 <MoreHorizontal size={18} />
               </button>
 
-              {/* On-viewer lens + zoom switcher — same control as the room */}
+              {/* On-viewer lens switcher (real lens deviceIds only) — same control as the room */}
               {isActive && stream && (
-                <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5">
+                <div className="absolute bottom-3 left-1/2 -translate-x-1/2">
                   <CameraLensControl
                     lenses={lensesFromLocal(availableCameras)}
                     activeKey={activeCameraId}
@@ -338,7 +306,6 @@ export function CamerasPage() {
                         .finally(() => setSwitching(false));
                     }}
                   />
-                  <CameraZoomControl disabled={switching} />
                 </div>
               )}
             </div>

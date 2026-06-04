@@ -10,7 +10,7 @@ import { useDeviceStore } from '../stores/deviceStore';
 import { useUIStore } from '../stores/uiStore';
 import { useAuthStore } from '../stores/authStore';
 import { useCameraStore, type CameraDevice } from '../stores/cameraStore';
-import { CameraLensControl, CameraZoomControl, lensesFromLocal, lensesFromRemote } from '../components/common/CameraLensControl';
+import { CameraLensControl, lensesFromLocal, lensesFromRemote } from '../components/common/CameraLensControl';
 import { emitWithAck } from '../lib/socket';
 import { api } from '../lib/api';
 import { useAlwaysOnCamera } from '../services/alwaysOnCamera';
@@ -99,12 +99,7 @@ function TileButton({ onClick, icon, danger, active }: { onClick: () => void; ic
 function CameraSwitcher({ onSelect }: { onSelect: (deviceId: string) => void }) {
   const cameras = useAlwaysOnCamera((s) => s.availableCameras);
   const activeId = useAlwaysOnCamera((s) => s.activeCameraId);
-  return (
-    <div className="flex flex-col items-center gap-1.5">
-      <CameraLensControl lenses={lensesFromLocal(cameras)} activeKey={activeId} onSelect={onSelect} />
-      <CameraZoomControl />
-    </div>
-  );
+  return <CameraLensControl lenses={lensesFromLocal(cameras)} activeKey={activeId} onSelect={onSelect} />;
 }
 
 /**
