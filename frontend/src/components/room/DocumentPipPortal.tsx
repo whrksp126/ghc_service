@@ -65,6 +65,7 @@ export function DocumentPipPortal({ feeds }: DocumentPipPortalProps) {
             isScreen={feed.isScreen}
             voiceKey={feed.voiceKey}
             controls={feed.controls}
+            noMirror
             fitContain
             className="w-full h-full"
           />

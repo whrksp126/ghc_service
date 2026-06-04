@@ -26,6 +26,7 @@ import { BottomBar } from '../components/layout/BottomBar';
 import { ReconnectingOverlay } from '../components/connection/ReconnectingOverlay';
 import { LoadingScreen } from '../components/common/LoadingScreen';
 import { CameraPreviewTile } from '../components/devices/CameraPreviewTile';
+import { MobileCompositePip } from '../components/room/MobileCompositePip';
 import { ObsBroadcastModal } from '../components/room/ObsBroadcastModal';
 import { Button } from '../components/common/Button';
 import { showToast } from '../components/common/Toast';
@@ -885,6 +886,8 @@ export function RoomPage() {
 
       {/* Desktop Chromium: popped cameras render into a single always-on-top OS window. */}
       <DocumentPipPortal feeds={allFeeds} />
+      {/* Mobile/Safari: popped cameras are composited into a single classic-PiP video. */}
+      <MobileCompositePip feeds={allFeeds} />
 
       <ReconnectingOverlay />
     </div>

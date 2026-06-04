@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, memo, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import { MicOff, Monitor, Maximize2, Minimize2, PictureInPicture2, RotateCcw } from 'lucide-react';
 import { hasDocumentPip, hasVideoPip, enterVideoPip } from '../../lib/pipSupport';
+import { compositePip } from '../../lib/compositePip';
 import type { RemoteTrack } from 'livekit-client';
 import { useVoiceStore } from '../../services/voiceActivity';
 import { useAudioSettings } from '../../stores/audioSettings';
@@ -34,6 +35,10 @@ interface FeedCardProps {
   onPip?: () => void;
   /** This feed is currently shown in the desktop PiP window — render a placeholder, keep the slot. */
   isPoppedOut?: boolean;
+  /** Stable feed id used to add/remove this feed from the mobile composite PiP. */
+  pipId?: string;
+  /** Suppress the self-view mirror (used inside PiP so a self-camera's text reads correctly). */
+  noMirror?: boolean;
 }
 
 export const FeedCard = memo(function FeedCard({
@@ -52,6 +57,8 @@ export const FeedCard = memo(function FeedCard({
   belowControls,
   onPip,
   isPoppedOut,
+  pipId,
+  noMirror,
 }: FeedCardProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -186,15 +193,32 @@ export const FeedCard = memo(function FeedCard({
     return () => { if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; } };
   }, [showControls]);
 
-  // PiP / multi-window: desktop Chromium → Document PiP (handled by the store via onPip), every
-  // other platform → classic single-video PiP on this tile's <video>. Either floats over other
-  // apps and native fullscreen.
+  // PiP / multi-window: desktop Chromium → Document PiP (a real OS window that holds several tiles,
+  // handled by the store via onPip). Mobile/Safari can host only ONE classic video PiP, so to show
+  // several feeds at once we composite the "popped" feeds onto a single canvas and PiP that (see
+  // compositePip). Tapping a tile's button adds/removes it from that one shared PiP, mirroring the
+  // desktop popped model.
   const pipSupported = (hasDocumentPip || hasVideoPip()) && !!track;
   const handlePip = () => {
     setShowControls(false);
     setSheetOpen(false);
-    if (hasDocumentPip) onPip?.();
-    else enterVideoPip(videoRef.current);
+    if (hasDocumentPip) {
+      onPip?.();
+      return;
+    }
+    const id = pipId ?? layoutId;
+    if (!id || !track) {
+      enterVideoPip(videoRef.current); // no stable id → best-effort single-video PiP
+      return;
+    }
+    if (compositePip.has(id)) {
+      compositePip.remove(id);
+      onPip?.(); // clears popped[id] → restores the in-grid tile
+    } else {
+      compositePip.add(id, track, label);
+      compositePip.enter(); // requestPictureInPicture within this gesture (no-op if already open)
+      onPip?.(); // marks popped[id] → tile shows the "in PiP" placeholder
+    }
   };
 
   // Shared control buttons (parent mic/cam/switch + PiP + fullscreen), reused by the in-place
@@ -248,7 +272,7 @@ export const FeedCard = memo(function FeedCard({
           <span className="text-xs">PiP 창에서 보는 중</span>
           {onPip && (
             <button
-              onClick={(e) => { e.stopPropagation(); onPip(); }}
+              onClick={(e) => { e.stopPropagation(); handlePip(); }}
               className="flex items-center gap-1.5 text-xs text-white/70 bg-white/10 hover:bg-white/20 rounded-full px-3 py-1.5 transition-colors"
             >
               <RotateCcw size={14} /> 되돌리기
@@ -261,7 +285,7 @@ export const FeedCard = memo(function FeedCard({
           autoPlay
           playsInline
           muted={isLocal || track.kind === 'video'}
-          className={`w-full h-full ${isScreen || fitContain || isFullscreen ? 'object-contain' : 'object-cover'} ${isLocal && !isScreen ? 'scale-x-[-1]' : ''}`}
+          className={`w-full h-full ${isScreen || fitContain || isFullscreen ? 'object-contain' : 'object-cover'} ${isLocal && !isScreen && !noMirror ? 'scale-x-[-1]' : ''}`}
           style={ambientOn ? { filter: 'drop-shadow(0 8px 30px rgba(0,0,0,0.5))' } : undefined}
         />
       ) : (
