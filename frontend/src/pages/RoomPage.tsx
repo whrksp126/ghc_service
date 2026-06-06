@@ -3,7 +3,7 @@ import { LayoutGroup } from 'framer-motion';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useSocket } from '../hooks/useSocket';
 import {
-  connectToRoom, publishTrack, unpublishTrack, setMicGateOpen, replacePublishedTrack, disconnectRoom, setLocalFacing,
+  connectToRoom, publishTrack, unpublishTrack, setMicGateOpen, setMicVolume, replacePublishedTrack, disconnectRoom, setLocalFacing,
 } from '../lib/livekitRoom';
 import { useRoomStore } from '../stores/roomStore';
 import { useDeviceStore } from '../stores/deviceStore';
@@ -782,7 +782,7 @@ export function RoomPage() {
   // Noise gate (Discord "voice activity"): only transmit while my mic level is above the
   // sensitivity threshold. We mute/unmute the published mic track (a clone), so the local
   // analyser keeps reading the original track and can re-open the gate when I speak again.
-  const { noiseGate, threshold: micThreshold } = useAudioSettings();
+  const { noiseGate, threshold: micThreshold, micGain } = useAudioSettings();
   const myLevel = useVoiceStore((s) => (myVoiceKey ? s.levels[myVoiceKey] ?? 0 : 0));
   const audioProducerId = useDeviceStore((s) => s.audioInput.producerId);
   const gateOpenRef = useRef(true);
@@ -808,6 +808,12 @@ export function RoomPage() {
       setMicGateOpen(audioProducerId, open);
     }
   }, [noiseGate, micThreshold, myLevel, localAudioTrack, audioProducerId]);
+
+  // Apply the user's mic transmit gain (mic volume) to the published mic. Re-applied after a
+  // (re)publish (audioProducerId change) so a boost persists across mic device switches.
+  useEffect(() => {
+    setMicVolume(micGain);
+  }, [micGain, audioProducerId]);
 
   // --- PIN required screen ---
   if (needsPin) {

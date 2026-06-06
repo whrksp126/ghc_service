@@ -21,7 +21,14 @@ export function preferDocumentPip(): boolean {
 }
 
 export function hasVideoPip(): boolean {
-  return typeof document !== 'undefined' && !!(document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled;
+  if (typeof document === 'undefined') return false;
+  // `pictureInPictureEnabled` is the spec flag, but some Android Chrome builds report it false even
+  // though the requestPictureInPicture method exists and works — so also accept the method's
+  // presence. The actual enter call is wrapped in try/catch, so a false positive just no-ops.
+  const enabled = !!(document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled;
+  const hasMethod = typeof window !== 'undefined'
+    && typeof (window.HTMLVideoElement?.prototype as { requestPictureInPicture?: unknown } | undefined)?.requestPictureInPicture === 'function';
+  return enabled || hasMethod;
 }
 
 /** Any OS-window promotion available at all. */

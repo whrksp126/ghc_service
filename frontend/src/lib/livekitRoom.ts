@@ -38,6 +38,10 @@ interface MicGraph {
 }
 const micGraphBySid = new Map<string, MicGraph>();
 
+// User-controlled transmit gain (mic volume). The gate opens to THIS value (not a hardcoded 1) so a
+// quiet voice can be boosted above a loud live source. Persisted setting drives it via setMicVolume.
+let desiredMicGain = 1;
+
 let micCtx: AudioContext | null = null;
 function ensureMicCtx(): AudioContext {
   if (!micCtx) {
@@ -263,7 +267,7 @@ export async function publishTrack(
     const ctx = ensureMicCtx();
     const srcNode = ctx.createMediaStreamSource(new MediaStream([track]));
     const gain = ctx.createGain();
-    gain.gain.value = 1;
+    gain.gain.value = desiredMicGain;
     const dest = ctx.createMediaStreamDestination();
     srcNode.connect(gain);
     gain.connect(dest);
@@ -315,7 +319,16 @@ export function setMicGateOpen(trackSid: string | null, open: boolean): void {
   const g = micGraphBySid.get(trackSid);
   if (!g) return;
   if (g.ctx.state === 'suspended') void g.ctx.resume().catch(() => {});
-  g.gain.gain.setTargetAtTime(open ? 1 : 0, g.ctx.currentTime, 0.015);
+  g.gain.gain.setTargetAtTime(open ? desiredMicGain : 0, g.ctx.currentTime, 0.015);
+}
+
+/** Set the transmit gain (mic volume). Applies immediately to any currently-open mic so a live
+ *  volume tweak is audible at once; gated (silent) mics pick it up next time they open. */
+export function setMicVolume(gain: number): void {
+  desiredMicGain = gain;
+  for (const g of micGraphBySid.values()) {
+    if (g.gain.gain.value > 0.001) g.gain.gain.setTargetAtTime(gain, g.ctx.currentTime, 0.02);
+  }
 }
 
 /** Swap the underlying device track of a published video track (camera switch). */

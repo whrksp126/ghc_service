@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Modal } from '../common/Modal';
-import { useAudioSettings, micConstraints, THRESHOLD_MIN, THRESHOLD_MAX } from '../../stores/audioSettings';
+import { useAudioSettings, micConstraints, THRESHOLD_MIN, THRESHOLD_MAX, MIC_GAIN_MIN, MIC_GAIN_MAX } from '../../stores/audioSettings';
 import { useDeviceStore } from '../../stores/deviceStore';
 import { useAlwaysOnCamera } from '../../services/alwaysOnCamera';
 import { useVoiceStore, attachVoice, detachVoice } from '../../services/voiceActivity';
@@ -138,6 +138,25 @@ export function AudioSettingsModal({ isOpen, onClose }: { isOpen: boolean; onClo
               <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-3.5 h-3.5 rounded-full bg-primary shadow ring-2 ring-white/70" />
             </div>
           </div>
+        </div>
+
+        <div className="pt-3">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-sm text-white/90">마이크 음량</span>
+            <span className="text-xs text-white/50">{Math.round(s.micGain * 100)}%</span>
+          </div>
+          <p className="text-xs text-white/40 mb-2">
+            내 목소리가 작게 들린다면 키우세요. 감도와 별개로, 실제로 전송되는 소리 크기예요. (100% 기본)
+          </p>
+          <input
+            type="range"
+            min={MIC_GAIN_MIN}
+            max={MIC_GAIN_MAX}
+            step={0.05}
+            value={s.micGain}
+            onChange={(e) => s.set({ micGain: Number(e.target.value) })}
+            className="w-full accent-primary cursor-pointer"
+          />
         </div>
       </div>
     </Modal>

@@ -16,12 +16,22 @@ interface AudioSettingsState {
    * mapped range was too narrow). Roughly: normal speech ≈ 0.05, quiet room noise < 0.02.
    */
   threshold: number;
+  /**
+   * Transmit gain (mic volume) applied to the published mic via a GainNode — distinct from the
+   * gate threshold (감도). 1.0 = unchanged; raise it so a quiet voice isn't drowned out by a loud
+   * live source. Above ~2 can clip, so cap it.
+   */
+  micGain: number;
   set: (patch: Partial<AudioSettingsState>) => void;
 }
 
 /** Editable range for the threshold; also the meter's max (full width === THRESHOLD_MAX). */
 export const THRESHOLD_MIN = 0.005;
 export const THRESHOLD_MAX = 0.3;
+
+/** Editable range for the mic transmit gain. */
+export const MIC_GAIN_MIN = 0.5;
+export const MIC_GAIN_MAX = 3;
 
 export const useAudioSettings = create<AudioSettingsState>()(
   persist(
@@ -30,6 +40,7 @@ export const useAudioSettings = create<AudioSettingsState>()(
       // isn't sent. Paired with browser noise suppression + a 600ms hangover (RoomPage).
       noiseGate: true,
       threshold: 0.05,
+      micGain: 1,
       set: (patch) => set(patch),
     }),
     {
