@@ -25,8 +25,10 @@ interface Source {
   voiceKey?: string;
 }
 
-// The PiP output video can sit fully off-viewport (it's a canvas captureStream, not a LiveKit track).
-const OUT_HIDDEN = 'position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0;pointer-events:none;';
+// The PiP output video must stay WITHIN the viewport (just invisible). Some mobile browsers
+// (Android Chrome) refuse requestPictureInPicture for a video parked off-screen (left:-9999px) —
+// that was why the PiP button appeared but no PiP window opened. Keep it on-screen at 1×1, opacity 0.
+const OUT_HIDDEN = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;z-index:-1;';
 // Source videos MUST stay inside the viewport (opacity:0, behind everything). LiveKit adaptiveStream
 // pauses a remote track when no *visible* element displays it; an off-viewport element counts as
 // hidden → the tile freezes in the PiP. Keeping them in-viewport (just invisible) keeps frames flowing.
@@ -130,7 +132,7 @@ class CompositePipController {
    * Enter the OS PiP overlay. MUST be called from within a user gesture the first time
    * (requestPictureInPicture requires user activation). No-op if already in PiP.
    */
-  enter(): void {
+  enter(): Promise<boolean> {
     if (!this.outAttached) {
       document.body.appendChild(this.out);
       this.outAttached = true;
@@ -140,20 +142,28 @@ class CompositePipController {
       this.out.srcObject = stream;
       this.out.play().catch(() => {});
     }
-    if (document.pictureInPictureElement === this.out) return;
+    if (document.pictureInPictureElement === this.out) return Promise.resolve(true);
     const req = () =>
       (this.out as HTMLVideoElement & { requestPictureInPicture?: () => Promise<unknown> })
         .requestPictureInPicture?.();
     // Called synchronously within the click handler so user-activation holds. The canvas-captured
     // video may not have a decoded frame yet on the first tap → retry once on 'loadeddata' (still
     // inside the few-second transient-activation window the browser grants after the gesture).
-    Promise.resolve(req()).catch(() => {
-      const retry = () => {
-        this.out.removeEventListener('loadeddata', retry);
-        Promise.resolve(req()).catch(() => {});
-      };
-      this.out.addEventListener('loadeddata', retry);
-    });
+    return Promise.resolve(req())
+      .then(() => true)
+      .catch((e) => {
+        console.warn('[compositePip] requestPictureInPicture failed, retrying on loadeddata', e?.name, e?.message);
+        return new Promise<boolean>((resolve) => {
+          const retry = () => {
+            this.out.removeEventListener('loadeddata', retry);
+            Promise.resolve(req()).then(() => resolve(true)).catch((e2) => {
+              console.warn('[compositePip] requestPictureInPicture retry failed', e2?.name, e2?.message);
+              resolve(false);
+            });
+          };
+          this.out.addEventListener('loadeddata', retry);
+        });
+      });
   }
 
   private startLoop(): void {

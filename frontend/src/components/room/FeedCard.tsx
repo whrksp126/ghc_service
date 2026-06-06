@@ -265,8 +265,16 @@ export const FeedCard = memo(function FeedCard({
       onPip?.(); // clears popped[id] → restores the in-grid tile
     } else {
       compositePip.add(id, track, label, !!mirror, lkTrack, voiceKey);
-      compositePip.enter(); // requestPictureInPicture within this gesture (no-op if already open)
-      onPip?.(); // marks popped[id] → tile shows the "in PiP" placeholder
+      // requestPictureInPicture runs within this gesture. If the composite (canvas) PiP is rejected
+      // (some Android Chrome builds), fall back to a classic single-video PiP of the real element.
+      void compositePip.enter().then((ok) => {
+        if (ok) {
+          onPip?.(); // marks popped[id] → tile shows the "in PiP" placeholder
+        } else {
+          compositePip.remove(id);
+          enterVideoPip(videoRef.current);
+        }
+      });
     }
   };
 
