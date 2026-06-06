@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import logoUrl from '../assets/ghcam-logo.png';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Trash2, MoreHorizontal, Share2, Pencil, LogOut } from 'lucide-react';
 import { Button } from '../components/common/Button';
@@ -121,7 +122,7 @@ export function HomePage() {
     <div className="min-h-screen bg-dark-900 flex flex-col">
       <header className="p-6 flex items-center justify-between">
         <h1>
-          <img src="/ghcam-logo.png" alt="GhCam" className="h-9 w-auto" />
+          <img src={logoUrl} alt="GHC" className="h-9 w-auto" />
         </h1>
         <div className="relative">
           <button

@@ -136,7 +136,42 @@ export async function connectToRoom(token: string): Promise<Room> {
 
   await r.connect(LIVEKIT_URL, token);
   room = r;
+
+  // Browsers block audio autoplay until a user gesture. LiveKit routes subscribed audio through
+  // its own elements/Web Audio, so a plain <audio>.play() isn't enough — `room.startAudio()` must
+  // run from a real gesture or remote/live audio stays silent on the web (Electron is lenient).
+  // Try immediately, then on the first interactions until playback is unlocked.
+  attachAudioUnlock(r);
+
   return r;
+}
+
+/** Unlock LiveKit audio playback on a user gesture (web autoplay policy). */
+function attachAudioUnlock(r: Room): void {
+  const tryStart = () => { void r.startAudio().catch(() => {}); };
+  const onGesture = () => {
+    void r.startAudio()
+      .then(() => {
+        document.removeEventListener('pointerdown', onGesture);
+        document.removeEventListener('keydown', onGesture);
+        document.removeEventListener('touchend', onGesture);
+      })
+      .catch(() => {});
+  };
+  tryStart(); // works on the gesture that opened the room (button click)
+  if (!r.canPlaybackAudio) {
+    document.addEventListener('pointerdown', onGesture);
+    document.addEventListener('keydown', onGesture);
+    document.addEventListener('touchend', onGesture);
+  }
+  // Some browsers report blocked only after a track arrives — re-arm on status change.
+  r.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+    if (!r.canPlaybackAudio) {
+      document.addEventListener('pointerdown', onGesture);
+      document.addEventListener('keydown', onGesture);
+      document.addEventListener('touchend', onGesture);
+    }
+  });
 }
 
 /**

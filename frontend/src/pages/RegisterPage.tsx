@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import logoUrl from '../assets/ghcam-logo.png';
 import { motion } from 'framer-motion';
 import { Eye, EyeOff } from 'lucide-react';
 import { Button } from '../components/common/Button';
@@ -78,7 +79,7 @@ export function RegisterPage() {
       >
         <div className="text-center mb-8">
           <h1 className="mb-3">
-            <img src="/ghcam-logo.png" alt="GhCam" className="h-14 w-auto mx-auto" />
+            <img src={logoUrl} alt="GHC" className="h-14 w-auto mx-auto" />
           </h1>
           <p className="text-white/50">새 계정을 만들어보세요</p>
         </div>

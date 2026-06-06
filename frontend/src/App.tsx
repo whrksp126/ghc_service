@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { HomePage } from './pages/HomePage';
 import { RoomPage } from './pages/RoomPage';
 import { LoginPage } from './pages/LoginPage';
@@ -27,11 +27,15 @@ function GlobalSocketManager() {
   return null;
 }
 
+// In the packaged desktop app the page loads from file:// — BrowserRouter (history API) can't do
+// clean-path routing there, so use HashRouter. Web/dev (http/https) keeps BrowserRouter.
+const Router = typeof window !== 'undefined' && window.location.protocol === 'file:' ? HashRouter : BrowserRouter;
+
 export default function App() {
   const token = useAuthStore((s) => s.token);
 
   return (
-    <BrowserRouter>
+    <Router>
       <ToastContainer />
       {token && <GlobalSocketManager />}
       {token && <CameraIndicator />}
@@ -79,6 +83,6 @@ export default function App() {
         />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-    </BrowserRouter>
+    </Router>
   );
 }
