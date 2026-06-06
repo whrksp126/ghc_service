@@ -262,22 +262,36 @@ export const FeedCard = memo(function FeedCard({
       }
       return;
     }
-    // Web (desktop + mobile): classic single-video PiP of the real element. Surface errors on screen.
+    // Web (desktop + mobile): classic single-video PiP of the real element. Surface errors + state
+    // on screen so a failing case (esp. Android Chrome) reports exactly why.
     const v = videoRef.current as (HTMLVideoElement & {
       requestPictureInPicture?: () => Promise<unknown>;
       webkitSetPresentationMode?: (m: string) => void;
+      disablePictureInPicture?: boolean;
     }) | null;
     if (document.pictureInPictureElement) {
       document.exitPictureInPicture().catch(() => {});
       return;
     }
-    if (v?.requestPictureInPicture) {
-      v.requestPictureInPicture().catch((e: { name?: string; message?: string }) =>
-        showToast(`PiP 실패: ${e?.name || ''} ${e?.message || ''}`.trim(), 'info'));
-    } else if (v?.webkitSetPresentationMode) {
-      try { v.webkitSetPresentationMode('picture-in-picture'); } catch { showToast('PiP를 열 수 없습니다', 'info'); }
+    const diag = `en=${(document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled} rs=${v?.readyState} dis=${v?.disablePictureInPicture}`;
+    const tryPiP = () => {
+      if (v?.requestPictureInPicture) {
+        v.requestPictureInPicture().catch((e: { name?: string; message?: string }) =>
+          showToast(`PiP실패 ${e?.name || ''}:${e?.message || ''} [${diag}]`, 'info'));
+      } else if (v?.webkitSetPresentationMode) {
+        try { v.webkitSetPresentationMode('picture-in-picture'); } catch { showToast(`PiP실패(webkit) [${diag}]`, 'info'); }
+      } else {
+        showToast(`PiP 미지원 [${diag}]`, 'info');
+      }
+    };
+    // Android Chrome rejects requestPictureInPicture with NotSupportedError ("Metadata ... not loaded
+    // yet") if the video has no decoded frame. Ensure it's playing + has data, then try (still within
+    // the gesture's transient-activation window).
+    if (v && v.readyState < 2) {
+      v.addEventListener('loadeddata', tryPiP, { once: true });
+      void v.play?.().catch(() => {});
     } else {
-      showToast('이 브라우저는 PiP를 지원하지 않습니다', 'info');
+      tryPiP();
     }
   };
 
