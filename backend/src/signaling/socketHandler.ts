@@ -380,11 +380,18 @@ export function setupSocketHandlers(io: Server) {
       }
     });
 
+    // Leaving (incl. the owner) only drops this participant — it never tears down the
+    // room or the LiveKit RTMP ingress. This is deliberate: a native/OBS live keeps
+    // streaming after the owner leaves the call (the ingress is still a publisher, so
+    // the room stays non-empty). Only room:close (below) ends the live. Do NOT add
+    // teardown here.
     socket.on('room:leave', () => {
       handleRoomLeave();
     });
 
-    // Owner ends the room for everyone: soft-delete + notify + tear down.
+    // Owner ends the room for everyone: soft-delete + notify + tear down (also stops
+    // any live ingress, since the LiveKit room is deleted). This is the only explicit
+    // end-everything path besides the REST delete route.
     socket.on('room:close', async (_, callback) => {
       try {
         if (!currentRoomId) return callback?.({ error: 'Not in a room' });

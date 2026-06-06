@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { hasDocumentPip, copyStylesTo } from '../lib/pipSupport';
+import { preferDocumentPip, copyStylesTo } from '../lib/pipSupport';
 
 // Tracks which feeds are popped into the desktop Document-PiP OS window. (Mobile / Safari use
 // classic single-video PiP, which the OS manages directly — no state needed here.) Clicking a
@@ -33,12 +33,13 @@ export const useFloatingWindowStore = create<PipState>((set, get) => ({
       get().close(id);
       return;
     }
-    if (hasDocumentPip) {
+    if (preferDocumentPip()) {
       let win = get().pipWindow;
       if (!win || win.closed) {
         try {
-          const dpip = (window as unknown as { documentPictureInPicture: DocPipApi }).documentPictureInPicture;
-          win = await dpip.requestWindow({ width: 360, height: 270 });
+          const dpip = (window as unknown as { documentPictureInPicture?: DocPipApi }).documentPictureInPicture;
+          if (!dpip) return;
+          win = await dpip.requestWindow({ width: 640, height: 400 });
         } catch {
           return;
         }

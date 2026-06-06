@@ -7,6 +7,19 @@
 export const hasDocumentPip =
   typeof window !== 'undefined' && 'documentPictureInPicture' in window;
 
+// Use Document PiP (a Chromium child WINDOW) only in a plain web browser. In the Electron shell
+// `documentPictureInPicture.requestWindow()` does not actually open a window, so the desktop app
+// uses the classic macOS video-PiP overlay (AVKit) composited from a canvas instead — that DOES
+// work, follows all Spaces, and shows multiple feeds. (Its one limit: it can't sit over a native
+// fullscreen Space, so tile fullscreen uses simple-fullscreen on the same Space — see main.ts.)
+export function preferDocumentPip(): boolean {
+  // Electron's Document PiP returns a window object but doesn't actually render it, so the desktop
+  // shell uses the composite macOS video-PiP overlay instead. Only the plain web browser uses
+  // Document PiP (where it works).
+  const isNative = typeof window !== 'undefined' && !!window.longdcamNative?.live;
+  return hasDocumentPip && !isNative;
+}
+
 export function hasVideoPip(): boolean {
   return typeof document !== 'undefined' && !!(document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled;
 }

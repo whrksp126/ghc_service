@@ -28,6 +28,8 @@ import { LoadingScreen } from '../components/common/LoadingScreen';
 import { CameraPreviewTile } from '../components/devices/CameraPreviewTile';
 import { MobileCompositePip } from '../components/room/MobileCompositePip';
 import { ObsBroadcastModal } from '../components/room/ObsBroadcastModal';
+import { LiveControlModal } from '../components/room/LiveControlModal';
+import { isNativeShell, nativeBridge } from '../lib/native';
 import { Button } from '../components/common/Button';
 import { showToast } from '../components/common/Toast';
 import { Mic, MicOff, Video, VideoOff, Users, Power, Volume2, VolumeX } from 'lucide-react';
@@ -39,9 +41,11 @@ type RoomPhase = 'lobby' | 'connecting' | 'inRoom';
 /** Hidden sink that plays a remote participant's audio track + taps it for voice activity. */
 function RemoteAudio({ track, voiceKey }: { track: MediaStreamTrack; voiceKey: string }) {
   const ref = useRef<HTMLAudioElement>(null);
-  // Local per-participant mute: I can silence someone without affecting anyone else.
+  // Local per-participant mute + volume: I can silence or quiet someone without affecting others.
   const muted = useUIStore((s) => !!s.mutedAudio[voiceKey]);
+  const volume = useUIStore((s) => s.volumeAudio[voiceKey] ?? 1);
   useEffect(() => { if (ref.current) ref.current.muted = muted; }, [muted]);
+  useEffect(() => { if (ref.current) ref.current.volume = volume; }, [volume]);
   useEffect(() => {
     const el = ref.current;
     if (el) el.srcObject = new MediaStream([track]);
@@ -69,13 +73,30 @@ function RemoteAudio({ track, voiceKey }: { track: MediaStreamTrack; voiceKey: s
 /** Toggle that locally mutes/unmutes one participant's audio (turns red when muted). */
 function AudioMuteButton({ mutekey }: { mutekey: string }) {
   const muted = useUIStore((s) => !!s.mutedAudio[mutekey]);
+  const volume = useUIStore((s) => s.volumeAudio[mutekey] ?? 1);
   const toggle = useUIStore((s) => s.toggleAudioMute);
+  const setVol = useUIStore((s) => s.setAudioVolume);
   return (
-    <TileButton
-      onClick={() => toggle(mutekey)}
-      active={!muted}
-      icon={muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
-    />
+    <div
+      className="flex items-center gap-2 bg-black/40 rounded-full pl-1 pr-3 py-1"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <TileButton
+        onClick={() => toggle(mutekey)}
+        active={!muted}
+        icon={muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+      />
+      <input
+        type="range"
+        min={0}
+        max={1}
+        step={0.05}
+        value={muted ? 0 : volume}
+        onChange={(e) => setVol(mutekey, parseFloat(e.target.value))}
+        className="w-20 h-1 accent-secondary cursor-pointer"
+        aria-label="볼륨"
+      />
+    </div>
   );
 }
 
@@ -153,6 +174,31 @@ export function RoomPage() {
   const [obsOpen, setObsOpen] = useState(false);
   const openObs = useCallback(() => setObsOpen(true), []);
   const closeObs = useCallback(() => setObsOpen(false), []);
+  // Browser live: open the interactive helper window directly (no in-app modal). All live controls
+  // — go live / stop / mute — live in the helper window's own toolbar. We just create the room's
+  // RTMP ingress and hand the credentials to the native side.
+  const [browserOpening, setBrowserOpening] = useState(false);
+  // Live tile label for the browser-live source = the helper page's HTML <title> (pushed natively).
+  const [browserLiveTitle, setBrowserLiveTitle] = useState('');
+  useEffect(() => {
+    const unsub = nativeBridge()?.live.onBrowserTitle?.((t) => setBrowserLiveTitle(t));
+    return unsub;
+  }, []);
+  const openBrowser = useCallback(async () => {
+    const bridge = nativeBridge();
+    if (!bridge || !slug) return;
+    setBrowserOpening(true);
+    try {
+      const { ingress } = await api.createIngress(slug, '브라우저 라이브');
+      const result = await bridge.live.openBrowser({ rtmpUrl: ingress.url, streamKey: ingress.streamKey });
+      if (!result.ok) showToast(result.error || '브라우저 라이브를 열지 못했습니다', 'error');
+      else showToast('브라우저 창에서 로그인·이동 후 LIVE 버튼으로 송출하세요', 'info');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : '브라우저 라이브를 열지 못했습니다', 'error');
+    } finally {
+      setBrowserOpening(false);
+    }
+  }, [slug]);
   const [localVideoTrack, setLocalVideoTrack] = useState<MediaStreamTrack | null>(null);
   const [localScreenTrack, setLocalScreenTrack] = useState<MediaStreamTrack | null>(null);
   const localAudioTrackRef = useRef<MediaStreamTrack | null>(null);
@@ -611,7 +657,10 @@ export function RoomPage() {
         </>
       ),
       belowControls: isCamOn ? <CameraSwitcher onSelect={switchToDevice} /> : null,
-      mirror: selfFacing === 'user',
+      // Mirror my OWN view for selfie cameras so it matches the lobby/dock preview (which mirrors
+      // the current device). Laptop webcams report facing 'unknown' but are selfies → mirror those
+      // too; only an explicit back camera ('environment') stays un-mirrored.
+      mirror: selfFacing !== 'environment',
     });
 
     for (const key of keys) {
@@ -645,7 +694,10 @@ export function RoomPage() {
 
       items.push({
         id: key, track: consumer?.track ?? null, lkTrack: consumer?.lkTrack,
-        label: isMine ? (nickname || '나') : (consumer?.nickname || info?.nickname || (isObs ? 'OBS 라이브' : '참가자')),
+        label: isMine
+          ? (nickname || '나')
+          : (isObs ? (browserLiveTitle || consumer?.nickname || '브라우저 라이브')
+                   : (consumer?.nickname || info?.nickname || '참가자')),
         isMuted: false, isLocal: false, isScreen: false, voiceKey: isObs ? undefined : key, controls, belowControls,
         mirror,
       });
@@ -653,7 +705,7 @@ export function RoomPage() {
 
     return items;
   }, [consumers, participants, participantLookup, localVideoTrack, deviceId, userId, nickname,
-    isMicOn, isCamOn, cameras, selfFacing, handleToggleMic, handleToggleCam, switchToDevice, handleStopDevice]);
+    isMicOn, isCamOn, cameras, selfFacing, browserLiveTitle, handleToggleMic, handleToggleCam, switchToDevice, handleStopDevice]);
 
   // Screen shares are separate from the camera roster: my current-device screen (local
   // track) plus any screen consumer (mine-other-device or remote).
@@ -900,10 +952,15 @@ export function RoomPage() {
         onToggleScreen={handleToggleScreen}
         onLeave={handleLeave}
         onCloseRoom={isOwner ? handleCloseRoom : undefined}
-        onObsLive={isOwner ? openObs : undefined}
+        onObsLive={isOwner && !isNativeShell() ? openObs : undefined}
+        onBrowserLive={isOwner && isNativeShell() && !browserOpening ? openBrowser : undefined}
       />
 
-      {slug && <ObsBroadcastModal isOpen={obsOpen} onClose={closeObs} slug={slug} />}
+      {slug && (
+        isNativeShell()
+          ? <LiveControlModal isOpen={obsOpen} onClose={closeObs} slug={slug} />
+          : <ObsBroadcastModal isOpen={obsOpen} onClose={closeObs} slug={slug} />
+      )}
 
       {/* Desktop Chromium: popped cameras render into a single always-on-top OS window. */}
       <DocumentPipPortal feeds={allFeeds} />

@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useId, memo, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import { MicOff, Monitor, Maximize2, Minimize2, PictureInPicture2, RotateCcw } from 'lucide-react';
-import { hasDocumentPip, hasVideoPip, enterVideoPip } from '../../lib/pipSupport';
+import { hasDocumentPip, hasVideoPip, enterVideoPip, preferDocumentPip } from '../../lib/pipSupport';
 import { compositePip } from '../../lib/compositePip';
 import type { RemoteTrack } from 'livekit-client';
 import { useVoiceStore } from '../../services/voiceActivity';
@@ -156,9 +156,10 @@ export const FeedCard = memo(function FeedCard({
     }, 230);
   };
 
-  // YouTube-style fullscreen: real OS fullscreen on the tile where supported (Android /
-  // desktop keep our custom overlay); iOS Safari can't fullscreen a <div>, so fall back to
-  // the <video> element's native fullscreen player.
+  // YouTube-style fullscreen: request fullscreen on the tile container element so that the
+  // video + overlays remain visible on all platforms including the Electron desktop shell.
+  // iOS Safari can't fullscreen a <div>, so we fall back to the <video> element's native
+  // fullscreen player. The container ref (rootRef) is the motion.div wrapping the whole tile.
   const toggleFullscreen = () => {
     setActive(null);
     const root = rootRef.current as any;
@@ -226,7 +227,10 @@ export const FeedCard = memo(function FeedCard({
   const pipSupported = (hasDocumentPip || hasVideoPip()) && !!track;
   const handlePip = () => {
     setActive(null);
-    if (hasDocumentPip) {
+    // Browser: Document PiP (a real OS window holding several tiles). Native desktop shell + mobile:
+    // composite the "popped" feeds onto ONE canvas → a single CLASSIC macOS PiP overlay that floats
+    // across ALL Spaces AND shows MULTIPLE feeds at once (each tile's button adds/removes itself).
+    if (preferDocumentPip()) {
       onPip?.();
       return;
     }
@@ -239,7 +243,7 @@ export const FeedCard = memo(function FeedCard({
       compositePip.remove(id);
       onPip?.(); // clears popped[id] → restores the in-grid tile
     } else {
-      compositePip.add(id, track, label, !!mirror, lkTrack);
+      compositePip.add(id, track, label, !!mirror, lkTrack, voiceKey);
       compositePip.enter(); // requestPictureInPicture within this gesture (no-op if already open)
       onPip?.(); // marks popped[id] → tile shows the "in PiP" placeholder
     }
@@ -324,16 +328,19 @@ export const FeedCard = memo(function FeedCard({
       )}
 
       {/* Speaking ring — drawn INSET on top of the video so it's never clipped by any
-          scroll/grid container's overflow (the old outer box-shadow was getting cut off). */}
-      {speaking && (
+          scroll/grid container's overflow (the old outer box-shadow was getting cut off).
+          Hidden in fullscreen: a glowing border around a full-screen video looks wrong — the
+          bottom-right waveform alone conveys "speaking" there. */}
+      {speaking && !isFullscreen && !isPoppedOut && (
         <div
           className="absolute inset-0 z-20 pointer-events-none"
           style={{ boxShadow: `inset 0 0 0 3px #25F4EE, inset 0 0 16px 2px rgba(37,244,238,${Math.min(0.7, 0.35 + level)})` }}
         />
       )}
 
-      {/* Voice activity waveform (bottom-right) */}
-      {voiceKey && speaking && (
+      {/* Voice activity waveform (bottom-right). Not on the PiP placeholder — the voice bars are
+          drawn INSIDE the PiP overlay itself (see compositePip), not on the empty in-grid tile. */}
+      {voiceKey && speaking && !isPoppedOut && (
         <div className="absolute bottom-2 right-2 z-10 flex items-center bg-black/45 backdrop-blur-sm rounded-full px-2 py-1">
           <VoiceBars level={level} />
         </div>
@@ -387,6 +394,7 @@ export const FeedCard = memo(function FeedCard({
         <div className="px-4 pb-2 flex items-center justify-center">{belowControls}</div>
       )}
     </BottomSheet>
-    </>
+
+</>
   );
 });

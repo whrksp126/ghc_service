@@ -65,9 +65,8 @@ export function LoginPage() {
         className="w-full max-w-sm"
       >
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-display font-extrabold tracking-tight mb-2">
-            <span className="text-primary">Long</span>
-            <span className="text-secondary">dcam</span>
+          <h1 className="mb-3">
+            <img src="/ghcam-logo.png" alt="GhCam" className="h-14 w-auto mx-auto" />
           </h1>
           <p className="text-white/50">로그인하여 시작하세요</p>
         </div>

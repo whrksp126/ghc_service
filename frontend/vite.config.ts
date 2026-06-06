@@ -9,7 +9,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icons/*.png'],
+      includeAssets: ['icons/*.png', 'favicon-16.png', 'favicon-32.png', 'apple-touch-icon.png'],
       manifest: {
         name: 'Longdcam',
         short_name: 'Longdcam',
@@ -21,6 +21,7 @@ export default defineConfig({
         icons: [
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
       workbox: {

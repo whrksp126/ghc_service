@@ -8,6 +8,7 @@
 // + DocumentPipPortal. This module is only the mobile/Safari fallback.
 
 import type { RemoteTrack } from 'livekit-client';
+import { useVoiceStore, SPEAKING_THRESHOLD } from '../services/voiceActivity';
 
 interface Source {
   label: string;
@@ -19,6 +20,9 @@ interface Source {
   lkTrack?: RemoteTrack;
   /** <video> bound to the feed's track; sampled into the canvas each frame. */
   video: HTMLVideoElement;
+  /** Key into the voice-activity store (`${userId}:${deviceId}` or `obs:<room>`). The feed id can
+   *  differ (e.g. the local feed id is `self:<deviceId>`), so the waveform looks this up. */
+  voiceKey?: string;
 }
 
 // The PiP output video can sit fully off-viewport (it's a canvas captureStream, not a LiveKit track).
@@ -26,7 +30,9 @@ const OUT_HIDDEN = 'position:fixed;left:-9999px;top:0;width:2px;height:2px;opaci
 // Source videos MUST stay inside the viewport (opacity:0, behind everything). LiveKit adaptiveStream
 // pauses a remote track when no *visible* element displays it; an off-viewport element counts as
 // hidden → the tile freezes in the PiP. Keeping them in-viewport (just invisible) keeps frames flowing.
-const SOURCE_HIDDEN = 'position:fixed;top:0;left:0;width:320px;height:180px;opacity:0;pointer-events:none;z-index:-1;';
+// Size matters: adaptiveStream picks the simulcast layer from the ELEMENT size, so a tiny element
+// gets a low-res layer → blurry PiP. Use a 720p box so we receive a sharp layer to composite.
+const SOURCE_HIDDEN = 'position:fixed;top:0;left:0;width:1280px;height:720px;opacity:0;pointer-events:none;z-index:-1;';
 
 function mkVideo(): HTMLVideoElement {
   const v = document.createElement('video');
@@ -81,11 +87,12 @@ class CompositePipController {
 
   /** Add (or replace the track of) a feed in the composite. Safe to call repeatedly. Pass the
    *  LiveKit RemoteTrack for peer feeds so adaptiveStream keeps the subscription flowing. */
-  add(id: string, track: MediaStreamTrack, label: string, mirror = false, lkTrack?: RemoteTrack): void {
+  add(id: string, track: MediaStreamTrack, label: string, mirror = false, lkTrack?: RemoteTrack, voiceKey?: string): void {
     const existing = this.sources.get(id);
     if (existing) {
       existing.label = label;
       existing.mirror = mirror;
+      existing.voiceKey = voiceKey;
       if (existing.track !== track || existing.lkTrack !== lkTrack) {
         this.unbind(existing);
         existing.track = track;
@@ -96,7 +103,7 @@ class CompositePipController {
       const video = mkVideo();
       video.style.cssText = SOURCE_HIDDEN;
       document.body.appendChild(video);
-      const s: Source = { label, mirror, track, lkTrack, video };
+      const s: Source = { label, mirror, track, lkTrack, video, voiceKey };
       this.sources.set(id, s);
       this.bind(s);
     }
@@ -160,8 +167,10 @@ class CompositePipController {
   private drawOnce(): void {
     const ctx = this.canvas.getContext('2d');
     if (!ctx) return;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
 
-    const items = [...this.sources.values()];
+    const items = [...this.sources.entries()];
     const n = items.length;
     if (n === 0) {
       ctx.fillStyle = '#121212';
@@ -172,8 +181,10 @@ class CompositePipController {
     // Every cell is a FIXED 16:9 landscape box; each feed is drawn object-contain (letterboxed),
     // so a portrait/rotated feed shows fully with side bars instead of stretching the PiP tall —
     // the same way desktop Document PiP renders. ≤3 feeds stack top-to-bottom; 4+ use a 2-col grid.
-    const CELL_W = 640;
-    const CELL_H = 360; // 16:9
+    // A single feed gets a 720p cell (sharp live); multi-feed cells are smaller to cap canvas size.
+    const single = n === 1;
+    const CELL_W = single ? 1280 : 640;
+    const CELL_H = single ? 720 : 360; // 16:9
     const cols = n <= 3 ? 1 : 2;
     const rows = Math.ceil(n / cols);
     const W = cols * CELL_W;
@@ -185,7 +196,8 @@ class CompositePipController {
     ctx.fillStyle = '#121212';
     ctx.fillRect(0, 0, W, H);
 
-    items.forEach((s, i) => {
+    const levels = useVoiceStore.getState().levels;
+    items.forEach(([id, s], i) => {
       const cx = (i % cols) * CELL_W;
       const cy = Math.floor(i / cols) * CELL_H;
       const cw = CELL_W;
@@ -230,10 +242,32 @@ class CompositePipController {
       ctx.font = '600 22px system-ui, sans-serif';
       const text = s.label || '';
       const tw = ctx.measureText(text).width;
-      ctx.fillStyle = 'rgba(0,0,0,0.5)';
-      ctx.fillRect(cx + 10, cy + ch - 40, tw + 20, 30);
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(cx + 12, cy + ch - 42, tw + 22, 32);
       ctx.fillStyle = '#fff';
-      ctx.fillText(text, cx + 20, cy + ch - 19);
+      ctx.fillText(text, cx + 23, cy + ch - 20);
+
+      // Voice-activity bars (bottom-right) — shows when this participant is speaking, like the
+      // in-grid tiles, so you can tell who's talking from the PiP.
+      const level = levels[s.voiceKey ?? id] ?? 0;
+      if (level > SPEAKING_THRESHOLD) {
+        const bars = 4;
+        const bw = 5;
+        const gap = 4;
+        const maxH = 26;
+        const baseY = cy + ch - 14;
+        const startX = cx + cw - 14 - bars * (bw + gap);
+        ctx.fillStyle = '#25F4EE'; // secondary
+        for (let b = 0; b < bars; b++) {
+          const phase = Date.now() / 110 + b * 0.9;
+          const amp = Math.min(1, level / 0.25) * (0.45 + 0.55 * Math.abs(Math.sin(phase)));
+          const h = 4 + amp * maxH;
+          const x = startX + b * (bw + gap);
+          ctx.beginPath();
+          ctx.roundRect(x, baseY - h, bw, h, 2);
+          ctx.fill();
+        }
+      }
       ctx.restore();
     });
   }

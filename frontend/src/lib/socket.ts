@@ -9,7 +9,16 @@ export function getSocket(): Socket {
 
   const { token, deviceId, deviceLabel } = useAuthStore.getState();
 
-  socket = io(SOCKET_URL, {
+  // In the Electron desktop shell the page is served through the Vite dev proxy, whose
+  // long-lived tunnel is unreliable in Electron — WS frames get dropped and the server's
+  // tight ping (pingTimeout 5s) then fires "ping timeout", kicking the user out of the
+  // room right after joining. Connect Socket.IO straight to the backend instead (sub-ms
+  // latency, no proxy). `apiBase` is injected by the desktop preload. Browsers/PWA keep
+  // the same-origin connection through the proxy.
+  const native = (window as unknown as { longdcamNative?: { platform?: string; apiBase?: string } }).longdcamNative;
+  const url = native?.platform === 'desktop' && native.apiBase ? native.apiBase : SOCKET_URL;
+
+  socket = io(url, {
     auth: { token },
     query: { deviceId: deviceId || '', deviceLabel: deviceLabel || '' },
     reconnection: true,
@@ -35,7 +44,16 @@ export function emitWithAck<T>(event: string, data: unknown = {}): Promise<T> {
     const s = getSocket();
 
     const send = () => {
+      // Bound the ack wait — without a timeout, a lost emit (socket dies mid-flight)
+      // hangs the join forever ("방에 참여하는 중..." never resolves).
+      let acked = false;
+      const ackTimer = setTimeout(() => {
+        if (acked) return;
+        reject(new Error('서버 응답 시간 초과'));
+      }, 10000);
       s.emit(event, data, (response: T & { error?: string }) => {
+        acked = true;
+        clearTimeout(ackTimer);
         if (response && typeof response === 'object' && 'error' in response) {
           reject(new Error(response.error as string));
         } else {

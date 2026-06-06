@@ -12,6 +12,11 @@ rtc:
 keys:
   devkey: localdevsecret0123456789abcdefghij
 
+# Coordinates with the ingress service (OBS-free native live → RTMP → room).
+# Same bridge network, reachable by service name.
+redis:
+  address: redis:6379
+
 turn:
   enabled: false
 

@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Mic, MicOff, MonitorUp, MonitorOff,
-  PhoneOff, MoreHorizontal, Trash2, SlidersHorizontal, Radio,
+  PhoneOff, MoreHorizontal, Trash2, SlidersHorizontal, Radio, Globe,
 } from 'lucide-react';
 import { useDeviceStore } from '../../stores/deviceStore';
 import { playSound } from '../../lib/sounds';
@@ -16,6 +16,8 @@ interface BottomBarProps {
   onCloseRoom?: () => void;
   /** Owner only — opens the OBS live broadcast setup. */
   onObsLive?: () => void;
+  /** Owner only (desktop shell only) — opens the browser-source live setup. */
+  onBrowserLive?: () => void;
 }
 
 /**
@@ -24,7 +26,7 @@ interface BottomBarProps {
  * (screen share, room delete) is tucked into a "더보기" menu.
  */
 export function BottomBar({
-  onToggleMic, onToggleScreen, onLeave, onCloseRoom, onObsLive,
+  onToggleMic, onToggleScreen, onLeave, onCloseRoom, onObsLive, onBrowserLive,
 }: BottomBarProps) {
   const { isMicOn, isScreenSharing } = useDeviceStore();
   const [moreOpen, setMoreOpen] = useState(false);
@@ -91,6 +93,7 @@ export function BottomBar({
                 >
                   {menuItem(<SlidersHorizontal size={18} />, '마이크 설정', () => setAudioOpen(true))}
                   {onObsLive && menuItem(<Radio size={18} />, 'OBS 라이브', onObsLive)}
+                  {onBrowserLive && menuItem(<Globe size={18} />, '브라우저 라이브', onBrowserLive)}
                   {onCloseRoom && menuItem(<Trash2 size={18} />, '방 종료', onCloseRoom, true)}
                 </motion.div>
               </>

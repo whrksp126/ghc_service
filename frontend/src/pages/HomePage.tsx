@@ -120,9 +120,8 @@ export function HomePage() {
   return (
     <div className="min-h-screen bg-dark-900 flex flex-col">
       <header className="p-6 flex items-center justify-between">
-        <h1 className="text-2xl font-display font-extrabold tracking-tight">
-          <span className="text-primary">Long</span>
-          <span className="text-secondary">dcam</span>
+        <h1>
+          <img src="/ghcam-logo.png" alt="GhCam" className="h-9 w-auto" />
         </h1>
         <div className="relative">
           <button
