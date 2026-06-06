@@ -22,13 +22,20 @@ export function preferDocumentPip(): boolean {
 
 export function hasVideoPip(): boolean {
   if (typeof document === 'undefined') return false;
-  // `pictureInPictureEnabled` is the spec flag, but some Android Chrome builds report it false even
-  // though the requestPictureInPicture method exists and works — so also accept the method's
-  // presence. The actual enter call is wrapped in try/catch, so a false positive just no-ops.
+  // Programmatic PiP support. `pictureInPictureEnabled` covers desktop Chrome/Edge/Firefox. Android
+  // Chrome reports it FALSE — it has NO programmatic PiP (only auto-PiP when you background the app),
+  // so requestPictureInPicture() throws there and we must NOT show the button. iOS Safari has no
+  // pictureInPictureEnabled but supports the presentation-mode API, so detect that separately.
   const enabled = !!(document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled;
-  const hasMethod = typeof window !== 'undefined'
-    && typeof (window.HTMLVideoElement?.prototype as { requestPictureInPicture?: unknown } | undefined)?.requestPictureInPicture === 'function';
-  return enabled || hasMethod;
+  let iosPresentation = false;
+  try {
+    const probe = document.createElement('video') as HTMLVideoElement & {
+      webkitSupportsPresentationMode?: (m: string) => boolean;
+    };
+    iosPresentation = typeof probe.webkitSupportsPresentationMode === 'function'
+      && probe.webkitSupportsPresentationMode('picture-in-picture');
+  } catch { /* ignore */ }
+  return enabled || iosPresentation;
 }
 
 /** Any OS-window promotion available at all. */
