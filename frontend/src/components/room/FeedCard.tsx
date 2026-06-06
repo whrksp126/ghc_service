@@ -264,19 +264,12 @@ export const FeedCard = memo(function FeedCard({
     }
     compositePip.add(id, track, label, !!mirror, lkTrack, voiceKey);
     void compositePip.enter().then((err) => {
-      if (!err) {
-        onPip?.(); // marks popped[id] → tile shows the "in PiP" placeholder
-        return;
-      }
-      compositePip.remove(id);
-      // Chrome for Android DOES support requestPictureInPicture (caniuse confirms). If it's rejected
-      // with pictureInPictureEnabled=false, PiP is turned off at the device level — guide there.
-      const enabled = (document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled;
-      if (!enabled) {
-        showToast('PiP가 꺼져 있어요. 안드로이드 설정 > 앱 > Chrome > "그림 속 그림" 허용을 켜고 다시 시도해 주세요. (또는 일반 탭에서 접속)', 'info');
-      } else {
-        showToast(`PiP를 열 수 없습니다: ${err}`, 'info');
-      }
+      // OS PiP succeeded → leave it. If the browser blocks the PiP API (e.g. mobile Chrome with
+      // Picture-in-Picture disabled at the device level — even Google's own demo can't open it
+      // there), fall back to the IN-PAGE floating overlay, which needs no PiP API and still floats
+      // over a fullscreen live. Either way the feed is "popped".
+      if (err) compositePip.enterInline();
+      onPip?.();
     });
   };
 

@@ -52,12 +52,101 @@ class CompositePipController {
   private sources = new Map<string, Source>();
   private timer = 0;
   private onExitCb: (() => void) | null = null;
+  /** Shared canvas captureStream (one stream feeds both the OS-PiP <video> and the inline overlay). */
+  private stream: MediaStream | null = null;
+  /** Inline (in-page) floating overlay — the fallback when the browser blocks the PiP API
+   *  (e.g. mobile Chrome with Picture-in-Picture disabled at the device level). */
+  private floatEl: HTMLDivElement | null = null;
+  private onFs = () => this.placeFloat();
 
   constructor() {
     this.canvas.width = 1280;
     this.canvas.height = 720;
     this.out.style.cssText = OUT_HIDDEN;
     this.out.addEventListener('leavepictureinpicture', () => this.clear());
+  }
+
+  private ensureStream(): MediaStream {
+    if (!this.stream) {
+      this.stream = (this.canvas as HTMLCanvasElement & { captureStream(fps?: number): MediaStream }).captureStream(24);
+    }
+    return this.stream;
+  }
+
+  inlineActive(): boolean {
+    return !!this.floatEl;
+  }
+
+  /**
+   * Show the combined feeds in a draggable in-page floating window (no PiP API). When an element
+   * goes HTML5-fullscreen, the overlay is re-parented INTO it so it stays visible above the
+   * fullscreen video — letting the user watch a fullscreen live AND see the call at once on any
+   * browser, including ones where requestPictureInPicture is disabled.
+   */
+  enterInline(): void {
+    this.startLoop();
+    if (!this.floatEl) {
+      const box = document.createElement('div');
+      box.style.cssText =
+        'position:fixed;right:12px;bottom:96px;width:150px;z-index:2147483647;border-radius:12px;overflow:hidden;' +
+        'box-shadow:0 6px 28px rgba(0,0,0,.55);background:#000;touch-action:none;cursor:grab;user-select:none;';
+      const v = mkVideo();
+      v.srcObject = this.ensureStream();
+      v.style.cssText = 'width:100%;height:auto;display:block;pointer-events:none;';
+      v.play().catch(() => {});
+      box.appendChild(v);
+      // Close button.
+      const close = document.createElement('button');
+      close.textContent = '✕';
+      close.setAttribute('aria-label', '닫기');
+      close.style.cssText =
+        'position:absolute;top:4px;right:4px;width:22px;height:22px;border:none;border-radius:50%;' +
+        'background:rgba(0,0,0,.55);color:#fff;font-size:12px;line-height:22px;padding:0;cursor:pointer;';
+      close.addEventListener('pointerdown', (e) => e.stopPropagation());
+      close.addEventListener('click', (e) => { e.stopPropagation(); this.clear(); });
+      box.appendChild(close);
+      this.makeDraggable(box);
+      this.floatEl = box;
+    }
+    this.placeFloat();
+    document.addEventListener('fullscreenchange', this.onFs);
+    document.addEventListener('webkitfullscreenchange', this.onFs);
+  }
+
+  /** Keep the floating overlay inside the current fullscreen element (so it shows over fullscreen),
+   *  else on <body>. */
+  private placeFloat(): void {
+    if (!this.floatEl) return;
+    const doc = document as Document & { webkitFullscreenElement?: Element };
+    const host = (document.fullscreenElement || doc.webkitFullscreenElement || document.body) as HTMLElement;
+    if (this.floatEl.parentElement !== host) host.appendChild(this.floatEl);
+  }
+
+  private makeDraggable(box: HTMLDivElement): void {
+    let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+    box.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      box.setPointerCapture(e.pointerId);
+      const r = box.getBoundingClientRect();
+      sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
+      box.style.cursor = 'grabbing';
+    });
+    box.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const nx = Math.max(4, ox + (e.clientX - sx));
+      const ny = Math.max(4, oy + (e.clientY - sy));
+      box.style.left = nx + 'px'; box.style.top = ny + 'px';
+      box.style.right = 'auto'; box.style.bottom = 'auto';
+    });
+    const end = (e: PointerEvent) => { dragging = false; try { box.releasePointerCapture(e.pointerId); } catch { /* */ } box.style.cursor = 'grab'; };
+    box.addEventListener('pointerup', end);
+    box.addEventListener('pointercancel', end);
+  }
+
+  private removeFloat(): void {
+    document.removeEventListener('fullscreenchange', this.onFs);
+    document.removeEventListener('webkitfullscreenchange', this.onFs);
+    if (this.floatEl) { this.floatEl.remove(); this.floatEl = null; }
   }
 
   private bind(s: Source): void {
@@ -114,7 +203,7 @@ class CompositePipController {
 
   /** Force-tear-down (e.g. leaving the room) so a closed PiP doesn't linger on frozen tracks. */
   stop(): void {
-    if (this.sources.size === 0 && document.pictureInPictureElement !== this.out) return;
+    if (this.sources.size === 0 && document.pictureInPictureElement !== this.out && !this.floatEl) return;
     this.clear();
   }
 
@@ -140,8 +229,7 @@ class CompositePipController {
     }
     if (!this.out.srcObject) {
       try {
-        const stream = (this.canvas as HTMLCanvasElement & { captureStream(fps?: number): MediaStream }).captureStream(24);
-        this.out.srcObject = stream;
+        this.out.srcObject = this.ensureStream();
       } catch (e) {
         return Promise.resolve('captureStream:' + fmt(e as { message?: string }));
       }
@@ -297,12 +385,14 @@ class CompositePipController {
       s.video.remove();
     }
     this.sources.clear();
+    this.removeFloat();
     try {
       if (document.pictureInPictureElement === this.out) document.exitPictureInPicture();
     } catch {
       /* already gone */
     }
-    (this.out.srcObject as MediaStream | null)?.getTracks().forEach((t) => t.stop());
+    this.stream?.getTracks().forEach((t) => t.stop());
+    this.stream = null;
     this.out.srcObject = null;
     this.onExitCb?.();
   }
