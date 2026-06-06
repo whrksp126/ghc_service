@@ -190,9 +190,21 @@ export const FeedCard = memo(function FeedCard({
 
   useEffect(() => {
     const onChange = () => {
-      const doc = document as any;
+      const doc = document as Document & { webkitFullscreenElement?: Element };
       const el = document.fullscreenElement || doc.webkitFullscreenElement;
       setHtmlFullscreen(el === rootRef.current);
+      // Mobile: auto-rotate to landscape in fullscreen (like YouTube), and restore on exit. Orientation
+      // lock requires an active fullscreen, so it's done here after the state actually changes.
+      const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      const so = (screen as Screen & { orientation?: { lock?: (o: string) => Promise<void>; unlock?: () => void } }).orientation;
+      if (isMobile && so?.lock) {
+        if (el === rootRef.current) {
+          so.lock('landscape').catch(() => {});
+        } else if (!document.fullscreenElement && !doc.webkitFullscreenElement) {
+          // Nothing is fullscreen anymore → release the lock so it returns to portrait.
+          so.unlock?.();
+        }
+      }
     };
     document.addEventListener('fullscreenchange', onChange);
     document.addEventListener('webkitfullscreenchange', onChange);
