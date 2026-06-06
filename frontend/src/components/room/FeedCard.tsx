@@ -240,41 +240,42 @@ export const FeedCard = memo(function FeedCard({
     return () => { clearTimeout(tid); document.removeEventListener('pointerdown', onDown, true); };
   }, [isActive, setActive]);
 
-  // PiP: native desktop shell uses the composite macOS video-PiP overlay (multiple feeds). The plain
-  // web browser uses the CLASSIC single-video PiP of the real element — the path that worked before
-  // the desktop build introduced Document PiP (which regressed web PiP). Reliable on Chrome/Android/Safari.
+  // PiP: desktop web Chromium → Document PiP (multi-tile OS window). Native desktop shell + mobile/
+  // Safari web → composite the feed(s) onto ONE canvas and PiP that single <video> — the long-working
+  // mobile-Chrome path (canvas.captureStream PiP). Fall back to a direct single-video PiP (with an
+  // on-screen reason) only if the composite is rejected.
   const pipSupported = (hasDocumentPip || hasVideoPip()) && !!track;
   const handlePip = () => {
     setActive(null);
+    // Desktop web Chromium: Document PiP holds several tiles (handled by the floating-window store).
+    if (hasDocumentPip && !isNativeShell()) {
+      onPip?.();
+      return;
+    }
     const id = pipId ?? layoutId;
-    // Native desktop shell: composite macOS PiP overlay (multiple feeds, cross-Space).
-    if (isNativeShell()) {
-      if (!id || !track) { enterVideoPip(videoRef.current); return; }
-      if (compositePip.has(id)) {
-        compositePip.remove(id);
-        onPip?.(); // clears popped[id] → restores the in-grid tile
-      } else {
-        compositePip.add(id, track, label, !!mirror, lkTrack, voiceKey);
-        void compositePip.enter().then((ok) => {
-          if (ok) onPip?.();
-          else { compositePip.remove(id); enterVideoPip(videoRef.current); }
-        });
+    if (!id || !track) {
+      enterVideoPip(videoRef.current); // no stable id → best-effort single-video PiP
+      return;
+    }
+    if (compositePip.has(id)) {
+      compositePip.remove(id);
+      onPip?.(); // clears popped[id] → restores the in-grid tile
+      return;
+    }
+    compositePip.add(id, track, label, !!mirror, lkTrack, voiceKey);
+    void compositePip.enter().then((ok) => {
+      if (ok) {
+        onPip?.(); // marks popped[id] → tile shows the "in PiP" placeholder
+        return;
       }
-      return;
-    }
-    // Web (desktop + mobile): classic single-video PiP of the real element. Surface errors + state
-    // on screen so a failing case (esp. Android Chrome) reports exactly why.
-    const v = videoRef.current as (HTMLVideoElement & {
-      requestPictureInPicture?: () => Promise<unknown>;
-      webkitSetPresentationMode?: (m: string) => void;
-      disablePictureInPicture?: boolean;
-    }) | null;
-    if (document.pictureInPictureElement) {
-      document.exitPictureInPicture().catch(() => {});
-      return;
-    }
-    const diag = `en=${(document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled} rs=${v?.readyState} dis=${v?.disablePictureInPicture}`;
-    const tryPiP = () => {
+      // Composite rejected → restore + try a direct single-video PiP, surfacing the reason on screen.
+      compositePip.remove(id);
+      const v = videoRef.current as (HTMLVideoElement & {
+        requestPictureInPicture?: () => Promise<unknown>;
+        webkitSetPresentationMode?: (m: string) => void;
+        disablePictureInPicture?: boolean;
+      }) | null;
+      const diag = `en=${(document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled} rs=${v?.readyState} dis=${v?.disablePictureInPicture}`;
       if (v?.requestPictureInPicture) {
         v.requestPictureInPicture().catch((e: { name?: string; message?: string }) =>
           showToast(`PiP실패 ${e?.name || ''}:${e?.message || ''} [${diag}]`, 'info'));
@@ -283,16 +284,7 @@ export const FeedCard = memo(function FeedCard({
       } else {
         showToast(`PiP 미지원 [${diag}]`, 'info');
       }
-    };
-    // Android Chrome rejects requestPictureInPicture with NotSupportedError ("Metadata ... not loaded
-    // yet") if the video has no decoded frame. Ensure it's playing + has data, then try (still within
-    // the gesture's transient-activation window).
-    if (v && v.readyState < 2) {
-      v.addEventListener('loadeddata', tryPiP, { once: true });
-      void v.play?.().catch(() => {});
-    } else {
-      tryPiP();
-    }
+    });
   };
 
   // Shared control buttons (parent mic/cam/switch + PiP + fullscreen), reused by the in-place

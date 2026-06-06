@@ -25,10 +25,9 @@ interface Source {
   voiceKey?: string;
 }
 
-// The PiP output video must stay WITHIN the viewport (just invisible). Some mobile browsers
-// (Android Chrome) refuse requestPictureInPicture for a video parked off-screen (left:-9999px) —
-// that was why the PiP button appeared but no PiP window opened. Keep it on-screen at 1×1, opacity 0.
-const OUT_HIDDEN = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;z-index:-1;';
+// The PiP output video can sit fully off-viewport (it's a canvas captureStream, not a LiveKit track).
+// This is the long-working layout (incl. mobile Chrome) — keep it as-is.
+const OUT_HIDDEN = 'position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0;pointer-events:none;';
 // Source videos MUST stay inside the viewport (opacity:0, behind everything). LiveKit adaptiveStream
 // pauses a remote track when no *visible* element displays it; an off-viewport element counts as
 // hidden → the tile freezes in the PiP. Keeping them in-viewport (just invisible) keeps frames flowing.
