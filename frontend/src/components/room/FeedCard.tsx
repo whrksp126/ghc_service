@@ -263,27 +263,16 @@ export const FeedCard = memo(function FeedCard({
       return;
     }
     compositePip.add(id, track, label, !!mirror, lkTrack, voiceKey);
-    void compositePip.enter().then((ok) => {
-      if (ok) {
+    void compositePip.enter().then((err) => {
+      if (!err) {
         onPip?.(); // marks popped[id] → tile shows the "in PiP" placeholder
         return;
       }
-      // Composite rejected → restore + try a direct single-video PiP, surfacing the reason on screen.
+      // Composite (canvas) PiP was rejected — show EXACTLY why (this is the error that matters) plus a
+      // version marker so we know fresh code is running (not a cached service-worker bundle).
       compositePip.remove(id);
-      const v = videoRef.current as (HTMLVideoElement & {
-        requestPictureInPicture?: () => Promise<unknown>;
-        webkitSetPresentationMode?: (m: string) => void;
-        disablePictureInPicture?: boolean;
-      }) | null;
-      const diag = `en=${(document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled} rs=${v?.readyState} dis=${v?.disablePictureInPicture}`;
-      if (v?.requestPictureInPicture) {
-        v.requestPictureInPicture().catch((e: { name?: string; message?: string }) =>
-          showToast(`PiP실패 ${e?.name || ''}:${e?.message || ''} [${diag}]`, 'info'));
-      } else if (v?.webkitSetPresentationMode) {
-        try { v.webkitSetPresentationMode('picture-in-picture'); } catch { showToast(`PiP실패(webkit) [${diag}]`, 'info'); }
-      } else {
-        showToast(`PiP 미지원 [${diag}]`, 'info');
-      }
+      const enabled = (document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled;
+      showToast(`PiPv10 합성실패 ${err} | ppEnabled=${enabled}`, 'info');
     });
   };
 

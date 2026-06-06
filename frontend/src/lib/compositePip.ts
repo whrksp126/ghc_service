@@ -131,38 +131,43 @@ class CompositePipController {
    * Enter the OS PiP overlay. MUST be called from within a user gesture the first time
    * (requestPictureInPicture requires user activation). No-op if already in PiP.
    */
-  enter(): Promise<boolean> {
+  enter(): Promise<string | null> {
+    const fmt = (e: { name?: string; message?: string } | undefined) =>
+      `${e?.name || 'Err'}:${(e?.message || '').slice(0, 90)}`;
     if (!this.outAttached) {
       document.body.appendChild(this.out);
       this.outAttached = true;
     }
     if (!this.out.srcObject) {
-      const stream = (this.canvas as HTMLCanvasElement & { captureStream(fps?: number): MediaStream }).captureStream(24);
-      this.out.srcObject = stream;
+      try {
+        const stream = (this.canvas as HTMLCanvasElement & { captureStream(fps?: number): MediaStream }).captureStream(24);
+        this.out.srcObject = stream;
+      } catch (e) {
+        return Promise.resolve('captureStream:' + fmt(e as { message?: string }));
+      }
       this.out.play().catch(() => {});
     }
-    if (document.pictureInPictureElement === this.out) return Promise.resolve(true);
+    if (document.pictureInPictureElement === this.out) return Promise.resolve(null);
     const req = () =>
       (this.out as HTMLVideoElement & { requestPictureInPicture?: () => Promise<unknown> })
         .requestPictureInPicture?.();
-    // Called synchronously within the click handler so user-activation holds. The canvas-captured
-    // video may not have a decoded frame yet on the first tap → retry once on 'loadeddata' (still
-    // inside the few-second transient-activation window the browser grants after the gesture).
+    // Called synchronously within the click handler so user-activation holds. Resolves null on
+    // success, or the error string (name:message) so the caller can show WHY it failed.
     return Promise.resolve(req())
-      .then(() => true)
-      .catch((e) => {
-        console.warn('[compositePip] requestPictureInPicture failed, retrying on loadeddata', e?.name, e?.message);
-        return new Promise<boolean>((resolve) => {
-          const retry = () => {
-            this.out.removeEventListener('loadeddata', retry);
-            Promise.resolve(req()).then(() => resolve(true)).catch((e2) => {
-              console.warn('[compositePip] requestPictureInPicture retry failed', e2?.name, e2?.message);
-              resolve(false);
-            });
-          };
-          this.out.addEventListener('loadeddata', retry);
-        });
-      });
+      .then(() => null as string | null)
+      .catch((e) => new Promise<string | null>((resolve) => {
+        let done = false;
+        const finish = (v: string | null) => { if (!done) { done = true; resolve(v); } };
+        const retry = () => {
+          this.out.removeEventListener('loadeddata', retry);
+          Promise.resolve(req()).then(() => finish(null)).catch((e2) => finish(fmt(e2)));
+        };
+        // The out video may not have a frame yet → retry on loadeddata; if that already fired, retry
+        // once shortly; give up with the original error after a moment so we always resolve.
+        this.out.addEventListener('loadeddata', retry);
+        setTimeout(() => { if (!done) { this.out.removeEventListener('loadeddata', retry); Promise.resolve(req()).then(() => finish(null)).catch((e3) => finish(fmt(e3))); } }, 400);
+        setTimeout(() => finish(fmt(e)), 1500);
+      }));
   }
 
   private startLoop(): void {
