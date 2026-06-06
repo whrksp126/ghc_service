@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useId, memo, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import { MicOff, Monitor, Maximize2, Minimize2, PictureInPicture2, RotateCcw } from 'lucide-react';
-import { hasDocumentPip, hasVideoPip, enterVideoPip, preferDocumentPip } from '../../lib/pipSupport';
+import { hasDocumentPip, hasVideoPip, enterVideoPip } from '../../lib/pipSupport';
 import { isNativeShell } from '../../lib/native';
 import { compositePip } from '../../lib/compositePip';
 import type { RemoteTrack } from 'livekit-client';
@@ -240,28 +240,16 @@ export const FeedCard = memo(function FeedCard({
     return () => { clearTimeout(tid); document.removeEventListener('pointerdown', onDown, true); };
   }, [isActive, setActive]);
 
-  // PiP / multi-window: desktop Chromium → Document PiP (a real OS window that holds several tiles,
-  // handled by the store via onPip). Mobile/Safari can host only ONE classic video PiP, so to show
-  // several feeds at once we composite the "popped" feeds onto a single canvas and PiP that (see
-  // compositePip). Tapping a tile's button adds/removes it from that one shared PiP, mirroring the
-  // desktop popped model.
+  // PiP: native desktop shell uses the composite macOS video-PiP overlay (multiple feeds). The plain
+  // web browser uses the CLASSIC single-video PiP of the real element — the path that worked before
+  // the desktop build introduced Document PiP (which regressed web PiP). Reliable on Chrome/Android/Safari.
   const pipSupported = (hasDocumentPip || hasVideoPip()) && !!track;
   const handlePip = () => {
     setActive(null);
-    // Browser: Document PiP (a real OS window holding several tiles). Native desktop shell + mobile:
-    // composite the "popped" feeds onto ONE canvas → a single CLASSIC macOS PiP overlay that floats
-    // across ALL Spaces AND shows MULTIPLE feeds at once (each tile's button adds/removes itself).
-    if (preferDocumentPip()) {
-      onPip?.();
-      return;
-    }
     const id = pipId ?? layoutId;
-    if (!id || !track) {
-      enterVideoPip(videoRef.current); // no stable id → best-effort single-video PiP
-      return;
-    }
-    // Native desktop shell: the canvas-composite macOS PiP overlay (shows multiple feeds, works there).
+    // Native desktop shell: composite macOS PiP overlay (multiple feeds, cross-Space).
     if (isNativeShell()) {
+      if (!id || !track) { enterVideoPip(videoRef.current); return; }
       if (compositePip.has(id)) {
         compositePip.remove(id);
         onPip?.(); // clears popped[id] → restores the in-grid tile
@@ -274,9 +262,11 @@ export const FeedCard = memo(function FeedCard({
       }
       return;
     }
-    // Web (esp. Android Chrome): the canvas-composite PiP is rejected, so use the CLASSIC single-video
-    // PiP of the real element — which Android does support. Surface the error on screen if it fails.
-    const v = videoRef.current as (HTMLVideoElement & { requestPictureInPicture?: () => Promise<unknown> }) | null;
+    // Web (desktop + mobile): classic single-video PiP of the real element. Surface errors on screen.
+    const v = videoRef.current as (HTMLVideoElement & {
+      requestPictureInPicture?: () => Promise<unknown>;
+      webkitSetPresentationMode?: (m: string) => void;
+    }) | null;
     if (document.pictureInPictureElement) {
       document.exitPictureInPicture().catch(() => {});
       return;
@@ -284,6 +274,8 @@ export const FeedCard = memo(function FeedCard({
     if (v?.requestPictureInPicture) {
       v.requestPictureInPicture().catch((e: { name?: string; message?: string }) =>
         showToast(`PiP 실패: ${e?.name || ''} ${e?.message || ''}`.trim(), 'info'));
+    } else if (v?.webkitSetPresentationMode) {
+      try { v.webkitSetPresentationMode('picture-in-picture'); } catch { showToast('PiP를 열 수 없습니다', 'info'); }
     } else {
       showToast('이 브라우저는 PiP를 지원하지 않습니다', 'info');
     }
