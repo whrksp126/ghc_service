@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useId, memo, type ReactNode } from 'react'
 import { motion } from 'framer-motion';
 import { MicOff, Monitor, Maximize2, Minimize2, PictureInPicture2, RotateCcw } from 'lucide-react';
 import { hasDocumentPip, hasVideoPip, enterVideoPip, preferDocumentPip } from '../../lib/pipSupport';
+import { isNativeShell } from '../../lib/native';
 import { compositePip } from '../../lib/compositePip';
 import type { RemoteTrack } from 'livekit-client';
 import { useVoiceStore } from '../../services/voiceActivity';
@@ -76,7 +77,13 @@ export const FeedCard = memo(function FeedCard({
   const [isSmall, setIsSmall] = useState(false);
   const showControls = isActive && !isSmall;
   const sheetOpen = isActive && isSmall;
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  // Two fullscreen mechanisms: real HTML5 fullscreen (web/mobile) vs an in-window CSS expand
+  // (desktop Electron shell). On desktop, HTML5 fullscreen triggers setSimpleFullScreen which
+  // raises the window above the classic macOS PiP overlay → PiP gets hidden. The CSS expand keeps
+  // the window at its normal level so the PiP floats on top of the fullscreened tile.
+  const [htmlFullscreen, setHtmlFullscreen] = useState(false);
+  const [cssFullscreen, setCssFullscreen] = useState(false);
+  const isFullscreen = htmlFullscreen || cssFullscreen;
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const level = useVoiceStore((s) => (voiceKey ? s.levels[voiceKey] ?? 0 : 0));
@@ -162,6 +169,12 @@ export const FeedCard = memo(function FeedCard({
   // fullscreen player. The container ref (rootRef) is the motion.div wrapping the whole tile.
   const toggleFullscreen = () => {
     setActive(null);
+    // Desktop Electron shell: expand WITHIN the window (CSS), not HTML5 fullscreen — see the
+    // state comment above (keeps the window level normal so the macOS PiP overlay stays on top).
+    if (isNativeShell()) {
+      setCssFullscreen((v) => !v);
+      return;
+    }
     const root = rootRef.current as any;
     const video = videoRef.current as any;
     const doc = document as any;
@@ -179,7 +192,7 @@ export const FeedCard = memo(function FeedCard({
     const onChange = () => {
       const doc = document as any;
       const el = document.fullscreenElement || doc.webkitFullscreenElement;
-      setIsFullscreen(el === rootRef.current);
+      setHtmlFullscreen(el === rootRef.current);
     };
     document.addEventListener('fullscreenchange', onChange);
     document.addEventListener('webkitfullscreenchange', onChange);
@@ -188,6 +201,14 @@ export const FeedCard = memo(function FeedCard({
       document.removeEventListener('webkitfullscreenchange', onChange);
     };
   }, []);
+
+  // Desktop in-window fullscreen: ESC exits, mirroring native fullscreen's behaviour.
+  useEffect(() => {
+    if (!cssFullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setCssFullscreen(false); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [cssFullscreen]);
 
   // Auto-hide the controls overlay after a few idle seconds. Interacting with the overlay
   // (tap on a button or the backdrop) calls bumpControlsTimer to extend the window.
@@ -286,7 +307,7 @@ export const FeedCard = memo(function FeedCard({
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
       transition={{ type: 'spring', stiffness: 350, damping: 32 }}
-      className={`feed-card relative group cursor-pointer ${className}`}
+      className={`feed-card group cursor-pointer ${cssFullscreen ? 'fixed inset-0 z-[90] bg-black' : 'relative'} ${className}`}
       onClick={handleClick}
     >
       {ambientOn && (

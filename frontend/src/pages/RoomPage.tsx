@@ -3,7 +3,7 @@ import { LayoutGroup } from 'framer-motion';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useSocket } from '../hooks/useSocket';
 import {
-  connectToRoom, publishTrack, unpublishTrack, setTrackMuted, replacePublishedTrack, disconnectRoom, setLocalFacing,
+  connectToRoom, publishTrack, unpublishTrack, setMicGateOpen, replacePublishedTrack, disconnectRoom, setLocalFacing,
 } from '../lib/livekitRoom';
 import { useRoomStore } from '../stores/roomStore';
 import { useDeviceStore } from '../stores/deviceStore';
@@ -30,6 +30,7 @@ import { MobileCompositePip } from '../components/room/MobileCompositePip';
 import { ObsBroadcastModal } from '../components/room/ObsBroadcastModal';
 import { LiveControlModal } from '../components/room/LiveControlModal';
 import { isNativeShell, nativeBridge } from '../lib/native';
+import { useAudioUnlock, registerAudioEl, reportAudioBlocked, unlockAllAudio } from '../lib/audioUnlock';
 import { Button } from '../components/common/Button';
 import { showToast } from '../components/common/Toast';
 import { Mic, MicOff, Video, VideoOff, Users, Power, Volume2, VolumeX } from 'lucide-react';
@@ -53,21 +54,39 @@ function RemoteAudio({ track, voiceKey }: { track: MediaStreamTrack; voiceKey: s
 
     // Autoplay of audio is often blocked by the browser when a track arrives at connect
     // time without a fresh user gesture (e.g. the always-on OBS ingress track right after a
-    // refresh) → silent video-only. <audio autoPlay> alone won't recover. Explicitly play,
-    // and retry on the next user interaction so a tap anywhere unblocks it.
+    // refresh, or strict Android Chrome) → silent video-only. <audio autoPlay> alone won't
+    // recover. Explicitly play; if rejected, surface the global "tap to enable sound" banner.
+    // Also retry on any interaction (incl. touchend/click for mobile) so a tap anywhere unblocks.
+    const play = () => Promise.resolve(el?.play()).catch((e) => { reportAudioBlocked(); throw e; });
+    play().catch(() => {});
     const tryPlay = () => { el?.play().catch(() => {}); };
-    tryPlay();
-    document.addEventListener('pointerdown', tryPlay);
-    document.addEventListener('keydown', tryPlay);
+    const events: Array<keyof DocumentEventMap> = ['pointerdown', 'keydown', 'touchend', 'click'];
+    events.forEach((ev) => document.addEventListener(ev, tryPlay));
+    const unregister = registerAudioEl(() => el?.play());
 
     return () => {
       detachVoice(voiceKey);
-      document.removeEventListener('pointerdown', tryPlay);
-      document.removeEventListener('keydown', tryPlay);
+      events.forEach((ev) => document.removeEventListener(ev, tryPlay));
+      unregister();
       if (el) el.srcObject = null;
     };
   }, [track, voiceKey]);
   return <audio ref={ref} autoPlay playsInline />;
+}
+
+/** Shown when the browser blocked audio autoplay (e.g. Android Chrome). One tap plays all remote
+ *  audio + unlocks LiveKit, fixing the "I can't hear anyone" case on mobile. */
+function AudioUnlockBanner() {
+  const blocked = useAudioUnlock((s) => s.blocked);
+  if (!blocked) return null;
+  return (
+    <button
+      onClick={() => { void unlockAllAudio(); }}
+      className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-2 bg-primary text-white text-sm font-medium rounded-full px-4 py-2 shadow-lg active:scale-95 transition-transform"
+    >
+      <Volume2 size={16} /> 탭하여 소리 켜기
+    </button>
+  );
 }
 
 /** Toggle that locally mutes/unmutes one participant's audio (turns red when muted). */
@@ -771,10 +790,10 @@ export function RoomPage() {
   useEffect(() => {
     if (!localAudioTrack || !audioProducerId) return;
     if (!noiseGate) {
-      // Gate disabled → make sure we're not leaving the track muted.
+      // Gate disabled → make sure the mic gain is open.
       if (!gateOpenRef.current) {
         gateOpenRef.current = true;
-        setTrackMuted(audioProducerId, false).catch(() => {});
+        setMicGateOpen(audioProducerId, true);
       }
       return;
     }
@@ -784,7 +803,9 @@ export function RoomPage() {
     const open = now < gateHoldRef.current;
     if (open !== gateOpenRef.current) {
       gateOpenRef.current = open;
-      setTrackMuted(audioProducerId, !open).catch(() => {});
+      // Fade gain (continuous RTP) instead of pub.mute()/unmute() — avoids the per-utterance
+      // onset "tick"/glitch some receivers (iPad/WebKit) heard.
+      setMicGateOpen(audioProducerId, open);
     }
   }, [noiseGate, micThreshold, myLevel, localAudioTrack, audioProducerId]);
 
@@ -908,6 +929,7 @@ export function RoomPage() {
   return (
     <div className="h-screen w-screen bg-dark-900 flex flex-col overflow-hidden">
       <TopBar />
+      <AudioUnlockBanner />
 
       {/* Remote audio sinks (hidden) — voice playback for other participants */}
       {audioConsumers.map((c) => (

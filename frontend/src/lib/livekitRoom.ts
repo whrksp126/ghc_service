@@ -3,6 +3,7 @@ import {
   RoomEvent,
   Track,
   VideoPresets,
+  AudioPresets,
   type RemoteTrack,
   type RemoteTrackPublication,
   type RemoteParticipant,
@@ -21,9 +22,37 @@ const isMobile = typeof navigator !== 'undefined' && /Mobi|Android|iPhone|iPad|i
 // headless "remote-started device" path (backgroundCamera) drive this one connection —
 // LiveKit rejects a second connection from the same identity, so it must be a singleton.
 let room: Room | null = null;
-// Mic is published as a CLONE so the noise gate can mute the sent track while the local
-// voice-activity analyser keeps reading the original (muting disables the MediaStreamTrack).
-const cloneBySid = new Map<string, MediaStreamTrack>();
+
+// Mic is published through a Web Audio graph (source → gain → MediaStreamDestination) instead of a
+// raw track, so the noise gate can fade the SENT audio with a GainNode (continuous RTP) rather than
+// muting the LiveKit publication on every utterance — pub.mute()/unmute() causes a "tick"/glitch at
+// each speech onset on some receivers (esp. iPad/WebKit). The gain graph is orthogonal to the manual
+// mic-mute button (pub.mute()), so they don't fight. The local voice-activity analyser keeps reading
+// the ORIGINAL track, so it still detects speech to re-open the gate even while gain is 0.
+interface MicGraph {
+  ctx: AudioContext;
+  source: MediaStreamAudioSourceNode;
+  gain: GainNode;
+  dest: MediaStreamAudioDestinationNode;
+  out: MediaStreamTrack;
+}
+const micGraphBySid = new Map<string, MicGraph>();
+
+let micCtx: AudioContext | null = null;
+function ensureMicCtx(): AudioContext {
+  if (!micCtx) {
+    const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    micCtx = new Ctor();
+  }
+  if (micCtx.state === 'suspended') void micCtx.resume().catch(() => {});
+  return micCtx;
+}
+
+function teardownMicGraph(g: MicGraph): void {
+  try { g.source.disconnect(); } catch { /* ignore */ }
+  try { g.gain.disconnect(); } catch { /* ignore */ }
+  try { g.out.stop(); } catch { /* ignore */ }
+}
 
 function parseIdentity(identity: string): { userId: string; deviceId: string } {
   const i = identity.indexOf(':');
@@ -52,6 +81,9 @@ function onTrackSubscribed(track: RemoteTrack, pub: RemoteTrackPublication, part
   if (track.kind !== Track.Kind.Audio && track.kind !== Track.Kind.Video) return;
   const { userId, deviceId } = parseIdentity(participant.identity);
   const meta = metaOf(participant);
+  if (track.kind === Track.Kind.Audio) {
+    console.info('[livekit] audio subscribed', { from: `${userId}:${deviceId}`, trackSid: pub.trackSid });
+  }
   useRoomStore.getState().addConsumer({
     consumerId: pub.trackSid,
     producerId: pub.trackSid,
@@ -100,6 +132,10 @@ export async function connectToRoom(token: string): Promise<Room> {
       videoSimulcastLayers: isMobile ? [] : [VideoPresets.h180, VideoPresets.h540],
       videoEncoding: { maxBitrate: isMobile ? 1_700_000 : 3_500_000, maxFramerate: 30 },
       screenShareEncoding: { maxBitrate: 3_000_000, maxFramerate: 15 },
+      // Explicit high-quality Opus (~96kbps) — without this LiveKit falls back to a low default
+      // bitrate, which is the main reason voice sounded thin/low-quality. Bandwidth is a non-issue
+      // here (only 1–2 video streams), so favour fidelity.
+      audioPreset: AudioPresets.musicHighQuality,
       // DTX off: our noise gate already stops sending during silence; DTX on top can clip
       // the first syllable / add comfort-noise artifacts. RED stays on for loss resilience.
       dtx: false,
@@ -148,8 +184,14 @@ export async function connectToRoom(token: string): Promise<Room> {
 
 /** Unlock LiveKit audio playback on a user gesture (web autoplay policy). */
 function attachAudioUnlock(r: Room): void {
-  const tryStart = () => { void r.startAudio().catch(() => {}); };
+  const tryStart = () => {
+    void r.startAudio().catch(() => {});
+    // A user gesture also unblocks the mic Web Audio graph if it started suspended (otherwise the
+    // published mic would be silent — i.e. nobody can hear this publisher).
+    if (micCtx?.state === 'suspended') void micCtx.resume().catch(() => {});
+  };
   const onGesture = () => {
+    if (micCtx?.state === 'suspended') void micCtx.resume().catch(() => {});
     void r.startAudio()
       .then(() => {
         document.removeEventListener('pointerdown', onGesture);
@@ -197,8 +239,8 @@ export async function setLocalFacing(facing: ConsumerInfo['facing']): Promise<vo
 }
 
 export async function disconnectRoom(): Promise<void> {
-  for (const clone of cloneBySid.values()) clone.stop();
-  cloneBySid.clear();
+  for (const g of micGraphBySid.values()) teardownMicGraph(g);
+  micGraphBySid.clear();
   if (room) {
     try { await room.disconnect(); } catch { /* ignore */ }
     room = null;
@@ -216,12 +258,22 @@ export async function publishTrack(
   if (!room || room.state !== 'connected') return null;
 
   if (source === 'microphone') {
-    const clone = track.clone();
-    const pub = await room.localParticipant.publishTrack(clone, {
+    // Route the mic through source → gain → destination so the noise gate fades the SENT audio
+    // with the gain node (no publication mute glitch). Publish the destination's track.
+    const ctx = ensureMicCtx();
+    const srcNode = ctx.createMediaStreamSource(new MediaStream([track]));
+    const gain = ctx.createGain();
+    gain.gain.value = 1;
+    const dest = ctx.createMediaStreamDestination();
+    srcNode.connect(gain);
+    gain.connect(dest);
+    const out = dest.stream.getAudioTracks()[0];
+    const pub = await room.localParticipant.publishTrack(out, {
       source: Track.Source.Microphone,
       name: 'microphone',
     });
-    cloneBySid.set(pub.trackSid, clone);
+    micGraphBySid.set(pub.trackSid, { ctx, source: srcNode, gain, dest, out });
+    console.info('[livekit] mic published', { trackSid: pub.trackSid, ctxState: ctx.state });
     return pub.trackSid;
   }
 
@@ -248,20 +300,22 @@ export async function unpublishTrack(trackSid: string | null): Promise<void> {
   if (pub?.track) {
     await room.localParticipant.unpublishTrack(pub.track);
   }
-  const clone = cloneBySid.get(trackSid);
-  if (clone) {
-    clone.stop();
-    cloneBySid.delete(trackSid);
+  const g = micGraphBySid.get(trackSid);
+  if (g) {
+    teardownMicGraph(g);
+    micGraphBySid.delete(trackSid);
   }
 }
 
-/** Pause/resume sending a published track (mic button + noise gate). */
-export async function setTrackMuted(trackSid: string | null, muted: boolean): Promise<void> {
-  if (!room || !trackSid) return;
-  const pub = room.localParticipant.trackPublications.get(trackSid);
-  if (!pub) return;
-  if (muted) await pub.mute();
-  else await pub.unmute();
+/** Noise-gate the mic by fading the published audio's gain (no publication mute → no onset glitch).
+ *  A short time-constant ramp avoids clicks. Orthogonal to the manual mic mute, which disables the
+ *  source MediaStreamTrack (deviceStore) and so silences the graph input regardless of gain. */
+export function setMicGateOpen(trackSid: string | null, open: boolean): void {
+  if (!trackSid) return;
+  const g = micGraphBySid.get(trackSid);
+  if (!g) return;
+  if (g.ctx.state === 'suspended') void g.ctx.resume().catch(() => {});
+  g.gain.gain.setTargetAtTime(open ? 1 : 0, g.ctx.currentTime, 0.015);
 }
 
 /** Swap the underlying device track of a published video track (camera switch). */
