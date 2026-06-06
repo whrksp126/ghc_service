@@ -269,12 +269,11 @@ export const FeedCard = memo(function FeedCard({
         return;
       }
       compositePip.remove(id);
-      // Chrome for Android does NOT implement the Picture-in-Picture Web API (pictureInPictureEnabled
-      // is always false there) — no button can trigger it. Guide the user to Android's OS auto-PiP
-      // instead. Other errors (rare) are shown as-is.
+      // Chrome for Android DOES support requestPictureInPicture (caniuse confirms). If it's rejected
+      // with pictureInPictureEnabled=false, PiP is turned off at the device level — guide there.
       const enabled = (document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled;
       if (!enabled) {
-        showToast('이 브라우저(안드로이드 크롬)는 PiP 버튼을 지원하지 않아요. 영상 재생 중 홈으로 나가면 작은 창(PiP)이 자동으로 떠요.', 'info');
+        showToast('PiP가 꺼져 있어요. 안드로이드 설정 > 앱 > Chrome > "그림 속 그림" 허용을 켜고 다시 시도해 주세요. (또는 일반 탭에서 접속)', 'info');
       } else {
         showToast(`PiP를 열 수 없습니다: ${err}`, 'info');
       }
