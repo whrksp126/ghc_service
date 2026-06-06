@@ -260,21 +260,32 @@ export const FeedCard = memo(function FeedCard({
       enterVideoPip(videoRef.current); // no stable id → best-effort single-video PiP
       return;
     }
-    if (compositePip.has(id)) {
-      compositePip.remove(id);
-      onPip?.(); // clears popped[id] → restores the in-grid tile
+    // Native desktop shell: the canvas-composite macOS PiP overlay (shows multiple feeds, works there).
+    if (isNativeShell()) {
+      if (compositePip.has(id)) {
+        compositePip.remove(id);
+        onPip?.(); // clears popped[id] → restores the in-grid tile
+      } else {
+        compositePip.add(id, track, label, !!mirror, lkTrack, voiceKey);
+        void compositePip.enter().then((ok) => {
+          if (ok) onPip?.();
+          else { compositePip.remove(id); enterVideoPip(videoRef.current); }
+        });
+      }
+      return;
+    }
+    // Web (esp. Android Chrome): the canvas-composite PiP is rejected, so use the CLASSIC single-video
+    // PiP of the real element — which Android does support. Surface the error on screen if it fails.
+    const v = videoRef.current as (HTMLVideoElement & { requestPictureInPicture?: () => Promise<unknown> }) | null;
+    if (document.pictureInPictureElement) {
+      document.exitPictureInPicture().catch(() => {});
+      return;
+    }
+    if (v?.requestPictureInPicture) {
+      v.requestPictureInPicture().catch((e: { name?: string; message?: string }) =>
+        showToast(`PiP 실패: ${e?.name || ''} ${e?.message || ''}`.trim(), 'info'));
     } else {
-      compositePip.add(id, track, label, !!mirror, lkTrack, voiceKey);
-      // requestPictureInPicture runs within this gesture. If the composite (canvas) PiP is rejected
-      // (some Android Chrome builds), fall back to a classic single-video PiP of the real element.
-      void compositePip.enter().then((ok) => {
-        if (ok) {
-          onPip?.(); // marks popped[id] → tile shows the "in PiP" placeholder
-        } else {
-          compositePip.remove(id);
-          enterVideoPip(videoRef.current);
-        }
-      });
+      showToast('이 브라우저는 PiP를 지원하지 않습니다', 'info');
     }
   };
 
