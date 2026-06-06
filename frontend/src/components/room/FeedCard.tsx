@@ -268,11 +268,16 @@ export const FeedCard = memo(function FeedCard({
         onPip?.(); // marks popped[id] → tile shows the "in PiP" placeholder
         return;
       }
-      // Composite (canvas) PiP was rejected — show EXACTLY why (this is the error that matters) plus a
-      // version marker so we know fresh code is running (not a cached service-worker bundle).
       compositePip.remove(id);
+      // Chrome for Android does NOT implement the Picture-in-Picture Web API (pictureInPictureEnabled
+      // is always false there) — no button can trigger it. Guide the user to Android's OS auto-PiP
+      // instead. Other errors (rare) are shown as-is.
       const enabled = (document as Document & { pictureInPictureEnabled?: boolean }).pictureInPictureEnabled;
-      showToast(`PiPv10 합성실패 ${err} | ppEnabled=${enabled}`, 'info');
+      if (!enabled) {
+        showToast('이 브라우저(안드로이드 크롬)는 PiP 버튼을 지원하지 않아요. 영상 재생 중 홈으로 나가면 작은 창(PiP)이 자동으로 떠요.', 'info');
+      } else {
+        showToast(`PiP를 열 수 없습니다: ${err}`, 'info');
+      }
     });
   };
 
