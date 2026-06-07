@@ -12,6 +12,9 @@ interface CameraLensControlProps {
   /** Compact sizing for small viewers (lobby grid tiles) so it never overflows the tile. */
   size?: 'sm' | 'md';
   className?: string;
+  /** Hide the built-in front/back flip (the caller renders its own — e.g. the mobile facingMode
+   *  flip, which works when the other facing isn't an enumerated deviceId). Zoom chips still show. */
+  hideFlip?: boolean;
 }
 
 /**
@@ -20,7 +23,7 @@ interface CameraLensControlProps {
  * active facing. Pure presentation — the caller maps `key` back to a deviceId or a remote index.
  * Wraps to a second row rather than overflowing when the viewer is narrow.
  */
-export function CameraLensControl({ lenses, activeKey, onSelect, disabled, size = 'md', className = '' }: CameraLensControlProps) {
+export function CameraLensControl({ lenses, activeKey, onSelect, disabled, size = 'md', className = '', hideFlip = false }: CameraLensControlProps) {
   if (lenses.length <= 1) return null;
   const { canToggleFacing, currentFacing, group, frontFirst, backFirst } = buildRoster(lenses, activeKey);
 
@@ -32,7 +35,7 @@ export function CameraLensControl({ lenses, activeKey, onSelect, disabled, size 
 
   return (
     <div className={`flex flex-wrap items-center justify-center ${sm ? 'gap-1' : 'gap-2'} max-w-full ${className}`}>
-      {canToggleFacing && flipTarget && (
+      {!hideFlip && canToggleFacing && flipTarget && (
         <button
           type="button"
           disabled={disabled}

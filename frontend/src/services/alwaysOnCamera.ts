@@ -21,14 +21,23 @@ interface AlwaysOnCameraState {
   errorType: 'permission' | 'other' | null;
   availableCameras: LocalCamera[];
   activeCameraId: string | null;
+  /** Real facing of the live track (from its settings) — drives the front/back flip on mobile,
+   *  where the OTHER facing often isn't enumerated as a selectable deviceId. */
+  activeFacing: Facing;
   /** Optical zoom range of the live BACK track when it exposes a sub-1.0 (ultra-wide) range;
    *  null otherwise. Drives the synthetic 0.5×/1× lenses (see expandWithZoom). */
   zoomCaps: { min: number; max: number } | null;
   /** Currently applied zoom ratio (1 = main lens). */
   activeZoom: number;
-  start: (cameraDeviceId?: string) => Promise<void>;
+  /** Acquire the camera. `cameraDeviceId` pins an exact lens; otherwise `opts.facing` selects
+   *  front/back by facingMode (reliable on mobile), falling back to the rear camera. A live audio
+   *  track is preserved across re-acquire so a camera switch never kills the published mic. */
+  start: (cameraDeviceId?: string, opts?: { facing?: 'user' | 'environment' }) => Promise<void>;
   stop: () => void;
   switchCamera: (cameraDeviceId: string) => Promise<void>;
+  /** Flip to the given facing by facingMode (not deviceId) — works on Android Chrome even when the
+   *  target camera isn't listed by enumerateDevices() until it's opened. */
+  switchFacing: (facing: 'user' | 'environment') => Promise<void>;
   /** Apply an optical zoom ratio to the live track in place (no re-acquire, no SFU renegotiation). */
   applyZoom: (zoom: number) => Promise<void>;
   /** Select a lens by its UI key — `z:<zoom>` applies optical zoom, anything else switches deviceId. */
@@ -45,6 +54,7 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
   errorType: null,
   availableCameras: [],
   activeCameraId: null,
+  activeFacing: 'environment',
   zoomCaps: null,
   activeZoom: 1,
 
@@ -81,28 +91,34 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
     }
   },
 
-  start: async (cameraDeviceId?: string) => {
+  start: async (cameraDeviceId?: string, opts?: { facing?: 'user' | 'environment' }) => {
+    const wantFacing = opts?.facing;
     const existing = get().stream;
     // Reuse only if the existing stream still has a LIVE video track. A stream whose
     // camera track ended (tab backgrounded, device switched, page transition) keeps
     // `active === true` as long as any track lives, which previously left the lobby
     // preview bound to a dead track → black screen. Re-acquire in that case.
     const videoLive = !!existing && existing.getVideoTracks().some((t) => t.readyState === 'live');
-    if (existing && existing.active && videoLive && !cameraDeviceId) {
+    if (existing && existing.active && videoLive && !cameraDeviceId && !wantFacing) {
       set({ isActive: true, error: null });
       return;
     }
 
-    // A start is already acquiring (and we're not switching to a specific lens) — wait for
+    // A start is already acquiring (and we're not switching to a specific lens/facing) — wait for
     // it instead of firing a second getUserMedia that would fail with NotReadableError.
-    if (inFlight && !cameraDeviceId) {
+    if (inFlight && !cameraDeviceId && !wantFacing) {
       return inFlight;
     }
 
     inFlight = (async () => {
-      // Stop existing stream if switching
+      // Preserve a LIVE audio track across the video re-acquire. The published mic is the audio
+      // track of this stream; stopping it (the old code stopped ALL tracks) silently killed the
+      // mic on every camera/lens/facing switch. Keep it alive and reuse it; only re-request audio
+      // when none is live.
+      const liveAudio = existing?.getAudioTracks().find((t) => t.readyState === 'live') ?? null;
+      // Stop only the existing VIDEO tracks (free the camera); leave audio untouched.
       if (existing) {
-        existing.getTracks().forEach((t) => t.stop());
+        existing.getVideoTracks().forEach((t) => t.stop());
       }
 
       try {
@@ -111,16 +127,25 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
         const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
         const w = isMobile ? 1280 : 1920;
         const h = isMobile ? 720 : 1080;
+        const base = { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: 30, max: 30 } };
+        // deviceId pins an exact lens; facing picks front/back via facingMode (ideal, so a device
+        // with only one camera doesn't OverconstrainedError); default = rear.
         const videoConstraints: MediaTrackConstraints = cameraDeviceId
-          ? { deviceId: { exact: cameraDeviceId }, width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: 30, max: 30 } }
-          : { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: 30, max: 30 }, facingMode: 'environment' };
+          ? { deviceId: { exact: cameraDeviceId }, ...base }
+          : wantFacing
+            ? { facingMode: { ideal: wantFacing }, ...base }
+            : { facingMode: 'environment', ...base };
 
-        const stream = await navigator.mediaDevices.getUserMedia({
+        const gum = await navigator.mediaDevices.getUserMedia({
           video: videoConstraints,
-          audio: micConstraints(),
+          audio: liveAudio ? false : micConstraints(),
         });
 
-        const videoTrack = stream.getVideoTracks()[0];
+        const videoTrack = gum.getVideoTracks()[0];
+        // Reuse the preserved mic, else take the freshly-acquired one. Combine into one stream.
+        const audioTrack = liveAudio ?? gum.getAudioTracks()[0] ?? null;
+        const stream = new MediaStream(audioTrack ? [videoTrack, audioTrack] : [videoTrack]);
+
         const settings = videoTrack?.getSettings();
         const activeCamId = settings?.deviceId || cameraDeviceId || null;
 
@@ -128,7 +153,7 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
         // range whose min < 1.0 can only be reached with a real wide-angle lens, so it's the one
         // genuinely-optical extra lens the web exposes. Front cameras don't get this. `zoom` is a
         // Chrome-only constrainable not in the standard TS lib types → cast through any.
-        const facing = (settings?.facingMode as Facing | undefined) || undefined;
+        const facing = (settings?.facingMode as Facing | undefined) || wantFacing || undefined;
         const caps = (videoTrack?.getCapabilities?.() as any)?.zoom as
           | { min: number; max: number }
           | undefined;
@@ -142,7 +167,10 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
           set({ isActive: false, stream: null, activeCameraId: null, zoomCaps: null, activeZoom: 1 });
         };
 
-        set({ stream, isActive: true, error: null, errorType: null, activeCameraId: activeCamId, zoomCaps, activeZoom });
+        set({
+          stream, isActive: true, error: null, errorType: null,
+          activeCameraId: activeCamId, activeFacing: facing ?? 'unknown', zoomCaps, activeZoom,
+        });
 
         // Enumerate after getting permission (labels available after getUserMedia)
         await get().enumerateCameras();
@@ -173,6 +201,10 @@ export const useAlwaysOnCamera = create<AlwaysOnCameraState>()((set, get) => ({
 
   switchCamera: async (cameraDeviceId: string) => {
     await get().start(cameraDeviceId);
+  },
+
+  switchFacing: async (facing: 'user' | 'environment') => {
+    await get().start(undefined, { facing });
   },
 
   applyZoom: async (zoom: number) => {

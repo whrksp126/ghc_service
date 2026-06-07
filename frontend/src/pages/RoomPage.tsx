@@ -33,7 +33,7 @@ import { isNativeShell, nativeBridge } from '../lib/native';
 import { useAudioUnlock, registerAudioEl, reportAudioBlocked, unlockAllAudio } from '../lib/audioUnlock';
 import { Button } from '../components/common/Button';
 import { showToast } from '../components/common/Toast';
-import { Mic, MicOff, Video, VideoOff, Users, Power, Volume2, VolumeX } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, Users, Power, Volume2, VolumeX, SwitchCamera } from 'lucide-react';
 import { initSounds, playSound } from '../lib/sounds';
 import type { Participant } from '../types/room';
 
@@ -138,18 +138,35 @@ function TileButton({ onClick, icon, danger, active }: { onClick: () => void; ic
  * track via onSelect(deviceId). Thin wrapper over the shared CameraLensControl so every surface
  * (room / lobby / manager) renders the identical front/back + zoom UI.
  */
-function CameraSwitcher({ onSelect }: { onSelect: (key: string) => void }) {
+function CameraSwitcher({ onSelect, onFlipFacing }: { onSelect: (key: string) => void; onFlipFacing?: () => void }) {
   const cameras = useAlwaysOnCamera((s) => s.availableCameras);
   const activeId = useAlwaysOnCamera((s) => s.activeCameraId);
   const zoomCaps = useAlwaysOnCamera((s) => s.zoomCaps);
   const activeZoom = useAlwaysOnCamera((s) => s.activeZoom);
   const expanded = expandWithZoom(cameras, { activeDeviceId: activeId, zoom: zoomCaps });
+  // On mobile the OTHER facing is frequently NOT enumerated as a deviceId while the current camera
+  // is open (Android Chrome quirk), so a deviceId-based flip can't reach it. Always offer a flip
+  // that switches by facingMode instead; the deviceId zoom-chips (e.g. optical 0.5×/1×) still render.
+  const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   return (
-    <CameraLensControl
-      lenses={lensesFromLocal(expanded)}
-      activeKey={activeLensKey(expanded, activeId, activeZoom)}
-      onSelect={onSelect}
-    />
+    <div className="flex flex-wrap items-center justify-center gap-2 max-w-full">
+      {isMobile && onFlipFacing && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onFlipFacing(); }}
+          title="카메라 전환"
+          className="w-9 h-9 rounded-full bg-white/15 text-white flex items-center justify-center hover:bg-white/25 transition-colors"
+        >
+          <SwitchCamera size={17} />
+        </button>
+      )}
+      <CameraLensControl
+        lenses={lensesFromLocal(expanded)}
+        activeKey={activeLensKey(expanded, activeId, activeZoom)}
+        onSelect={onSelect}
+        hideFlip={isMobile}
+      />
+    </div>
   );
 }
 
@@ -531,6 +548,27 @@ export function RoomPage() {
     }
   }, [setVideoTrack]);
 
+  // Flip front↔back by facingMode (mobile). Unlike a deviceId switch this reaches the selfie camera
+  // even on Android Chrome, which doesn't enumerate the inactive camera. Hot-swaps the published
+  // track (no renegotiation) and re-broadcasts the lens list. The mic is preserved by start().
+  const flipFacing = useCallback(async () => {
+    const ao = useAlwaysOnCamera.getState();
+    const target: 'user' | 'environment' = ao.activeFacing === 'user' ? 'environment' : 'user';
+    try {
+      await ao.switchFacing(target);
+      const newTrack = useAlwaysOnCamera.getState().stream?.getVideoTracks()[0] ?? null;
+      const videoProducerId = useDeviceStore.getState().videoInput.producerId;
+      if (newTrack) {
+        await replacePublishedTrack(videoProducerId, newTrack);
+        setVideoTrack(newTrack);
+        setLocalVideoTrack(newTrack);
+      }
+      getSocket().emit('camera:cameraListUpdate', buildCameraListPayload());
+    } catch {
+      showToast('카메라 전환에 실패했습니다', 'error');
+    }
+  }, [setVideoTrack]);
+
   const handleToggleScreen = useCallback(async () => {
     if (isScreenSharing) {
       const screenProducerId = useDeviceStore.getState().screenShare.producerId;
@@ -632,6 +670,9 @@ export function RoomPage() {
   // Facing of my current camera — mirror the tile ONLY for the front (selfie) lens so I see a
   // natural mirror; back cameras stay un-mirrored so real-world text reads correctly.
   const selfFacing = useAlwaysOnCamera((s) => {
+    // Prefer the live track's REAL facing (set from settings on a facingMode flip) — reliable even
+    // when the camera's label can't be classified (Android Chrome). Fall back to label classification.
+    if (s.activeFacing && s.activeFacing !== 'unknown') return s.activeFacing;
     const c = s.availableCameras.find((x) => x.deviceId === s.activeCameraId);
     return c?.facing ?? 'unknown';
   });
@@ -675,7 +716,7 @@ export function RoomPage() {
           <TileButton onClick={handleToggleCam} active={isCamOn} icon={isCamOn ? <Video size={18} /> : <VideoOff size={18} />} />
         </>
       ),
-      belowControls: isCamOn ? <CameraSwitcher onSelect={switchToDevice} /> : null,
+      belowControls: isCamOn ? <CameraSwitcher onSelect={switchToDevice} onFlipFacing={flipFacing} /> : null,
       // Mirror my OWN view for selfie cameras so it matches the lobby/dock preview (which mirrors
       // the current device). Laptop webcams report facing 'unknown' but are selfies → mirror those
       // too; only an explicit back camera ('environment') stays un-mirrored.
@@ -724,7 +765,7 @@ export function RoomPage() {
 
     return items;
   }, [consumers, participants, participantLookup, localVideoTrack, deviceId, userId, nickname,
-    isMicOn, isCamOn, cameras, selfFacing, browserLiveTitle, handleToggleMic, handleToggleCam, switchToDevice, handleStopDevice]);
+    isMicOn, isCamOn, cameras, selfFacing, browserLiveTitle, handleToggleMic, handleToggleCam, switchToDevice, flipFacing, handleStopDevice]);
 
   // Screen shares are separate from the camera roster: my current-device screen (local
   // track) plus any screen consumer (mine-other-device or remote).
