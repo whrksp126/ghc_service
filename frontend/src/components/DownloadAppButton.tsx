@@ -37,19 +37,21 @@ export function DownloadAppButton() {
       onClick={handleClick}
       disabled={loading}
       whileTap={{ scale: 0.95 }}
+      title={label}
+      aria-label={label}
       className={`
-        w-full flex items-center justify-center gap-2
-        px-6 py-3 text-lg font-semibold rounded-btn transition-colors duration-200
-        bg-primary hover:bg-primary/90 text-white
+        flex items-center gap-1.5 rounded-full px-3 py-1.5
+        text-sm text-white/70 hover:text-white hover:bg-white/5
+        border border-white/10 transition-colors
         ${loading ? 'opacity-50 cursor-not-allowed' : ''}
       `}
     >
       {loading ? (
         <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
       ) : (
-        <Download size={20} />
+        <Download size={16} />
       )}
-      {label}
+      <span className="hidden sm:inline">Mac 앱</span>
     </motion.button>
   );
 }

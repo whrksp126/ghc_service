@@ -125,7 +125,10 @@ export function HomePage() {
         <h1>
           <img src={logoUrl} alt="GHC" className="h-9 w-auto" />
         </h1>
-        <div className="relative">
+        <div className="flex items-center gap-2">
+          {/* macOS에서만 노출되는 데스크탑 앱 다운로드 (헤더 저강조 아이콘) */}
+          <DownloadAppButton />
+          <div className="relative">
           <button
             onClick={() => setShowUserMenu((v) => !v)}
             className="flex items-center gap-2 rounded-full pl-1 pr-3 py-1 hover:bg-white/5 transition-colors"
@@ -153,6 +156,7 @@ export function HomePage() {
               </div>
             </>
           )}
+          </div>
         </div>
       </header>
 
@@ -192,7 +196,6 @@ export function HomePage() {
             </svg>
             카메라 관리
           </Button>
-          <DownloadAppButton />
 
           {rooms.length > 0 && (
             <div className="pt-6">

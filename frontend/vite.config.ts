@@ -16,7 +16,11 @@ export default defineConfig({
         description: 'Multi-camera video calling',
         theme_color: '#121212',
         background_color: '#121212',
-        display: 'standalone',
+        // 'browser'는 설치 가능 조건(standalone/minimal-ui/fullscreen)에서 제외되므로
+        // 크롬의 PWA "앱 설치" 프롬프트/주소창 아이콘이 뜨지 않는다. 웹은 브라우저로,
+        // 데스크탑은 네이티브 앱(.dmg)으로 쓰는 방향이라 PWA 설치를 의도적으로 끈다.
+        // (서비스워커/오프라인 캐싱은 그대로 유지)
+        display: 'browser',
         orientation: 'any',
         icons: [
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
