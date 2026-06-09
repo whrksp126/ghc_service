@@ -2,7 +2,7 @@
 
 > 코드 탐색 + 핵심 사실 직접 검증 기반의 진단 기록.
 >
-> **상태 (2026-06-10 수정 완료)**: 아래 B1·B2·B3·B5·B6 및 C1·C2·C3·C4·C5 코드 수정이 적용됨(backend tsc + frontend tsc 통과). **미배포** — 반영하려면 `bash deploy.sh prod` 필요(프론트 변경 포함이므로 `--restart`). 배포 전 prod `backend/.env`에 JWT_SECRET·LIVEKIT_API_KEY/SECRET·TURN_SECRET이 설정돼 있는지 확인할 것(B2 fail-fast로 미설정 시 부팅 실패). nginx limit_req_zone은 메인 nginx.conf http 블록에 수동 추가 필요(C4 주석 참고). 보류: B4의 JWT 30일 refresh 토큰 도입(LiveKit TTL만 4h로 단축함).
+> **상태 (2026-06-10 prod 배포 완료)**: B1·B2·B3·B5·B6 및 C1·C2·C3·C4·C5 적용 후 `bash deploy.sh --restart`로 배포(commit 7114304). 헬스체크 전부 OK, helmet/HSTS prod 확인, prod `backend/.env` 4개 시크릿 SET 확인(B2 fail-fast 통과). nginx limit_req_zone은 메인 nginx.conf 대신 longdcam.conf 최상단에 선언(conf.d가 http 컨텍스트에서 include되므로 유효) → 메인 설정 미변경. 보류: B4의 JWT 30일 refresh 토큰 도입(LiveKit TTL만 4h로 단축). 참고: 같은 커밋에 앱다운로드/releases WIP도 함께 배포됨.
 
 당시 스택: React 18 PWA + Node/Express + **LiveKit SFU**(mediasoup에서 전환됨, 메모리 `livekit-vs-mediasoup-decision`).
 서버: 홈서버 `ghmate.iptime.org`, **회선 100Mb NIC(사용자 확인, 2026-06-10 시점)**.

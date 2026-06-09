@@ -13,15 +13,16 @@ export function DownloadAppButton() {
 
   const os = detectOS();
 
-  // 감지된 OS가 없으면(Linux, Android 등) 버튼 숨김
-  if (!os) return null;
+  // 현재 데스크탑 앱은 macOS(Apple Silicon)만 배포 중. Windows·Linux·기타는
+  // 버튼을 숨겨 웹에서 그대로 사용하게 한다(Windows 빌드 준비되면 'win' 추가).
+  if (os !== 'mac') return null;
 
-  const label = os === 'win' ? 'Windows 앱 다운로드' : 'Mac 앱 다운로드';
+  const label = 'Mac 앱 다운로드';
 
   async function handleClick() {
     setLoading(true);
     try {
-      await downloadDesktopApp(os ?? undefined);
+      await downloadDesktopApp('mac');
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : '다운로드에 실패했습니다.';
