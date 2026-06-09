@@ -1,9 +1,19 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
+import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { User, Device } from '../models';
 import { signToken, authMiddleware } from '../middleware/auth';
+
+// 로그인·회원가입 브루트포스 방지: IP당 분당 10회
+const authLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.' },
+});
 
 const router = Router();
 
@@ -21,7 +31,7 @@ const registerSchema = z.object({
   deviceLabel: z.string().min(1).max(100).default('My Device'),
 });
 
-router.post('/auth/register', async (req, res) => {
+router.post('/auth/register', authLimiter, async (req, res) => {
   try {
     const data = registerSchema.parse(req.body);
 
@@ -72,7 +82,7 @@ const loginSchema = z.object({
   deviceLabel: z.string().min(1).max(100).default('My Device'),
 });
 
-router.post('/auth/login', async (req, res) => {
+router.post('/auth/login', authLimiter, async (req, res) => {
   try {
     const data = loginSchema.parse(req.body);
 

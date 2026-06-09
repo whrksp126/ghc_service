@@ -1,7 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import { requireSecret } from '../lib/requireSecret';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'longdcam_dev_secret';
+const JWT_SECRET = requireSecret('JWT_SECRET', 'longdcam_dev_secret');
 
 export interface JwtPayload {
   userId: string;

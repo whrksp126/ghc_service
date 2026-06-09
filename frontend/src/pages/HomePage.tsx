@@ -11,6 +11,7 @@ import { ShareModal } from '../components/room/ShareModal';
 import { QrScanModal } from '../components/room/QrScanModal';
 import { useAuthStore } from '../stores/authStore';
 import { api } from '../lib/api';
+import { DownloadAppButton } from '../components/DownloadAppButton';
 
 export function HomePage() {
   const navigate = useNavigate();
@@ -191,6 +192,7 @@ export function HomePage() {
             </svg>
             카메라 관리
           </Button>
+          <DownloadAppButton />
 
           {rooms.length > 0 && (
             <div className="pt-6">

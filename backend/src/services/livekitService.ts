@@ -12,23 +12,29 @@ const ingressClient = new IngressClient(httpUrl, livekitConfig.apiKey, livekitCo
  * user's multiple devices are distinct LiveKit participants; metadata carries the
  * display info the room UI needs.
  */
+// Join token lifetime. Kept to a single room session length rather than 12h so a leaked
+// token can't be replayed for long. Override with LIVEKIT_TOKEN_TTL if needed.
+const TOKEN_TTL = process.env.LIVEKIT_TOKEN_TTL || '4h';
+
 export async function createJoinToken(opts: {
   roomName: string;
   userId: string;
   deviceId: string;
   nickname: string;
   deviceLabel: string;
+  // Owners/members publish; viewers (no membership in a public room) subscribe only.
+  canPublish: boolean;
 }): Promise<string> {
   const at = new AccessToken(livekitConfig.apiKey, livekitConfig.apiSecret, {
     identity: `${opts.userId}:${opts.deviceId}`,
     name: opts.nickname,
     metadata: JSON.stringify({ nickname: opts.nickname, deviceLabel: opts.deviceLabel }),
-    ttl: '12h',
+    ttl: TOKEN_TTL,
   });
   at.addGrant({
     roomJoin: true,
     room: opts.roomName,
-    canPublish: true,
+    canPublish: opts.canPublish,
     canSubscribe: true,
     canPublishData: true,
     // Lets the device update its own metadata at runtime (e.g. the active camera's facing,
@@ -136,5 +142,29 @@ export async function deleteRoomIngress(ingressId: string): Promise<void> {
     await ingressClient.deleteIngress(ingressId);
   } catch {
     // Already gone — ignore.
+  }
+}
+
+/**
+ * Count concurrent live broadcasts (used to enforce MAX_CONCURRENT_LIVES). Counts RTMP
+ * ingresses that are actively buffering/publishing media — idle stream keys that were
+ * created but never connected don't count. On a listing error we fall back to the active
+ * room count (conservative) rather than 0, so the cap isn't silently disabled.
+ *
+ * IngressState.Status numeric values: ENDPOINT_BUFFERING = 1, ENDPOINT_PUBLISHING = 2.
+ */
+export async function countActiveLives(): Promise<number> {
+  try {
+    const all = await ingressClient.listIngress({});
+    return all.filter(
+      (i) => i.inputType === IngressInput.RTMP_INPUT && (i.state?.status === 1 || i.state?.status === 2)
+    ).length;
+  } catch {
+    try {
+      const rooms = await roomService.listRooms();
+      return rooms.length;
+    } catch {
+      return 0;
+    }
   }
 }

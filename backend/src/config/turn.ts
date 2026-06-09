@@ -1,6 +1,7 @@
 import crypto from 'crypto';
+import { requireSecret } from '../lib/requireSecret';
 
-const TURN_SECRET = process.env.TURN_SECRET || 'longdcam_turn_secret';
+const TURN_SECRET = requireSecret('TURN_SECRET', 'longdcam_turn_secret');
 const TURN_SERVER = process.env.TURN_SERVER || 'turn:longdcam-turn.ghmate.com:3478';
 const TURNS_SERVER = process.env.TURNS_SERVER || 'turns:longdcam-turn.ghmate.com:5349';
 const STUN_SERVER = process.env.STUN_SERVER || 'stun:stun.l.google.com:19302';

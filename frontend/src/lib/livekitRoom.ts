@@ -134,8 +134,11 @@ export async function connectToRoom(token: string): Promise<Room> {
       backupCodec: { codec: 'vp8' },
       simulcast: !isMobile,
       videoSimulcastLayers: isMobile ? [] : [VideoPresets.h180, VideoPresets.h540],
-      videoEncoding: { maxBitrate: isMobile ? 1_700_000 : 3_500_000, maxFramerate: 30 },
-      screenShareEncoding: { maxBitrate: 3_000_000, maxFramerate: 15 },
+      // Desktop cam capped at 2.0Mbps (was 3.5) and screen at 2.0Mbps (was 3.0) to live
+      // within the home server's ~100Mb uplink ceiling — tune together with the
+      // MAX_CONCURRENT_LIVES guard on the backend. Mobile stays at 1.7Mbps (already low).
+      videoEncoding: { maxBitrate: isMobile ? 1_700_000 : 2_000_000, maxFramerate: 30 },
+      screenShareEncoding: { maxBitrate: 2_000_000, maxFramerate: 15 },
       // Explicit high-quality Opus (~96kbps) — without this LiveKit falls back to a low default
       // bitrate, which is the main reason voice sounded thin/low-quality. Bandwidth is a non-issue
       // here (only 1–2 video streams), so favour fidelity.

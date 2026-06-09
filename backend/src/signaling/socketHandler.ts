@@ -2,7 +2,7 @@ import { Server, Socket } from 'socket.io';
 import { verifyToken, JwtPayload } from '../middleware/auth';
 import { generateTurnCredentials } from '../config/turn';
 import { createJoinToken, deleteLivekitRoom } from '../services/livekitService';
-import { Device, Room } from '../models';
+import { Device, Room, RoomMember } from '../models';
 
 // Media (tracks/transports) now lives entirely in LiveKit. This handler keeps the
 // app-level concerns: device presence, cross-device remote control, P2P preview
@@ -71,14 +71,28 @@ export async function forceCloseRoom(roomSlug: string) {
 export function setupSocketHandlers(io: Server) {
   ioRef = io;
 
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth.token;
       if (!token) return next(new Error('No token'));
       const payload = verifyToken(token);
       (socket as any).user = payload;
-      (socket as any).deviceId = socket.handshake.query.deviceId as string;
-      (socket as any).deviceLabel = socket.handshake.query.deviceLabel as string || 'Unknown';
+
+      // deviceLabel 길이 제한: 최대 60자로 잘라내기
+      const rawLabel = socket.handshake.query.deviceLabel as string;
+      (socket as any).deviceLabel = (rawLabel || 'Unknown').slice(0, 60);
+
+      // deviceId 소유 검증: 인증된 user의 기기인지 확인
+      const rawDeviceId = socket.handshake.query.deviceId as string;
+      if (rawDeviceId) {
+        const device = await Device.findOne({
+          where: { id: rawDeviceId, user_id: payload.userId },
+          attributes: ['id'],
+        });
+        if (!device) return next(new Error('Invalid device'));
+      }
+      (socket as any).deviceId = rawDeviceId;
+
       next();
     } catch {
       next(new Error('Invalid token'));
@@ -308,10 +322,36 @@ export function setupSocketHandlers(io: Server) {
 
         const roomRow = await Room.findOne({
           where: { slug: roomSlug },
-          attributes: ['owner_id', 'is_active'],
+          attributes: ['id', 'owner_id', 'is_active', 'pin', 'allow_viewers'],
         });
         if (!roomRow || !roomRow.is_active) {
           return callback({ error: '방을 찾을 수 없습니다' });
+        }
+
+        // --- 접근통제 ---
+        const isOwner = roomRow.owner_id === user.userId;
+        let canPublish: boolean;
+
+        if (isOwner) {
+          // 소유자는 항상 입장 허용, publish 가능
+          canPublish = true;
+        } else {
+          const member = await RoomMember.findOne({
+            where: { room_id: roomRow.id, user_id: user.userId },
+            attributes: ['role'],
+          });
+
+          if (member) {
+            // 멤버십 있음: role에 따라 publish 여부 결정
+            canPublish = member.role !== 'viewer';
+          } else if (!roomRow.pin && roomRow.allow_viewers) {
+            // PIN 없는 공개 방 + viewer 허용: viewer로 입장
+            canPublish = false;
+          } else {
+            // PIN이 있는데 멤버십 없음 → HTTP join을 거치지 않은 우회 시도
+            console.warn(`[room:join] DENIED: ${user.nickname} has no membership for PIN room ${roomSlug}`);
+            return callback({ error: '입장 권한이 없습니다' });
+          }
         }
 
         currentRoomId = roomSlug;
@@ -358,17 +398,16 @@ export function setupSocketHandlers(io: Server) {
           deviceLabel: p.deviceLabel,
         }));
 
-        const isOwner = roomRow.owner_id === user.userId;
-
         const token = await createJoinToken({
           roomName: roomSlug,
           userId: user.userId,
           deviceId,
           nickname: user.nickname,
           deviceLabel,
+          canPublish,
         });
 
-        console.log(`[room:join] ${user.nickname}:${deviceId} joined OK (${participantList.length} participants)`);
+        console.log(`[room:join] ${user.nickname}:${deviceId} joined OK canPublish=${canPublish} (${participantList.length} participants)`);
         callback({
           participants: participantList,
           isOwner,

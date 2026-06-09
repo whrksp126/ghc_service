@@ -12,7 +12,13 @@ services:
     networks:
       - longdcam_prod
       - nginx_proxy
+    mem_limit: 256m
     restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   api:
     container_name: longdcam_api_prod
@@ -25,6 +31,7 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+    mem_limit: 1g
     restart: always
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/health || exit 1"]
@@ -32,6 +39,11 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   livekit:
     container_name: longdcam_livekit_prod
@@ -46,7 +58,13 @@ services:
     # (cellular) clients reach media via the forwarded 40100/udp. No --node-ip (it's
     # ignored when use_external_ip is true).
     command: ["--config", "/etc/livekit.yaml"]
+    mem_limit: 4g
     restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   turn:
     container_name: longdcam_turn_prod
@@ -55,7 +73,13 @@ services:
     volumes:
       - ./turn/turnserver.conf:/etc/turnserver.conf:ro
     command: ["-c", "/etc/turnserver.conf"]
+    mem_limit: 512m
     restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # Redis coordinates livekit-server <-> ingress. Bound to loopback only (host network
   # would otherwise expose 6379 publicly).
@@ -64,7 +88,13 @@ services:
     image: redis:7-alpine
     network_mode: host
     command: ["redis-server", "--bind", "127.0.0.1", "--port", "6379", "--protected-mode", "yes"]
+    mem_limit: 256m
     restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # LiveKit Ingress: OBS → RTMP(1935) → publishes into the room as a participant. Config is
   # injected via INGRESS_CONFIG_BODY so the API secret never lives in a committed file
@@ -89,7 +119,15 @@ services:
     depends_on:
       - redis
       - livekit
+    mem_limit: 2g
+    # cpus 제한: RTMP 트랜스코딩은 스트림당 ~0.5~1코어로 무거움. 호스트 코어 수에 따라
+    # 동시 라이브 수를 제한할 경우 예시: cpus: "4" (4코어 상한). 현재는 보수적으로 미설정.
     restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   mysql:
     container_name: longdcam_mysql_prod
@@ -106,12 +144,18 @@ services:
       - ./db/init:/docker-entrypoint-initdb.d:ro
     networks:
       - longdcam_prod
+    mem_limit: 2g
     restart: always
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   longdcam_prod:

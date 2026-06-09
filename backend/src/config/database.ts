@@ -10,8 +10,8 @@ const sequelize = new Sequelize(
     dialect: 'mysql',
     logging: process.env.NODE_ENV === 'production' ? false : console.log,
     pool: {
-      min: 2,
-      max: 10,
+      min: 5,
+      max: 20,
       acquire: 30000,
       idle: 10000,
     },

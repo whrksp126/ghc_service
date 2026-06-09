@@ -1,9 +1,15 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import routes from './routes';
 import { errorHandler } from './middleware/errorHandler';
 
 const app = express();
+
+// 보안 헤더. 프론트가 별도 도메인이므로 crossOriginResourcePolicy는 완화.
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 
 const allowedOrigins = [
   'http://localhost:3200',

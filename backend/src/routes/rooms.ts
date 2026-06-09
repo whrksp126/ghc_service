@@ -2,13 +2,25 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { Room, RoomMember } from '../models';
 import { authMiddleware } from '../middleware/auth';
+import { requireSecret } from '../lib/requireSecret';
 import { forceCloseRoom } from '../signaling/socketHandler';
-import { createRoomIngress, listRoomIngress, deleteRoomIngress } from '../services/livekitService';
+import { createRoomIngress, listRoomIngress, deleteRoomIngress, countActiveLives } from '../services/livekitService';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'longdcam_dev_secret';
+const JWT_SECRET = requireSecret('JWT_SECRET', 'longdcam_dev_secret');
+
+// PIN 브루트포스 방지: 방+IP 기준 분당 10회
+const joinLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  keyGenerator: (req) => `${req.params.slug}:${req.ip}`,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.' },
+});
 
 const router = Router();
 
@@ -117,7 +129,7 @@ const joinRoomSchema = z.object({
   inviteToken: z.string().optional(),
 });
 
-router.post('/rooms/:slug/join', authMiddleware, async (req, res) => {
+router.post('/rooms/:slug/join', authMiddleware, joinLimiter, async (req, res) => {
   try {
     const data = joinRoomSchema.parse(req.body);
     const userId = req.user!.userId;
@@ -240,6 +252,20 @@ router.post('/rooms/:slug/ingress', authMiddleware, async (req, res) => {
   try {
     const parsed = z.object({ name: z.string().trim().min(1).max(30).optional() }).safeParse(req.body ?? {});
     const name = parsed.success ? parsed.data.name : undefined;
+
+    // 이 방의 ingress가 이미 존재하면 재사용 — 카운트 초과 여부와 무관하게 허용.
+    const existing = await listRoomIngress(room.slug);
+    if (existing.length === 0) {
+      // 신규 생성 시점에만 동시 라이브 상한 검사.
+      const maxLives = Number(process.env.MAX_CONCURRENT_LIVES || 8);
+      const activeCount = await countActiveLives();
+      if (activeCount >= maxLives) {
+        return res.status(503).json({
+          error: '동시 라이브 송출 한도를 초과했습니다. 잠시 후 다시 시도해 주세요.',
+        });
+      }
+    }
+
     const ingress = await createRoomIngress(room.slug, name || 'OBS 라이브');
     res.json({ ingress });
   } catch (err) {
