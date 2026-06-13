@@ -5,6 +5,7 @@ import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { AuthCallbackPage } from './pages/AuthCallbackPage';
 import { CamerasPage } from './pages/CamerasPage';
+import { DownloadPage } from './pages/DownloadPage';
 import { ToastContainer } from './components/common/Toast';
 import { CameraIndicator } from './components/common/CameraIndicator';
 import { useAuthStore } from './stores/authStore';
@@ -65,6 +66,7 @@ export default function App() {
           }
         />
         <Route path="/auth/callback" element={<AuthCallbackPage />} />
+        <Route path="/download" element={<DownloadPage />} />
         <Route
           path="/cameras"
           element={
