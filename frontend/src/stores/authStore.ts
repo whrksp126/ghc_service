@@ -30,6 +30,6 @@ export const useAuthStore = create<AuthState>()(
         set({ token: null, userId: null, nickname: null, email: null, deviceId: null, deviceLabel: null }),
       isLoggedIn: () => !!get().token,
     }),
-    { name: 'longdcam-auth' }
+    { name: 'ghc-auth' }
   )
 );

@@ -1,5 +1,5 @@
 export function getDeviceFingerprint(): string {
-  const stored = localStorage.getItem('longdcam-fp');
+  const stored = localStorage.getItem('ghc-fp');
   if (stored) return stored;
 
   const canvas = document.createElement('canvas');
@@ -17,7 +17,7 @@ export function getDeviceFingerprint(): string {
   ];
 
   const fp = btoa(parts.join('|')).slice(0, 32);
-  localStorage.setItem('longdcam-fp', fp);
+  localStorage.setItem('ghc-fp', fp);
   return fp;
 }
 

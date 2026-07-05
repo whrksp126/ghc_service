@@ -1,9 +1,9 @@
 import { Sequelize } from 'sequelize';
 
 const sequelize = new Sequelize(
-  process.env.MYSQL_DATABASE || 'longdcam',
-  process.env.MYSQL_USER || 'longdcam',
-  process.env.MYSQL_PASSWORD || 'longdcam1234',
+  process.env.MYSQL_DATABASE || 'ghc',
+  process.env.MYSQL_USER || 'ghc',
+  process.env.MYSQL_PASSWORD || 'ghc1234',
   {
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '3306'),

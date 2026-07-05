@@ -17,7 +17,7 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://192.168.0.16:3100',
   'http://192.168.0.16:3101',
-  'https://longdcam-front.ghmate.com',
+  'https://ghc.ghmate.com',
 ];
 
 const isProd = process.env.NODE_ENV === 'production';

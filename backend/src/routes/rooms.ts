@@ -10,7 +10,7 @@ import { requireSecret } from '../lib/requireSecret';
 import { forceCloseRoom } from '../signaling/socketHandler';
 import { createRoomIngress, listRoomIngress, deleteRoomIngress, countActiveLives } from '../services/livekitService';
 
-const JWT_SECRET = requireSecret('JWT_SECRET', 'longdcam_dev_secret');
+const JWT_SECRET = requireSecret('JWT_SECRET', 'ghc_dev_secret');
 
 // PIN 브루트포스 방지: 방+IP 기준 분당 10회
 const joinLimiter = rateLimit({

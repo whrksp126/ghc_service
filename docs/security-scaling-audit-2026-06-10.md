@@ -1,8 +1,8 @@
-# Longdcam 보안 취약점 · 확장성 감사 (2026-06-10)
+# GHC 보안 취약점 · 확장성 감사 (2026-06-10)
 
 > 코드 탐색 + 핵심 사실 직접 검증 기반의 진단 기록.
 >
-> **상태 (2026-06-10 prod 배포 완료)**: B1·B2·B3·B5·B6 및 C1·C2·C3·C4·C5 적용 후 `bash deploy.sh --restart`로 배포(commit 7114304). 헬스체크 전부 OK, helmet/HSTS prod 확인, prod `backend/.env` 4개 시크릿 SET 확인(B2 fail-fast 통과). nginx limit_req_zone은 메인 nginx.conf 대신 longdcam.conf 최상단에 선언(conf.d가 http 컨텍스트에서 include되므로 유효) → 메인 설정 미변경. 보류: B4의 JWT 30일 refresh 토큰 도입(LiveKit TTL만 4h로 단축). 참고: 같은 커밋에 앱다운로드/releases WIP도 함께 배포됨.
+> **상태 (2026-06-10 prod 배포 완료)**: B1·B2·B3·B5·B6 및 C1·C2·C3·C4·C5 적용 후 `bash deploy.sh --restart`로 배포(commit 7114304). 헬스체크 전부 OK, helmet/HSTS prod 확인, prod `backend/.env` 4개 시크릿 SET 확인(B2 fail-fast 통과). nginx limit_req_zone은 메인 nginx.conf 대신 ghc.conf 최상단에 선언(conf.d가 http 컨텍스트에서 include되므로 유효) → 메인 설정 미변경. 보류: B4의 JWT 30일 refresh 토큰 도입(LiveKit TTL만 4h로 단축). 참고: 같은 커밋에 앱다운로드/releases WIP도 함께 배포됨.
 
 당시 스택: React 18 PWA + Node/Express + **LiveKit SFU**(mediasoup에서 전환됨, 메모리 `livekit-vs-mediasoup-decision`).
 서버: 홈서버 `ghmate.iptime.org`, **회선 100Mb NIC(사용자 확인, 2026-06-10 시점)**.
@@ -39,7 +39,7 @@
 ### 인프라 부수 이슈
 - `docker-compose.yml`: 서비스별 **CPU/메모리 한도 없음** → 한 컨테이너가 호스트 자원 고갈 가능. ingress/livekit/mysql에 `mem_limit`/`cpus` 권장.
 - **로그 로테이션 없음**(coturn/livekit verbose stdout) → 장기 디스크 충전 위험. `logging: json-file max-size/max-file` 또는 호스트 logrotate.
-- `deploy/nginx/longdcam.conf`: `limit_req`/`client_max_body_size` 없음.
+- `deploy/nginx/ghc.conf`: `limit_req`/`client_max_body_size` 없음.
 - DB 풀 `max:10`(`config/database.ts:12`) — 이 시그널링 부하엔 충분. 동시 입장 버스트 대비 15~20 소폭 상향은 선택.
 
 ---
@@ -52,7 +52,7 @@
 - **수정 방안**: `room:join`에서 `RoomMember` 멤버십 확인 + PIN 통과 세션만 허용. HTTP join 성공 시 단기(60초) 1회용 join-grant 발급(기존 inviteToken JWT 패턴 `rooms.ts:131-140` 재사용) → socket이 grant 검증 후 토큰 발급. viewer는 `canPublish:false`로 권한 차등.
 
 ### 🔴 CRITICAL — 시크릿 fallback 기본값
-- **위치**: `middleware/auth.ts:4` `'longdcam_dev_secret'` / `config/livekit.ts:5-6` `'devkey'`,`'localdevsecret...'` / `config/turn.ts:3` `'longdcam_turn_secret'`
+- **위치**: `middleware/auth.ts:4` `'ghc_dev_secret'` / `config/livekit.ts:5-6` `'devkey'`,`'localdevsecret...'` / `config/turn.ts:3` `'ghc_turn_secret'`
 - **내용**: 프로덕션에서 env 누락 시 알려진 약한 키로 fallback → JWT/LiveKit/TURN 토큰 위조 가능.
 - **수정 방안**: `requireSecret(name)` 헬퍼 — `NODE_ENV==='production'`이면 미설정 시 **throw(fail-fast)**, 비프로덕션만 dev 기본값. 세 곳 적용.
 

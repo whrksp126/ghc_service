@@ -2,7 +2,7 @@ export type LiveSource =
   | { type: 'window'; id: string; title: string; appName: string; thumbnail?: string }
   | { type: 'screen'; id: string; title: string; thumbnail?: string }
   | { type: 'camera' }
-  // Browser source: longdcam renders the URL itself (offscreen, never throttled) so it
+  // Browser source: GHC renders the URL itself (offscreen, never throttled) so it
   // keeps broadcasting across desktop switches / fullscreen — the OBS browser-source model.
   | { type: 'browser'; url: string; name?: string };
 
@@ -25,7 +25,7 @@ export interface LiveMuteState {
   muted: boolean;     // true → source audio silenced locally (still sent to live)
 }
 
-export interface LongdcamNativeLive {
+export interface GhcNativeLive {
   listSources(): Promise<LiveSource[]>;
   startLive(opts: LiveStartOptions): Promise<{ ok: boolean; error?: string }>;
   stopLive(): Promise<void>;
@@ -44,20 +44,20 @@ export interface LongdcamNativeLive {
   onBrowserTitle?(cb: (title: string) => void): () => void;
 }
 
-export interface LongdcamNative {
+export interface GhcNative {
   platform: 'desktop' | 'mobile' | 'web';
   version: string;
   /** Direct backend origin (e.g. http://localhost:3001) to bypass the dev proxy for Socket.IO. */
   apiBase?: string;
-  live: LongdcamNativeLive;
+  live: GhcNativeLive;
 }
 
 declare global {
   interface Window {
-    longdcamNative?: LongdcamNative;
+    ghcNative?: GhcNative;
   }
 }
 
-export const nativeBridge = (): LongdcamNative | undefined => window.longdcamNative;
-export const isNativeShell = (): boolean => !!window.longdcamNative?.live;
-export const nativePlatform = (): 'desktop' | 'mobile' | 'web' => window.longdcamNative?.platform ?? 'web';
+export const nativeBridge = (): GhcNative | undefined => window.ghcNative;
+export const isNativeShell = (): boolean => !!window.ghcNative?.live;
+export const nativePlatform = (): 'desktop' | 'mobile' | 'web' => window.ghcNative?.platform ?? 'web';

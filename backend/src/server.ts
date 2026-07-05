@@ -20,7 +20,7 @@ async function main() {
   const io = new Server(httpServer, {
     cors: {
       origin: isProd
-        ? ['https://longdcam-front.ghmate.com']
+        ? ['https://ghc.ghmate.com']
         : true,
       credentials: true,
     },
@@ -32,7 +32,7 @@ async function main() {
   setupSocketHandlers(io);
 
   httpServer.listen(PORT, () => {
-    console.log(`Longdcam API listening on port ${PORT}`);
+    console.log(`GHC API listening on port ${PORT}`);
   });
 }
 

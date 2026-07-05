@@ -1,19 +1,19 @@
 services:
   mysql:
-    container_name: longdcam_mysql_local
+    container_name: ghc_mysql_local
     image: mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: longdcam
-      MYSQL_USER: longdcam
-      MYSQL_PASSWORD: longdcam1234
+      MYSQL_DATABASE: ghc
+      MYSQL_USER: ghc
+      MYSQL_PASSWORD: ghc1234
     ports:
       - "3360:3306"
     volumes:
       - mysql_local_data:/var/lib/mysql
       - ./db/init:/docker-entrypoint-initdb.d:ro
     networks:
-      - longdcam_local
+      - ghc_local
     restart: always
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
@@ -22,11 +22,11 @@ services:
       retries: 5
 
   livekit:
-    container_name: longdcam_livekit_local
+    container_name: ghc_livekit_local
     image: livekit/livekit-server:latest
     # --node-ip advertises the Mac's LAN IP as the ICE candidate so a phone on the same
     # WiFi can reach the media ports (7881/tcp, 7882/udp). local-setup.sh writes
-    # LK_NODE_IP into longdcam_service/.env; falls back to loopback for same-machine only.
+    # LK_NODE_IP into ghc_service/.env; falls back to loopback for same-machine only.
     command: ["--config", "/etc/livekit.yaml", "--node-ip", "${LK_NODE_IP:-127.0.0.1}"]
     ports:
       - "7880:7880"
@@ -35,22 +35,22 @@ services:
     volumes:
       - ./livekit/livekit.local.yaml:/etc/livekit.yaml:ro
     networks:
-      - longdcam_local
+      - ghc_local
     restart: unless-stopped
 
   # Redis coordinates livekit-server <-> ingress (required for RTMP ingress).
   redis:
-    container_name: longdcam_redis_local
+    container_name: ghc_redis_local
     image: redis:7-alpine
     networks:
-      - longdcam_local
+      - ghc_local
     restart: unless-stopped
 
   # LiveKit Ingress: native live / OBS → RTMP(1935) → publishes into the room as a
   # participant. On the bridge network it reaches redis + livekit by service name.
   # 1935 is mapped to the host so the desktop app's ffmpeg can push to rtmp://localhost:1935.
   ingress:
-    container_name: longdcam_ingress_local
+    container_name: ghc_ingress_local
     image: livekit/ingress:latest
     environment:
       INGRESS_CONFIG_BODY: |
@@ -70,11 +70,11 @@ services:
       - redis
       - livekit
     networks:
-      - longdcam_local
+      - ghc_local
     restart: unless-stopped
 
 networks:
-  longdcam_local:
+  ghc_local:
     driver: bridge
 
 volumes:

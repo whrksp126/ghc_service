@@ -15,7 +15,7 @@ export function getSocket(): Socket {
   // room right after joining. Connect Socket.IO straight to the backend instead (sub-ms
   // latency, no proxy). `apiBase` is injected by the desktop preload. Browsers/PWA keep
   // the same-origin connection through the proxy.
-  const native = (window as unknown as { longdcamNative?: { platform?: string; apiBase?: string } }).longdcamNative;
+  const native = (window as unknown as { ghcNative?: { platform?: string; apiBase?: string } }).ghcNative;
   const url = native?.platform === 'desktop' && native.apiBase ? native.apiBase : SOCKET_URL;
 
   socket = io(url, {

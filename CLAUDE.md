@@ -1,4 +1,4 @@
-# Longdcam Service
+# GHC Service
 
 ## Project Overview
 Self-hosted multi-camera video conferencing PWA. Users register devices (phones, tablets, desktops) as "cameras", then create or join rooms where multiple device cameras stream simultaneously via WebRTC SFU (mediasoup). A single user can have multiple devices, each acting as an independent camera that can be remotely started/stopped and previewed via P2P WebRTC.
@@ -27,7 +27,7 @@ Self-hosted multi-camera video conferencing PWA. Users register devices (phones,
 ### Infrastructure
 - **Production**: Docker Compose — front (nginx SPA), api (host network), mysql, coturn
 - **Proxy**: External nginx_proxy container handles TLS + routing
-- **Domains**: longdcam.ghmate.com (front), longdcam-api.ghmate.com (API), longdcam-turn.ghmate.com (TURN)
+- **Domains**: ghc.ghmate.com (front), ghc-api.ghmate.com (API), ghc-turn.ghmate.com (TURN)
 
 ## Directory Structure
 ```
@@ -69,7 +69,7 @@ frontend/src/
 ### Frontend
 - Named exports for components
 - Zustand `create` pattern, hooks named `use[Name]Store`
-- Auth store uses `persist` middleware with `'longdcam-auth'` localStorage key
+- Auth store uses `persist` middleware with `'ghc-auth'` localStorage key
 - API calls through `lib/api.ts`, Socket.IO lazy singleton via `lib/socket.ts`
 - `emitWithAck<T>(event, data)` for request-response socket calls
 - User-facing text in Korean
@@ -90,7 +90,7 @@ frontend/src/
 # From project root (longdcam/)
 bash local-setup.sh
 
-# Manual (from longdcam_service/)
+# Manual (from ghc_service/)
 docker compose -f docker-compose.local.yml up -d   # MySQL on port 3360
 cd backend && set -a && source .env.local && set +a && npm run dev
 cd frontend && npm run dev

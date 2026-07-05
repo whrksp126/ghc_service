@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# longdcam 배포: 로컬에서 한 번 실행하면 push → 홈서버 pull → 기동/재기동 → 헬스체크
+# GHC 배포: 로컬에서 한 번 실행하면 push → 홈서버 pull → 기동/재기동 → 헬스체크
 # 사용:
 #   bash scripts/deploy.sh           # 표준 배포 (변경 없으면 컨테이너 기동 생략)
 #   bash scripts/deploy.sh --restart # 컨테이너 강제 재기동
@@ -9,7 +9,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
 SSH="ssh -i ${HOME}/.ssh/ghmate_server -p 222 ghmate@ghmate.iptime.org"
-REMOTE_DIR="/srv/projects/longdcam"
+REMOTE_DIR="/srv/projects/ghc"
 
 FORCE_RESTART=0
 [[ "${1:-}" == "--restart" ]] && FORCE_RESTART=1
@@ -55,16 +55,16 @@ fi
 # compose / Dockerfile / deploy / scripts / .env.example / turn 중 하나라도 바뀌었거나 --restart면 up
 if [[ "${FORCE_RESTART}" == "1" ]] || echo "${CHANGED}" | grep -qE '(docker-compose.*\.yml|deploy/|scripts/|\.env\.example|backend/Dockerfile|frontend/Dockerfile|turn/)'; then
   echo "  컨테이너 재기동..."
-  docker compose -p longdcam_prod up --build -d > /tmp/longdcam_up.log 2>&1 || { cat /tmp/longdcam_up.log; exit 1; }
+  docker compose -p ghc_prod up --build -d > /tmp/ghc_up.log 2>&1 || { cat /tmp/ghc_up.log; exit 1; }
   echo "  ✓ up done"
 else
   echo "  컨테이너 기동 생략"
 fi
 
 # nginx conf 변경 감지
-if ! diff -q deploy/nginx/longdcam.conf /srv/nginx-proxy/conf.d/longdcam.conf >/dev/null 2>&1; then
+if ! diff -q deploy/nginx/ghc.conf /srv/nginx-proxy/conf.d/ghc.conf >/dev/null 2>&1; then
   echo "  nginx conf 갱신..."
-  cp deploy/nginx/longdcam.conf /srv/nginx-proxy/conf.d/longdcam.conf
+  cp deploy/nginx/ghc.conf /srv/nginx-proxy/conf.d/ghc.conf
   docker exec nginx_proxy nginx -t >/dev/null 2>&1
   docker exec nginx_proxy nginx -s reload
   echo "  ✓ nginx reload"
@@ -92,24 +92,24 @@ done
 
 # Frontend
 echo -n "  Frontend      "
-docker exec longdcam_front_prod curl -fs http://localhost:80/ >/dev/null 2>&1 && echo OK || { echo FAIL; exit 1; }
+docker exec ghc_front_prod curl -fs http://localhost:80/ >/dev/null 2>&1 && echo OK || { echo FAIL; exit 1; }
 
 # MySQL
 echo -n "  MySQL         "
-docker exec longdcam_mysql_prod mysqladmin ping -h localhost >/dev/null 2>&1 && echo OK || { echo FAIL; exit 1; }
+docker exec ghc_mysql_prod mysqladmin ping -h localhost >/dev/null 2>&1 && echo OK || { echo FAIL; exit 1; }
 
 # TURN
 echo -n "  TURN          "
-docker ps --filter name=longdcam_turn_prod --format '{{.Status}}' | grep -q "Up" && echo OK || { echo FAIL; exit 1; }
+docker ps --filter name=ghc_turn_prod --format '{{.Status}}' | grep -q "Up" && echo OK || { echo FAIL; exit 1; }
 REMOTE
 
 # ---------- 5) 외부 도메인 검증 ----------
 echo "[deploy] 5/5 외부 도메인 검증"
 ok=1
-curl -fsSL -o /dev/null -w "  https://longdcam-front.ghmate.com/ → %{http_code}\n" --max-time 10 \
-  https://longdcam-front.ghmate.com/ || ok=0
-curl -fsSL -o /dev/null -w "  https://longdcam-back.ghmate.com/health → %{http_code}\n" --max-time 10 \
-  https://longdcam-back.ghmate.com/health || ok=0
+curl -fsSL -o /dev/null -w "  https://ghc.ghmate.com/ → %{http_code}\n" --max-time 10 \
+  https://ghc.ghmate.com/ || ok=0
+curl -fsSL -o /dev/null -w "  https://ghc-api.ghmate.com/health → %{http_code}\n" --max-time 10 \
+  https://ghc-api.ghmate.com/health || ok=0
 
 if [[ "${ok}" == "1" ]]; then
   echo "[deploy] ✅ 완료"

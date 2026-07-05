@@ -44,7 +44,7 @@ export const useAudioSettings = create<AudioSettingsState>()(
       set: (patch) => set(patch),
     }),
     {
-      name: 'longdcam-audio',
+      name: 'ghc-audio',
       version: 1,
       // v0 stored a 0..1 `sensitivity`; map it onto the new direct threshold.
       migrate: (state: any, version) => {

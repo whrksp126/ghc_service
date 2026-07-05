@@ -11,7 +11,7 @@ const s3 = new S3Client({
   forcePathStyle: true,
 });
 
-const BUCKET = process.env.OBJECTSTORE_BUCKET || 'longdcam-dev';
+const BUCKET = process.env.OBJECTSTORE_BUCKET || 'ghc-dev';
 
 export async function uploadFile(key: string, body: Buffer, contentType: string) {
   await s3.send(new PutObjectCommand({

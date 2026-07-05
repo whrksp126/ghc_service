@@ -16,7 +16,7 @@ export function preferDocumentPip(): boolean {
   // Electron's Document PiP returns a window object but doesn't actually render it, so the desktop
   // shell uses the composite macOS video-PiP overlay instead. Only the plain web browser uses
   // Document PiP (where it works).
-  const isNative = typeof window !== 'undefined' && !!window.longdcamNative?.live;
+  const isNative = typeof window !== 'undefined' && !!window.ghcNative?.live;
   return hasDocumentPip && !isNative;
 }
 

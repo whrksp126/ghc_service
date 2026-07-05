@@ -3,7 +3,7 @@
 # var (from backend/.env) and are NEVER committed in this file.
 #
 # Ports (must be forwarded on the home router):
-#   7880/tcp   signaling (WS) — proxied by nginx as longdcam-back.ghmate.com/livekit
+#   7880/tcp   signaling (WS) — proxied by nginx as ghc-api.ghmate.com/livekit
 #   40100/udp  WebRTC media — top of the already-forwarded 40000-40100 range, so no new
 #              router rule is needed. coturn shares the range but allocates from 40000 up,
 #              so it effectively never reaches 40100.

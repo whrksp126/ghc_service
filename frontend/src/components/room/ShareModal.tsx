@@ -33,7 +33,7 @@ export function ShareModal({ isOpen, onClose, slug, roomName, hasPin }: ShareMod
   async function handleShare() {
     try {
       await navigator.share({
-        title: `Longdcam - ${roomName}`,
+        title: `GHC - ${roomName}`,
         text: `"${roomName}" 방에 참여하세요!`,
         url: displayUrl,
       });

@@ -11,8 +11,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['icons/*.png', 'favicon-16.png', 'favicon-32.png', 'apple-touch-icon.png'],
       manifest: {
-        name: 'Longdcam',
-        short_name: 'Longdcam',
+        name: 'GHC',
+        short_name: 'GHC',
         description: 'Multi-camera video calling',
         theme_color: '#121212',
         background_color: '#121212',

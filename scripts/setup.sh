@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# longdcam 홈서버 초기 설정 (한 번만 실행)
+# GHC 홈서버 초기 설정 (한 번만 실행)
 # 사용: bash scripts/setup.sh
 set -euo pipefail
 
 SSH="ssh -i ${HOME}/.ssh/ghmate_server -p 222 ghmate@ghmate.iptime.org"
-REMOTE_DIR="/srv/projects/longdcam"
-REPO_URL="https://github.com/whrksp126/longdcam_service.git"
+REMOTE_DIR="/srv/projects/ghc"
+REPO_URL="https://github.com/whrksp126/ghc_service.git"
 
 # ---------- 1) SSH 연결 테스트 ----------
 echo "[setup] 1/7 SSH 연결 테스트"
@@ -48,7 +48,7 @@ if [ -n "${ENV_STATUS// /}" ]; then
   if echo "${ENV_STATUS}" | grep -q "\.env$\| \.env "; then
     echo "  ── ${REMOTE_DIR}/.env (docker-compose MySQL용) ──"
     echo "  MYSQL_ROOT_PASSWORD=<루트 비밀번호>"
-    echo "  MYSQL_USER=longdcam"
+    echo "  MYSQL_USER=ghc"
     echo "  MYSQL_PASSWORD=<유저 비밀번호>"
     echo ""
   fi
@@ -79,7 +79,7 @@ REMOTE
 echo "[setup] 5/7 nginx conf 배포"
 ${SSH} env REMOTE_DIR="${REMOTE_DIR}" bash -se <<'REMOTE'
 set -euo pipefail
-cp "${REMOTE_DIR}/deploy/nginx/longdcam.conf" /srv/nginx-proxy/conf.d/longdcam.conf
+cp "${REMOTE_DIR}/deploy/nginx/ghc.conf" /srv/nginx-proxy/conf.d/ghc.conf
 docker exec nginx_proxy nginx -t >/dev/null 2>&1
 docker exec nginx_proxy nginx -s reload
 echo "  ✓ nginx conf 배포 + reload 완료"
@@ -90,7 +90,7 @@ echo "[setup] 6/7 컨테이너 빌드 + 기동"
 ${SSH} env REMOTE_DIR="${REMOTE_DIR}" bash -se <<'REMOTE'
 set -euo pipefail
 cd "${REMOTE_DIR}"
-docker compose -p longdcam_prod up --build -d
+docker compose -p ghc_prod up --build -d
 echo "  ✓ docker compose up 완료"
 
 echo "  API 부팅 대기 (최대 60초)..."
@@ -100,7 +100,7 @@ for i in $(seq 1 12); do
     break
   fi
   if [ "$i" -eq 12 ]; then
-    echo "  ⚠️ API 응답 없음. 로그 확인: docker logs longdcam_api_prod"
+    echo "  ⚠️ API 응답 없음. 로그 확인: docker logs ghc_api_prod"
   fi
   sleep 5
 done
@@ -110,9 +110,9 @@ REMOTE
 echo "[setup] 7/7 포스트 체크리스트"
 echo ""
 echo "  ── Cloudflare DNS (아직 안 했다면) ──"
-echo "  longdcam-front.ghmate.com  CNAME  ghmate.iptime.org  (Proxied)"
-echo "  longdcam-back.ghmate.com   CNAME  ghmate.iptime.org  (Proxied)"
-echo "  longdcam-turn.ghmate.com   CNAME  ghmate.iptime.org  (DNS Only!)"
+echo "  ghc.ghmate.com      CNAME  ghmate.iptime.org  (Proxied)"
+echo "  ghc-api.ghmate.com  CNAME  ghmate.iptime.org  (Proxied)"
+echo "  ghc-turn.ghmate.com CNAME  ghmate.iptime.org  (DNS Only!)"
 echo ""
 echo "  ── 라우터 포트포워딩 ──"
 echo "  3478 UDP+TCP  → 서버IP  (TURN)"
@@ -121,7 +121,7 @@ echo ""
 echo "  ── 확인 사항 ──"
 echo "  □ TURN_SECRET: backend/.env ↔ turn/turnserver.conf 값 일치"
 echo "  □ MEDIASOUP_ANNOUNCED_IP: 서버 공인 IP와 일치"
-echo "  □ Google OAuth redirect URI: https://longdcam-back.ghmate.com/api/auth/google/callback"
+echo "  □ Google OAuth redirect URI: https://ghc-api.ghmate.com/api/auth/google/callback"
 echo ""
 echo "[setup] ✅ 초기 설정 완료!"
 echo "  이후 배포: bash scripts/deploy.sh [--restart]"
