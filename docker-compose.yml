@@ -34,7 +34,9 @@ services:
     mem_limit: 1g
     restart: always
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/health || exit 1"]
+      # node:20-bullseye-slim 이미지엔 wget/curl 이 없어 기존 wget 헬스체크는 항상 실패했다.
+      # 이미지에 반드시 있는 node 런타임으로 /health 를 확인한다.
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
       interval: 30s
       timeout: 10s
       retries: 3
