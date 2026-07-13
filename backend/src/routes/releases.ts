@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
-import { s3, BUCKET, getPresignedUrl } from '../config/objectstore';
+import { sendWithRetry, BUCKET, getPresignedUrl } from '../config/objectstore';
 import path from 'path';
 
 const router = Router();
@@ -27,7 +27,7 @@ router.get('/releases/latest', async (req, res) => {
 
     const prefix = `${RELEASES_PREFIX}${platform}/`;
 
-    const out = await s3.send(
+    const out = await sendWithRetry(
       new ListObjectsV2Command({ Bucket: BUCKET, Prefix: prefix, MaxKeys: 1000 })
     );
 

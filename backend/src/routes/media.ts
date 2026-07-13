@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
-import { s3, BUCKET, getPresignedUrl } from '../config/objectstore';
+import { sendWithRetry, BUCKET, getPresignedUrl } from '../config/objectstore';
 import { authMiddleware } from '../middleware/auth';
 
 const router = Router();
@@ -18,7 +18,7 @@ function baseName(key: string): string {
 // GET /api/media/library — list playable home-server videos
 router.get('/media/library', authMiddleware, async (_req, res) => {
   try {
-    const out = await s3.send(
+    const out = await sendWithRetry(
       new ListObjectsV2Command({ Bucket: BUCKET, Prefix: LIBRARY_PREFIX, MaxKeys: 500 })
     );
     const items = (out.Contents || [])

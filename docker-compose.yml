@@ -120,8 +120,9 @@ services:
       - redis
       - livekit
     mem_limit: 2g
-    # cpus 제한: RTMP 트랜스코딩은 스트림당 ~0.5~1코어로 무거움. 호스트 코어 수에 따라
-    # 동시 라이브 수를 제한할 경우 예시: cpus: "4" (4코어 상한). 현재는 보수적으로 미설정.
+    # cpus 제한: RTMP 트랜스코딩은 스트림당 ~0.5~1코어로 무거운 폭주 가능 워커.
+    # 8코어 공용 호스트에서 옆 프로젝트를 굶기지 않도록 4코어 상한을 건다(동시 라이브 ~4~8개).
+    cpus: "4.0"
     restart: always
     logging:
       driver: json-file
