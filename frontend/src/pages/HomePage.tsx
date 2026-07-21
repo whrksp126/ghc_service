@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import logoUrl from '../assets/ghcam-logo.png';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Trash2, MoreHorizontal, Share2, Pencil, LogOut } from 'lucide-react';
+import { Trash2, MoreHorizontal, Share2, Pencil, LogOut, RefreshCw } from 'lucide-react';
 import { Button } from '../components/common/Button';
 import { Modal } from '../components/common/Modal';
 import { BottomSheet, type SheetAction } from '../components/common/BottomSheet';
@@ -12,6 +12,8 @@ import { QrScanModal } from '../components/room/QrScanModal';
 import { useAuthStore } from '../stores/authStore';
 import { api } from '../lib/api';
 import { DownloadAppButton } from '../components/DownloadAppButton';
+import { DeviceVersionCard } from '../components/DeviceVersionCard';
+import { getUpdater } from '../lib/updater';
 
 export function HomePage() {
   const navigate = useNavigate();
@@ -28,6 +30,9 @@ export function HomePage() {
   const [rooms, setRooms] = useState<{ id: string; name: string; slug: string; role: string; hasPin: boolean }[]>([]);
   const [loading, setLoading] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showAppInfo, setShowAppInfo] = useState(false);
+  // 데스크탑 셸에서만 인앱 업데이트 브리지가 주입된다 → 메뉴 항목/모달을 노출.
+  const canSelfUpdate = !!getUpdater();
   type RoomItem = { id: string; name: string; slug: string; role: string; hasPin: boolean };
   const [sheetRoom, setSheetRoom] = useState<RoomItem | null>(null);
   const [renameRoom, setRenameRoom] = useState<RoomItem | null>(null);
@@ -147,6 +152,14 @@ export function HomePage() {
                   <p className="text-sm font-medium truncate">{nickname}</p>
                   <p className="text-[11px] text-white/40 mt-0.5">개인 설정</p>
                 </div>
+                {canSelfUpdate && (
+                  <button
+                    onClick={() => { setShowUserMenu(false); setShowAppInfo(true); }}
+                    className="w-full flex items-center gap-2.5 text-left px-4 py-2.5 text-sm text-white/80 hover:bg-white/5 transition-colors border-b border-white/10"
+                  >
+                    <RefreshCw size={16} /> 앱 정보 · 업데이트
+                  </button>
+                )}
                 <button
                   onClick={() => { setShowUserMenu(false); logout(); navigate('/login'); }}
                   className="w-full flex items-center gap-2.5 text-left px-4 py-2.5 text-sm text-danger hover:bg-danger/10 transition-colors"
@@ -325,6 +338,10 @@ export function HomePage() {
             저장
           </Button>
         </div>
+      </Modal>
+
+      <Modal isOpen={showAppInfo} onClose={() => setShowAppInfo(false)} title="앱 정보">
+        <DeviceVersionCard />
       </Modal>
 
       {shareRoom && (
