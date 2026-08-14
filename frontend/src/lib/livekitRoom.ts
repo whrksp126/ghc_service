@@ -82,63 +82,53 @@ function sourceOf(pub: RemoteTrackPublication): ConsumerInfo['source'] {
 }
 
 /**
- * How far behind real time a LIVE broadcast plays (OBS live / 브라우저 라이브 — the RTMP ingress,
- * identity `obs:<room>`). This is the "buffer up, then keep playing" behaviour of a normal live
- * service, done the only way WebRTC can do it.
+ * NO playout buffer on the live.
  *
- * The browser holds this many seconds of the live before showing it. A hiccup on the way — a late
- * packet, a lost packet — has that whole window to be re-sent and slotted in before its turn to be
- * displayed comes around. So instead of the picture going soft or stuttering, the buffer quietly
- * absorbs it and playback continues clean.
+ * This used to hold the live (OBS / 브라우저 라이브 — the RTMP ingress, identity `obs:<room>`) back
+ * by 5 seconds via `RTCRtpReceiver.playoutDelayHint`, so a network hiccup would be absorbed by the
+ * buffer instead of showing up as a stutter. It was removed because **WebRTC cannot buffer video
+ * and audio together**, and the result was badly out-of-sync live playback.
  *
- * Two things this needs to actually work, which is why it isn't just this one number:
- *  - the SFU must still HAVE the lost packet to re-send → rtc.packet_buffer_size_video in
- *    livekit/livekit.yaml is sized to cover this window (default was only ~1.5s),
- *  - the SFU must not pre-emptively drop quality → rtc.congestion_control there, same file.
+ * Measured in Chrome (loopback PeerConnection, hint = 5s on both receivers):
  *
- * Human participants stay at 0: a conversation 5 seconds behind is unusable. Only the live is
- * delayed, and every Chromium viewer gets the same number, so they stay in step with each other.
+ *      video  target 4.99s → actual 4.94s     (applied almost immediately)
+ *      audio  target 3.00s → actual 0.46s     (Chrome clamps to 3s, then NetEq stretches
+ *                                              at roughly 0.15s per second — it never gets there)
  *
- * Limits worth knowing: `playoutDelayHint` is Chromium-only (Safari/Firefox silently ignore it and
- * behave as before), Chrome clamps it to 10s, and the live takes this long to first appear.
+ * i.e. the sound ran about 4.5 seconds AHEAD of the picture. Video's jitter buffer takes any depth
+ * you ask for; audio's cannot be stretched like that without pitch artefacts, so it simply doesn't
+ * follow. Any non-trivial video-only delay breaks lip sync, so there is no smaller value that
+ * "works" — the feature is not achievable on this transport.
+ *
+ * What actually caused the disruptions this was meant to hide turned out to be elsewhere and is
+ * fixed at the source: the ingress transcode saturating its CPU cap (see INGRESS_PRESET in the
+ * backend) and the capture watchdog's false positives (see CaptureRunner.checkFlow). The SFU-side
+ * settings in livekit/livekit.yaml — no layer downgrade on jitter, deeper retransmission history —
+ * still stand and still help, because those work within the normal jitter window.
  */
-const LIVE_PLAYOUT_DELAY_SEC = 5;
 
-/** Currently-subscribed live tracks, so a resync can reach all of them (video + audio). */
+/** Currently-subscribed live tracks. Kept so a resync can reach all of them (video + audio). */
 const liveTracks = new Set<RemoteTrack>();
 
-function applyLiveDelay(track: RemoteTrack, seconds: number): void {
-  try { track.setPlayoutDelay(seconds); } catch { /* browser without playoutDelayHint */ }
-}
-
 /**
- * "싱크" — put every viewer back on the same frame.
+ * "싱크" (the browser-live toolbar button) — drop whatever each viewer has queued for the live and
+ * resume from the newest frame, so viewers that drifted apart line back up.
  *
- * Each viewer's buffer drifts on its own: someone who hit a rough patch refills deeper and stays
- * a beat behind, and the browser never hurries to catch back up. Dropping the target to 0 makes it
- * discard the backlog and snap to the newest frame; restoring the target then rebuilds the buffer
- * from there. Every viewer runs this off the same broadcast within a few ms of each other, so they
- * all restart from the same moment and stay aligned.
- *
- * The pause between the two steps is the browser's window to actually drain — without it the second
- * call just overwrites the first and nothing moves.
+ * With no playout buffer the drift this corrects is small (a jitter buffer's worth), but it is
+ * still the way to recover a viewer whose buffer grew during a rough patch and never shrank back.
  */
 export function resyncLivePlayout(): void {
-  if (liveTracks.size === 0) return;
-  for (const t of liveTracks) applyLiveDelay(t, 0);
-  setTimeout(() => {
-    for (const t of liveTracks) applyLiveDelay(t, LIVE_PLAYOUT_DELAY_SEC);
-  }, 700);
+  for (const t of liveTracks) {
+    try { t.setPlayoutDelay(0); } catch { /* browser without playoutDelayHint */ }
+  }
 }
 
 function onTrackSubscribed(track: RemoteTrack, pub: RemoteTrackPublication, participant: RemoteParticipant) {
   if (track.kind !== Track.Kind.Audio && track.kind !== Track.Kind.Video) return;
   const { userId, deviceId } = parseIdentity(participant.identity);
-  // Both the audio and video of the live arrive here, so they get the same delay and stay in sync.
-  if (userId === 'obs') {
-    liveTracks.add(track);
-    applyLiveDelay(track, LIVE_PLAYOUT_DELAY_SEC);
-  }
+  // Remember the live's tracks (video + audio) so "싱크" can reach them. No delay is applied —
+  // see the note above resyncLivePlayout.
+  if (userId === 'obs') liveTracks.add(track);
   const meta = metaOf(participant);
   if (track.kind === Track.Kind.Audio) {
     console.info('[livekit] audio subscribed', { from: `${userId}:${deviceId}`, trackSid: pub.trackSid });
