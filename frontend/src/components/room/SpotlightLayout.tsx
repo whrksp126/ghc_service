@@ -24,7 +24,7 @@ interface SpotlightLayoutProps {
   onFeedClick?: (feedId: string) => void;
   /** Double-clicking the big spotlight tile goes back to grid. */
   onExit?: () => void;
-  onPip?: (feedId: string) => void;
+  onPip?: (feedId: string) => void | Promise<boolean | void>;
 }
 
 export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit, onPip }: SpotlightLayoutProps) {

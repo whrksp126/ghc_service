@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { preferDocumentPip, copyStylesTo } from '../lib/pipSupport';
+import { preferDocumentPip, copyStylesTo, openNativePipWindow, hasWindowPip } from '../lib/pipSupport';
 
 // Tracks which feeds are popped into the desktop Document-PiP OS window. (Mobile / Safari use
 // classic single-video PiP, which the OS manages directly — no state needed here.) Clicking a
@@ -11,7 +11,8 @@ interface PipState {
   /** The open Document-PiP OS window (desktop Chromium), or null. */
   pipWindow: Window | null;
   isOpen: (id: string) => boolean;
-  toggle: (id: string) => void;
+  /** Resolves false when no PiP window could be opened, so the caller can fall back. */
+  toggle: (id: string) => Promise<boolean>;
   close: (id: string) => void;
   closeAll: () => void;
 }
@@ -31,26 +32,35 @@ export const useFloatingWindowStore = create<PipState>((set, get) => ({
   toggle: async (id) => {
     if (get().popped[id]) {
       get().close(id);
-      return;
+      return true;
     }
-    if (preferDocumentPip()) {
+    if (hasWindowPip()) {
       let win = get().pipWindow;
       if (!win || win.closed) {
-        try {
-          const dpip = (window as unknown as { documentPictureInPicture?: DocPipApi }).documentPictureInPicture;
-          if (!dpip) return;
-          win = await dpip.requestWindow({ width: 640, height: 400 });
-        } catch {
-          return;
+        if (preferDocumentPip()) {
+          // Plain web Chromium: Document PiP.
+          try {
+            const dpip = (window as unknown as { documentPictureInPicture?: DocPipApi }).documentPictureInPicture;
+            if (!dpip) return false;
+            win = await dpip.requestWindow({ width: 640, height: 400 });
+          } catch {
+            return false;
+          }
+          copyStylesTo(win);
+          win.document.body.style.margin = '0';
+          win.document.body.style.background = '#121212';
+        } else {
+          // Desktop shell: our own frameless always-on-top window (freely resizable, unlike the
+          // OS PiP overlay it replaces). Styles/body are prepared inside the helper.
+          win = openNativePipWindow();
+          if (!win) return false;
         }
-        copyStylesTo(win);
-        win.document.body.style.margin = '0';
-        win.document.body.style.background = '#121212';
         win.addEventListener('pagehide', () => get().closeAll());
         set({ pipWindow: win });
       }
     }
     set((s) => ({ popped: { ...s.popped, [id]: true } }));
+    return true;
   },
 
   close: (id) =>

@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useId, memo, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import { MicOff, Monitor, Maximize2, Minimize2, PictureInPicture2, RotateCcw } from 'lucide-react';
-import { hasDocumentPip, hasVideoPip, enterVideoPip } from '../../lib/pipSupport';
+import { hasWindowPip, hasVideoPip, enterVideoPip } from '../../lib/pipSupport';
 import { isNativeShell } from '../../lib/native';
 import { compositePip } from '../../lib/compositePip';
 import type { RemoteTrack } from 'livekit-client';
@@ -37,7 +37,7 @@ interface FeedCardProps {
   className?: string;
   /** Desktop Document-PiP toggle (called within the click gesture). Mobile uses video PiP directly.
    *  Receives this feed's id — same stable-callback reason as onDoubleClick. */
-  onPip?: (feedId: string) => void;
+  onPip?: (feedId: string) => void | Promise<boolean | void>;
   /** This feed is currently shown in the desktop PiP window — render a placeholder, keep the slot. */
   isPoppedOut?: boolean;
   /** Stable feed id used to add/remove this feed from the mobile composite PiP. */
@@ -277,14 +277,11 @@ export const FeedCard = memo(function FeedCard({
   // Safari web → composite the feed(s) onto ONE canvas and PiP that single <video> — the long-working
   // mobile-Chrome path (canvas.captureStream PiP). Fall back to a direct single-video PiP (with an
   // on-screen reason) only if the composite is rejected.
-  const pipSupported = (hasDocumentPip || hasVideoPip()) && !!track;
-  const handlePip = () => {
-    setActive(null);
-    // Desktop web Chromium: Document PiP holds several tiles (handled by the floating-window store).
-    if (hasDocumentPip && !isNativeShell()) {
-      onPip?.(feedId);
-      return;
-    }
+  const pipSupported = (hasWindowPip() || hasVideoPip()) && !!track;
+
+  /** Canvas-composite → OS video PiP. The path for platforms with no real PiP *window*
+   *  (mobile / Safari), and the fallback when the window can't be opened. */
+  const enterCompositePip = () => {
     const id = pipId ?? layoutId;
     if (!id || !track) {
       enterVideoPip(videoRef.current); // no stable id → best-effort single-video PiP
@@ -304,6 +301,22 @@ export const FeedCard = memo(function FeedCard({
       if (err) compositePip.enterInline();
       onPip?.(feedId);
     });
+  };
+
+  const handlePip = () => {
+    setActive(null);
+    // Anywhere PiP is a real WINDOW — desktop web Chromium (Document PiP) and the desktop shell
+    // (our own always-on-top popup) — several tiles share one window, laid out in real DOM and
+    // re-flowing as it's resized. Only platforms without that fall through to the canvas composite.
+    if (hasWindowPip() && onPip) {
+      // If the window can't be opened (popup blocked, handler denied) use the composite instead of
+      // leaving the button dead.
+      void Promise.resolve(onPip(feedId)).then((ok) => {
+        if (ok === false) enterCompositePip();
+      });
+      return;
+    }
+    enterCompositePip();
   };
 
   // Shared control buttons (parent mic/cam/switch + PiP + fullscreen), reused by the in-place

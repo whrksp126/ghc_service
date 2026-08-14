@@ -14,10 +14,46 @@ export const hasDocumentPip =
 // fullscreen Space, so tile fullscreen uses simple-fullscreen on the same Space — see main.ts.)
 export function preferDocumentPip(): boolean {
   // Electron's Document PiP returns a window object but doesn't actually render it, so the desktop
-  // shell uses the composite macOS video-PiP overlay instead. Only the plain web browser uses
-  // Document PiP (where it works).
-  const isNative = typeof window !== 'undefined' && !!window.ghcNative?.live;
-  return hasDocumentPip && !isNative;
+  // shell opens its own popup window instead (see openNativePipWindow). Only the plain web browser
+  // uses Document PiP (where it works).
+  return hasDocumentPip && !isNativeShellWindow();
+}
+
+function isNativeShellWindow(): boolean {
+  return typeof window !== 'undefined' && !!window.ghcNative?.live;
+}
+
+/**
+ * Desktop shell: open OUR OWN always-on-top window for PiP.
+ *
+ * Why not the OS Picture-in-Picture overlay (what this used to do): that window belongs to
+ * Chromium/AVKit and is pinned to the video's aspect ratio — it refuses any resize that would
+ * change the shape (measured: asking a 9:16 overlay for 700×400 gave back 284×505, untouched).
+ * So the tiles could never be re-arranged by dragging, and a canvas overlay can't hold a clickable
+ * button either. A window we open ourselves resizes freely from every edge and hosts real DOM.
+ *
+ * `window.open` (not documentPictureInPicture) because the popup is same-origin WITH an opener, so
+ * it shares the renderer's JS heap: the room's live MediaStreamTracks can be attached directly to
+ * <video> elements inside it. The desktop main process turns this request into a frameless,
+ * always-on-top, all-Spaces window (see attachPipWindowHandler in main.ts).
+ *
+ * Returns null in a plain browser, or if the popup was blocked.
+ */
+export function openNativePipWindow(): Window | null {
+  if (!isNativeShellWindow()) return null;
+  const win = window.open('', 'ghc-pip', 'width=480,height=300');
+  if (!win) return null;
+  win.document.title = 'GHC PiP';
+  win.document.body.style.margin = '0';
+  win.document.body.style.background = '#121212';
+  win.document.body.style.overflow = 'hidden';
+  copyStylesTo(win);
+  return win;
+}
+
+/** True when this platform gets a PiP that is a real, freely-resizable window (desktop or web Chromium). */
+export function hasWindowPip(): boolean {
+  return hasDocumentPip || isNativeShellWindow();
 }
 
 export function hasVideoPip(): boolean {

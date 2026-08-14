@@ -21,7 +21,7 @@ interface FeedItem {
 interface GridLayoutProps {
   feeds: FeedItem[];
   onFeedClick?: (feedId: string) => void;
-  onPip?: (feedId: string) => void;
+  onPip?: (feedId: string) => void | Promise<boolean | void>;
 }
 
 /**
