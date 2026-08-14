@@ -97,20 +97,30 @@ function toRoomIngress(info: { ingressId: string; url: string; streamKey: string
  * Ingress transcode profile. LiveKit's DEFAULT for an RTMP ingress is H264_720P_30FPS_3_LAYERS —
  * 1280x720 @ ~1.9Mbps — so a pristine 1080p browser-live push was being re-encoded down to 720p at
  * a modest bitrate before it ever reached a viewer. That, not the sender, was the quality ceiling.
- * We ask for real 1080p with simulcast kept (3.5Mbps main layer + 540p + 180p), so a good viewer
- * gets a sharp picture while a phone on cellular can still drop to a lower layer.
+ * We ask for real 1080p, but as a SINGLE layer rather than simulcast.
  *
- * Cost: 1080p×3 layers is roughly 2× the ingress CPU of 720p×3, and the prod compose caps the
- * ingress container at 4 CPUs — so this trades concurrent-live headroom for picture quality.
+ * Measured 2026-08-14: `H264_1080P_30FPS_3_LAYERS` burned 240–270% CPU for ONE stream against the
+ * container's 4-CPU cap. Any spike hit the ceiling, GStreamer stopped draining the RTMP socket, and
+ * the publisher's ffmpeg blocked on the muxer — its FIFOs backed up (399 frames), the capture
+ * watchdog fired, and the live restarted. That is what "가끔 재연결되며 끊긴다" and the A/V drift
+ * were: the server, not the sender. Three simulcast layers means three encodes; one 1080p encode is
+ * a fraction of that and keeps the full resolution.
+ *
+ * Dropping the extra layers costs little here on purpose: livekit.yaml already tells the SFU not to
+ * step down on bandwidth wobble (congestion_control.min_channel_capacity), so the lower layers were
+ * barely being handed out anyway. The trade is that a genuinely weak viewer now gets loss instead of
+ * a clean low-res feed — the same quality-first trade already made in livekit.yaml.
+ *
  * Tune with INGRESS_VIDEO_PRESET (any IngressVideoEncodingPreset name):
- *   H264_1080P_30FPS_3_LAYERS_HIGH_MOTION  4.5Mbps — best for video playback, most CPU
- *   H264_1080P_30FPS_3_LAYERS              3.5Mbps — default
- *   H264_720P_30FPS_3_LAYERS               1.9Mbps — LiveKit's old default, cheapest
+ *   H264_1080P_30FPS_1_LAYER_HIGH_MOTION  4.5Mbps 1080p, single — more bitrate for busy video
+ *   H264_1080P_30FPS_1_LAYER              3.5Mbps 1080p, single — default
+ *   H264_1080P_30FPS_3_LAYERS             adds 540p+180p, but ~2.5 cores per live (see above)
+ *   H264_720P_30FPS_3_LAYERS              1.9Mbps — LiveKit's own default, cheapest
  */
 const INGRESS_PRESET: IngressVideoEncodingPreset =
   (IngressVideoEncodingPreset as unknown as Record<string, number>)[
     process.env.INGRESS_VIDEO_PRESET || ''
-  ] ?? IngressVideoEncodingPreset.H264_1080P_30FPS_3_LAYERS;
+  ] ?? IngressVideoEncodingPreset.H264_1080P_30FPS_1_LAYER;
 
 function ingressVideoOptions(): IngressVideoOptions {
   return new IngressVideoOptions({
