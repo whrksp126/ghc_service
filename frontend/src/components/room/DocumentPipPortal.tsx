@@ -1,42 +1,19 @@
-import { useEffect, useState, useCallback, type ReactNode, type CSSProperties } from 'react';
+import { useEffect, useState, type ReactNode, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Columns2, Rows2, LayoutGrid } from 'lucide-react';
+import { X } from 'lucide-react';
 import type { RemoteTrack } from 'livekit-client';
 import { FeedCard } from './FeedCard';
 import { useFloatingWindowStore } from '../../stores/floatingWindowStore';
 import { isNativeShell } from '../../lib/native';
 
-/** 자동 = 창 모양에 맞춰 알아서, 가로 = 한 줄로 나란히, 세로 = 한 칸씩 쌓기. */
-type PipLayoutMode = 'auto' | 'row' | 'column';
-
-const MODE_LABEL: Record<PipLayoutMode, string> = {
-  auto: '자동',
-  row: '가로',
-  column: '세로',
-};
-const MODE_ORDER: PipLayoutMode[] = ['auto', 'row', 'column'];
-const MODE_KEY = 'ghc-pip-layout';
-
-function loadMode(): PipLayoutMode {
-  try {
-    const v = localStorage.getItem(MODE_KEY) as PipLayoutMode | null;
-    if (v && MODE_ORDER.includes(v)) return v;
-  } catch { /* private mode */ }
-  return 'auto';
-}
-
 /**
- * Columns for the PiP grid.
- *
- * 'auto' picks whatever makes the tiles biggest for the window's CURRENT shape — the same rule the
- * in-room grid uses — so dragging the window wide lines the feeds up side by side and dragging it
- * tall stacks them, with no button press. 'row'/'column' pin it when the automatic choice isn't
- * what the user wants.
+ * Columns for the PiP grid — whatever makes the tiles biggest for the window's CURRENT shape, the
+ * same rule the in-room grid uses. Drag the window wide and the feeds line up side by side; drag it
+ * tall and they stack. There is deliberately no manual override: the automatic choice is always the
+ * one that wastes the least space, so a mode button was just clutter in a window this small.
  */
-function layoutColumns(mode: PipLayoutMode, n: number, w: number, h: number, aspect = 16 / 9): number {
+function layoutColumns(n: number, w: number, h: number, aspect = 16 / 9): number {
   if (n <= 1) return 1;
-  if (mode === 'row') return n;
-  if (mode === 'column') return 1;
   let best = 1;
   let bestArea = -1;
   for (let cols = 1; cols <= n; cols++) {
@@ -69,10 +46,13 @@ interface DocumentPipPortalProps {
 }
 
 /**
- * Desktop Chromium path for the PiP / multi-window button: popped cameras render into a single
- * always-on-top Document Picture-in-Picture OS window (grid). The window floats over other apps
- * and native fullscreen — the KakaoTalk/Discord-style behavior. The window itself is created in
- * the store's toggle() (within the click gesture); this component just portals content into it.
+ * Popped cameras render into a single always-on-top window: Document PiP in a plain browser, and
+ * on the desktop shell our own frameless window (which, unlike the OS PiP overlay, resizes freely
+ * from every edge — see openNativePipWindow). Either way this component just portals the tiles in;
+ * the window itself is created by the store's toggle() inside the click gesture.
+ *
+ * Chrome is hover-only: nothing is drawn over the video until the pointer is in the window, so at
+ * rest the PiP is just the feeds.
  */
 export function DocumentPipPortal({ feeds }: DocumentPipPortalProps) {
   const popped = useFloatingWindowStore((s) => s.popped);
@@ -87,18 +67,7 @@ export function DocumentPipPortal({ feeds }: DocumentPipPortalProps) {
     }
   }, [feeds, popped, close]);
 
-  // The window's live inner size. On the desktop shell this window is ours and resizes freely from
-  // any edge, so this is what makes the tiles re-flow as it's dragged — drag it wide and they line
-  // up side by side, drag it tall and they stack.
-  const [mode, setMode] = useState<PipLayoutMode>(loadMode);
-  const cycleMode = useCallback(() => {
-    setMode((m) => {
-      const next = MODE_ORDER[(MODE_ORDER.indexOf(m) + 1) % MODE_ORDER.length];
-      try { localStorage.setItem(MODE_KEY, next); } catch { /* private mode */ }
-      return next;
-    });
-  }, []);
-
+  // The window's live inner size — what makes the tiles re-flow while it's being dragged.
   const [size, setSize] = useState({ w: 480, h: 300 });
   useEffect(() => {
     if (!pipWindow) return;
@@ -116,41 +85,33 @@ export function DocumentPipPortal({ feeds }: DocumentPipPortalProps) {
   if (openFeeds.length === 0) return null;
 
   const nativeShell = isNativeShell();
-  const barH = nativeShell ? 30 : 0; // frameless window → we supply the drag strip
-  const cols = layoutColumns(mode, openFeeds.length, size.w, Math.max(1, size.h - barH));
+  const cols = layoutColumns(openFeeds.length, size.w, size.h);
   const rows = Math.max(1, Math.ceil(openFeeds.length / cols));
 
   return createPortal(
-    <div className="w-screen h-screen bg-dark-900 flex flex-col">
+    <div
+      className="group/pip w-screen h-screen bg-dark-900 grid gap-1 p-1"
+      style={{
+        gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+        gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+      }}
+    >
       {nativeShell && (
-        // Frameless: this strip is the only place to grab the window (the tiles below must stay
-        // clickable). The layout button opts out of the drag region so it can be pressed.
-        // The drag region is inset 4px from the top so the window's own resize edge stays grabbable
-        // — a full-bleed drag strip swallows it and the top edge stops responding.
+        /* Frameless window → it needs somewhere to be grabbed. This strip is invisible and sits
+           over the top edge of the grid; a faint grip fades in with the rest of the chrome so the
+           handle is discoverable without ever drawing a header over the video. The top 4px stays
+           outside the drag region, otherwise it swallows the window's own resize edge. */
         <div
-          className="flex items-center justify-end gap-1 px-1 shrink-0 bg-dark-900/95"
-          style={{ height: barH, marginTop: 4, WebkitAppRegion: 'drag' } as CSSProperties}
+          className="fixed left-0 right-0 z-30 flex items-start justify-center pt-1
+                     opacity-0 group-hover/pip:opacity-100 transition-opacity duration-150"
+          style={{ top: 4, height: 18, WebkitAppRegion: 'drag' } as CSSProperties}
         >
-          <button
-            onClick={cycleMode}
-            title={MODE_LABEL[mode]}
-            className="h-5 px-2 rounded-full flex items-center gap-1 text-[10px] font-medium text-white/70 hover:text-white bg-white/10 hover:bg-white/20 transition-colors"
-            style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
-          >
-            {mode === 'row' ? <Columns2 size={11} /> : mode === 'column' ? <Rows2 size={11} /> : <LayoutGrid size={11} />}
-            {MODE_LABEL[mode]}
-          </button>
+          <div className="w-8 h-1 rounded-full bg-white/35" />
         </div>
       )}
-      <div
-        className="flex-1 min-h-0 grid gap-1 p-1"
-        style={{
-          gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-          gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
-        }}
-      >
+
       {openFeeds.map((feed) => (
-        <div key={feed.id} className="relative min-h-0 min-w-0">
+        <div key={feed.id} className="group/tile relative min-h-0 min-w-0">
           <FeedCard
             track={feed.track}
             lkTrack={feed.lkTrack}
@@ -166,14 +127,17 @@ export function DocumentPipPortal({ feeds }: DocumentPipPortalProps) {
           />
           <button
             onClick={() => close(feed.id)}
-            className="absolute top-1.5 right-1.5 z-10 w-7 h-7 rounded-full flex items-center justify-center bg-black/50 text-white hover:bg-black/70 transition-colors"
+            className="absolute top-1.5 right-1.5 z-30 w-7 h-7 rounded-full flex items-center justify-center
+                       bg-black/50 text-white hover:bg-black/70
+                       opacity-0 group-hover/tile:opacity-100 focus-visible:opacity-100
+                       transition-opacity duration-150"
+            style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
             title="닫기"
           >
             <X size={14} />
           </button>
         </div>
       ))}
-      </div>
     </div>,
     pipWindow.document.body
   );
