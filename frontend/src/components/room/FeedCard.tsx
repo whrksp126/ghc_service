@@ -28,13 +28,16 @@ interface FeedCardProps {
   controls?: ReactNode;
   /** Extra controls placed on their own row below the button row (e.g. the lens switcher). */
   belowControls?: ReactNode;
-  /** Double click → focus this feed as the spotlight. */
-  onDoubleClick?: () => void;
+  /** Double click → focus this feed as the spotlight. Receives this feed's id so the parent can
+   *  pass ONE stable callback for every tile (an inline `() => onFeedClick(feed.id)` per tile
+   *  would break the React.memo below on every parent render). */
+  onDoubleClick?: (feedId: string) => void;
   /** Show the whole frame (object-contain) instead of cropping — spotlight main / screens. */
   fitContain?: boolean;
   className?: string;
-  /** Desktop Document-PiP toggle (called within the click gesture). Mobile uses video PiP directly. */
-  onPip?: () => void;
+  /** Desktop Document-PiP toggle (called within the click gesture). Mobile uses video PiP directly.
+   *  Receives this feed's id — same stable-callback reason as onDoubleClick. */
+  onPip?: (feedId: string) => void;
   /** This feed is currently shown in the desktop PiP window — render a placeholder, keep the slot. */
   isPoppedOut?: boolean;
   /** Stable feed id used to add/remove this feed from the mobile composite PiP. */
@@ -70,6 +73,8 @@ export const FeedCard = memo(function FeedCard({
   // outside, closes this one. `ctrlId` is this tile's stable identity in that store.
   const reactId = useId();
   const ctrlId = pipId ?? layoutId ?? reactId;
+  /** Stable feed id handed back to the parent's shared onPip/onDoubleClick callbacks. */
+  const feedId = pipId ?? layoutId ?? '';
   const activeId = useActiveTile((s) => s.activeId);
   const setActive = useActiveTile((s) => s.setActive);
   const isActive = activeId === ctrlId;
@@ -111,14 +116,23 @@ export const FeedCard = memo(function FeedCard({
   // edge colours bleed a little past the video border — a soft halo hugging the edges, not a full
   // background fill. The canvas keeps its aspect matched to the live frame so the overlay stays
   // aligned for portrait/landscape/rotated feeds. Mounted persistently so it never flickers off.
+  //
+  // PERF: each sample is a GPU→CPU video-frame readback and each repaint re-runs a large CSS blur,
+  // so this is throttled hard and only runs when it can actually be seen: 400ms (was 125ms), and
+  // paused while the tab is hidden or the tile is scrolled out of view. The glow is ambient light —
+  // 2.5 updates/sec is indistinguishable from 8 and costs a third as much.
   const ambientOn = !isPoppedOut;
   useEffect(() => {
     if (!ambientOn) return;
     const canvas = ambientRef.current;
+    const root = rootRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    const id = setInterval(() => {
+
+    let visible = true;
+    const sample = () => {
+      if (!visible || document.hidden) return;
       const video = videoRef.current;
       if (!video || video.readyState < 2 || !video.videoWidth) return;
       const w = 64;
@@ -129,8 +143,15 @@ export const FeedCard = memo(function FeedCard({
       } catch {
         /* not yet decodable */
       }
-    }, 125);
-    return () => clearInterval(id);
+    };
+    const id = setInterval(sample, 400);
+
+    let io: IntersectionObserver | undefined;
+    if (root && typeof IntersectionObserver !== 'undefined') {
+      io = new IntersectionObserver(([e]) => { visible = e.isIntersecting; }, { threshold: 0 });
+      io.observe(root);
+    }
+    return () => { clearInterval(id); io?.disconnect(); };
   }, [ambientOn]);
 
   // Track the rendered tile size: small tiles route controls to a bottom sheet (the centered
@@ -154,7 +175,7 @@ export const FeedCard = memo(function FeedCard({
       clearTimeout(clickTimer.current);
       clickTimer.current = null;
       setActive(null);
-      onDoubleClick?.();
+      onDoubleClick?.(feedId);
       return;
     }
     clickTimer.current = setTimeout(() => {
@@ -261,7 +282,7 @@ export const FeedCard = memo(function FeedCard({
     setActive(null);
     // Desktop web Chromium: Document PiP holds several tiles (handled by the floating-window store).
     if (hasDocumentPip && !isNativeShell()) {
-      onPip?.();
+      onPip?.(feedId);
       return;
     }
     const id = pipId ?? layoutId;
@@ -271,7 +292,7 @@ export const FeedCard = memo(function FeedCard({
     }
     if (compositePip.has(id)) {
       compositePip.remove(id);
-      onPip?.(); // clears popped[id] → restores the in-grid tile
+      onPip?.(feedId); // clears popped[id] → restores the in-grid tile
       return;
     }
     compositePip.add(id, track, label, !!mirror, lkTrack, voiceKey);
@@ -281,7 +302,7 @@ export const FeedCard = memo(function FeedCard({
       // there), fall back to the IN-PAGE floating overlay, which needs no PiP API and still floats
       // over a fullscreen live. Either way the feed is "popped".
       if (err) compositePip.enterInline();
-      onPip?.();
+      onPip?.(feedId);
     });
   };
 
@@ -330,7 +351,7 @@ export const FeedCard = memo(function FeedCard({
           ref={ambientRef}
           aria-hidden
           className="absolute inset-0 w-full h-full object-contain pointer-events-none"
-          style={{ zIndex: -1, filter: 'blur(45px) saturate(1.4)', opacity: 0.75 }}
+          style={{ zIndex: -1, filter: 'blur(36px) saturate(1.4)', opacity: 0.75 }}
         />
       )}
       {isPoppedOut ? (
@@ -347,13 +368,16 @@ export const FeedCard = memo(function FeedCard({
           )}
         </div>
       ) : track ? (
+        // No CSS `filter` on the <video>: a drop-shadow forces the browser to run a filter pass on
+        // EVERY decoded frame and drops the element out of the zero-copy video overlay path — it
+        // was the single most expensive thing on screen (N tiles × 30fps of GPU work, fans + battery).
+        // The blurred ambient canvas behind already supplies the halo, so nothing is really lost.
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted={isLocal || track.kind === 'video'}
           className={`w-full h-full object-contain ${mirror ? 'scale-x-[-1]' : ''}`}
-          style={ambientOn ? { filter: 'drop-shadow(0 8px 30px rgba(0,0,0,0.5))' } : undefined}
         />
       ) : (
         <div className="w-full h-full flex items-center justify-center bg-dark-800">

@@ -46,6 +46,8 @@ function mkVideo(): HTMLVideoElement {
 
 class CompositePipController {
   private canvas = document.createElement('canvas');
+  /** Tiny scratch buffer used to fake the ambient blur — see drawOnce(). */
+  private glowBuf = document.createElement('canvas');
   /** The single video that actually goes into the OS PiP overlay. */
   private out = mkVideo();
   private outAttached = false;
@@ -317,14 +319,34 @@ class CompositePipController {
         // Ambient glow: a blurred copy the SAME size as the contained video, drawn just behind it,
         // so the blur fringe bleeds only a little past the edges (a soft halo) instead of filling
         // the whole letterbox. Clipped to the cell so it never leaks into neighbouring tiles.
+        // PERF: `ctx.filter = 'blur(30px)'` is a real Gaussian convolution over the whole cell and
+        // runs on the CPU in most browsers — at 24fps it was the most expensive thing in the PiP
+        // loop by a wide margin. Downscale to a 32px-wide scratch buffer and stretch it back up
+        // instead: the bilinear upscale IS the blur, at a fraction of the cost, and it looks the same
+        // once it's sitting behind the video at 70% opacity.
         {
           const gw = vw * scale;
           const gh = vh * scale;
-          ctx.save();
-          ctx.filter = 'blur(30px)';
-          ctx.globalAlpha = 0.7;
-          ctx.drawImage(s.video, cx + (cw - gw) / 2, cy + (ch - gh) / 2, gw, gh);
-          ctx.restore();
+          const bw = 32;
+          const bh = Math.max(1, Math.round((bw * vh) / vw));
+          if (this.glowBuf.width !== bw || this.glowBuf.height !== bh) {
+            this.glowBuf.width = bw;
+            this.glowBuf.height = bh;
+          }
+          const bctx = this.glowBuf.getContext('2d');
+          if (bctx) {
+            bctx.drawImage(s.video, 0, 0, bw, bh);
+            ctx.save();
+            ctx.globalAlpha = 0.7;
+            // Overdraw a little so the soft edge bleeds past the video, as the blur used to.
+            const pad = Math.min(cw, ch) * 0.06;
+            ctx.drawImage(
+              this.glowBuf,
+              cx + (cw - gw) / 2 - pad, cy + (ch - gh) / 2 - pad,
+              gw + pad * 2, gh + pad * 2,
+            );
+            ctx.restore();
+          }
         }
         const dw = vw * scale;
         const dh = vh * scale;

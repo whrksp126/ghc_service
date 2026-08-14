@@ -81,9 +81,64 @@ function sourceOf(pub: RemoteTrackPublication): ConsumerInfo['source'] {
   }
 }
 
+/**
+ * How far behind real time a LIVE broadcast plays (OBS live / 브라우저 라이브 — the RTMP ingress,
+ * identity `obs:<room>`). This is the "buffer up, then keep playing" behaviour of a normal live
+ * service, done the only way WebRTC can do it.
+ *
+ * The browser holds this many seconds of the live before showing it. A hiccup on the way — a late
+ * packet, a lost packet — has that whole window to be re-sent and slotted in before its turn to be
+ * displayed comes around. So instead of the picture going soft or stuttering, the buffer quietly
+ * absorbs it and playback continues clean.
+ *
+ * Two things this needs to actually work, which is why it isn't just this one number:
+ *  - the SFU must still HAVE the lost packet to re-send → rtc.packet_buffer_size_video in
+ *    livekit/livekit.yaml is sized to cover this window (default was only ~1.5s),
+ *  - the SFU must not pre-emptively drop quality → rtc.congestion_control there, same file.
+ *
+ * Human participants stay at 0: a conversation 5 seconds behind is unusable. Only the live is
+ * delayed, and every Chromium viewer gets the same number, so they stay in step with each other.
+ *
+ * Limits worth knowing: `playoutDelayHint` is Chromium-only (Safari/Firefox silently ignore it and
+ * behave as before), Chrome clamps it to 10s, and the live takes this long to first appear.
+ */
+const LIVE_PLAYOUT_DELAY_SEC = 5;
+
+/** Currently-subscribed live tracks, so a resync can reach all of them (video + audio). */
+const liveTracks = new Set<RemoteTrack>();
+
+function applyLiveDelay(track: RemoteTrack, seconds: number): void {
+  try { track.setPlayoutDelay(seconds); } catch { /* browser without playoutDelayHint */ }
+}
+
+/**
+ * "싱크" — put every viewer back on the same frame.
+ *
+ * Each viewer's buffer drifts on its own: someone who hit a rough patch refills deeper and stays
+ * a beat behind, and the browser never hurries to catch back up. Dropping the target to 0 makes it
+ * discard the backlog and snap to the newest frame; restoring the target then rebuilds the buffer
+ * from there. Every viewer runs this off the same broadcast within a few ms of each other, so they
+ * all restart from the same moment and stay aligned.
+ *
+ * The pause between the two steps is the browser's window to actually drain — without it the second
+ * call just overwrites the first and nothing moves.
+ */
+export function resyncLivePlayout(): void {
+  if (liveTracks.size === 0) return;
+  for (const t of liveTracks) applyLiveDelay(t, 0);
+  setTimeout(() => {
+    for (const t of liveTracks) applyLiveDelay(t, LIVE_PLAYOUT_DELAY_SEC);
+  }, 700);
+}
+
 function onTrackSubscribed(track: RemoteTrack, pub: RemoteTrackPublication, participant: RemoteParticipant) {
   if (track.kind !== Track.Kind.Audio && track.kind !== Track.Kind.Video) return;
   const { userId, deviceId } = parseIdentity(participant.identity);
+  // Both the audio and video of the live arrive here, so they get the same delay and stay in sync.
+  if (userId === 'obs') {
+    liveTracks.add(track);
+    applyLiveDelay(track, LIVE_PLAYOUT_DELAY_SEC);
+  }
   const meta = metaOf(participant);
   if (track.kind === Track.Kind.Audio) {
     console.info('[livekit] audio subscribed', { from: `${userId}:${deviceId}`, trackSid: pub.trackSid });
@@ -104,7 +159,8 @@ function onTrackSubscribed(track: RemoteTrack, pub: RemoteTrackPublication, part
   });
 }
 
-function onTrackUnsubscribed(_t: RemoteTrack, pub: RemoteTrackPublication) {
+function onTrackUnsubscribed(track: RemoteTrack, pub: RemoteTrackPublication) {
+  liveTracks.delete(track);
   useRoomStore.getState().removeConsumer(pub.trackSid);
 }
 
@@ -124,7 +180,12 @@ export async function connectToRoom(token: string): Promise<Room> {
   }
 
   const r = new Room({
-    adaptiveStream: true,
+    // adaptiveStream picks the simulcast layer from the video ELEMENT's size — but by default it
+    // measures in CSS pixels, so on a Retina / 4K / scaled display a tile that is physically
+    // 1600 device px wide only asks for an 800px layer and looks soft no matter how good the
+    // sender or the machine is. `pixelDensity: 'screen'` multiplies by devicePixelRatio, which is
+    // why a high-DPI desktop was seeing a downscaled layer on a big tile.
+    adaptiveStream: { pixelDensity: 'screen' },
     dynacast: true,
     publishDefaults: {
       // H.264 uses the phone's hardware encoder (VP8 is software-encoded on mobile and
@@ -139,6 +200,11 @@ export async function connectToRoom(token: string): Promise<Room> {
       // MAX_CONCURRENT_LIVES guard on the backend. Mobile stays at 1.7Mbps (already low).
       videoEncoding: { maxBitrate: isMobile ? 1_700_000 : 2_000_000, maxFramerate: 30 },
       screenShareEncoding: { maxBitrate: 2_000_000, maxFramerate: 15 },
+      // Quality over smoothness, per the product decision: when the encoder or the uplink is
+      // under pressure, WebRTC's default ('balanced') shrinks the picture — which is exactly the
+      // "sharp → soft → sharp again" flapping. maintain-resolution makes it drop FRAMES instead,
+      // so the image stays crisp and just gets choppier for a moment.
+      degradationPreference: 'maintain-resolution',
       // Explicit high-quality Opus (~96kbps) — without this LiveKit falls back to a low default
       // bitrate, which is the main reason voice sounded thin/low-quality. Bandwidth is a non-issue
       // here (only 1–2 video streams), so favour fidelity.
@@ -248,6 +314,7 @@ export async function setLocalFacing(facing: ConsumerInfo['facing']): Promise<vo
 export async function disconnectRoom(): Promise<void> {
   for (const g of micGraphBySid.values()) teardownMicGraph(g);
   micGraphBySid.clear();
+  liveTracks.clear();
   if (room) {
     try { await room.disconnect(); } catch { /* ignore */ }
     room = null;

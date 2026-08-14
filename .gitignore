@@ -1,10 +1,12 @@
 node_modules/
 dist/
 build/
+# Every env file, whatever the suffix. The old list was exact names, so a routine backup
+# (.env.local.bak.<timestamp>) was NOT ignored and sat in `git status` ready to be committed.
+# Secrets must never be able to slip in through a name nobody thought to list.
 .env
-.env.local
-.env.dev
-.env.stg
+.env*
+!.env.example
 *.log
 *.tsbuildinfo
 .DS_Store

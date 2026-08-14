@@ -4,6 +4,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useSocket } from '../hooks/useSocket';
 import {
   connectToRoom, publishTrack, unpublishTrack, setMicGateOpen, setMicVolume, replacePublishedTrack, disconnectRoom, setLocalFacing,
+  resyncLivePlayout,
 } from '../lib/livekitRoom';
 import { useRoomStore } from '../stores/roomStore';
 import { useDeviceStore } from '../stores/deviceStore';
@@ -199,7 +200,12 @@ export function RoomPage() {
     isCamOn, isMicOn, setVideoTrack, setAudioTrack, setScreenSharing, isScreenSharing, setScreenTrack,
     reset: resetDevice, setAudioProducerId, setVideoProducerId, setScreenProducerId,
   } = useDeviceStore();
-  const { layoutMode, setLayoutMode, spotlightProducerId, setSpotlightProducer } = useUIStore();
+  // Per-field selectors, not the whole store: `mutedAudio` / `volumeAudio` change on every
+  // volume-slider tick, and subscribing to the whole uiStore re-rendered the entire room for it.
+  const layoutMode = useUIStore((s) => s.layoutMode);
+  const setLayoutMode = useUIStore((s) => s.setLayoutMode);
+  const spotlightProducerId = useUIStore((s) => s.spotlightProducerId);
+  const setSpotlightProducer = useUIStore((s) => s.setSpotlightProducer);
   const togglePip = useFloatingWindowStore((s) => s.toggle);
   const { cameras, fetchCameras } = useCameraStore();
 
@@ -220,6 +226,25 @@ export function RoomPage() {
     const unsub = nativeBridge()?.live.onBrowserTitle?.((t) => setBrowserLiveTitle(t));
     return unsub;
   }, []);
+  // "싱크" on the browser-live helper toolbar → ask the room to re-align its live playback. The
+  // server checks ownership and fans it out; we act on the broadcast like everyone else, so the
+  // broadcaster's own tile lands on the same frame as the viewers'.
+  useEffect(() => {
+    const unsub = nativeBridge()?.live.onBrowserSync?.(() => {
+      emitWithAck('live:resync', {}).catch(() => {});
+    });
+    return unsub;
+  }, []);
+  useEffect(() => {
+    if (phase !== 'inRoom') return;
+    const socket = getSocket();
+    const onResync = () => {
+      resyncLivePlayout();
+      showToast('라이브 재생 시점을 맞추는 중…', 'info');
+    };
+    socket.on('live:resync', onResync);
+    return () => { socket.off('live:resync', onResync); };
+  }, [phase]);
   const openBrowser = useCallback(async () => {
     const bridge = nativeBridge();
     if (!bridge || !slug) return;
@@ -621,6 +646,15 @@ export function RoomPage() {
     }
   }, [isScreenSharing, localScreenTrack, setScreenTrack, setScreenSharing, setScreenProducerId]);
 
+  // Stable identities: an inline arrow here would be a fresh prop on every render, defeating
+  // FeedCard's React.memo and re-rendering every video tile (each of which does a framer-motion
+  // layout measurement) whenever anything in the room changed.
+  const focusFeed = useCallback((id: string) => {
+    setLayoutMode('spotlight');
+    setSpotlightProducer(id);
+  }, [setLayoutMode, setSpotlightProducer]);
+  const exitSpotlight = useCallback(() => setLayoutMode('grid'), [setLayoutMode]);
+
   const handleLeave = useCallback(() => {
     sessionActiveRef.current = false;
     emitWithAck('room:leave', {}).catch(() => {});
@@ -821,34 +855,54 @@ export function RoomPage() {
   }, [myVoiceKey, localAudioTrack]);
 
   // Noise gate (Discord "voice activity"): only transmit while my mic level is above the
-  // sensitivity threshold. We mute/unmute the published mic track (a clone), so the local
-  // analyser keeps reading the original track and can re-open the gate when I speak again.
-  const { noiseGate, threshold: micThreshold, micGain } = useAudioSettings();
-  const myLevel = useVoiceStore((s) => (myVoiceKey ? s.levels[myVoiceKey] ?? 0 : 0));
+  // sensitivity threshold. We fade the published mic's gain, so the local analyser keeps
+  // reading the original track and can re-open the gate when I speak again.
+  //
+  // PERF: the gate deliberately does NOT subscribe to the voice level through React. Reading
+  // `levels[myVoiceKey]` as a hook value re-rendered this whole page (and, through it, every
+  // FeedCard) on every level update — the single largest source of idle CPU in a room. It now
+  // reads the store imperatively and only touches an AudioParam.
+  const noiseGate = useAudioSettings((s) => s.noiseGate);
+  const micThreshold = useAudioSettings((s) => s.threshold);
+  const micGain = useAudioSettings((s) => s.micGain);
   const audioProducerId = useDeviceStore((s) => s.audioInput.producerId);
-  const gateOpenRef = useRef(true);
-  const gateHoldRef = useRef(0);
   useEffect(() => {
     if (!localAudioTrack || !audioProducerId) return;
     if (!noiseGate) {
-      // Gate disabled → make sure the mic gain is open.
-      if (!gateOpenRef.current) {
-        gateOpenRef.current = true;
-        setMicGateOpen(audioProducerId, true);
-      }
+      setMicGateOpen(audioProducerId, true); // gate disabled → keep the mic fully open
       return;
     }
-    const now = Date.now();
-    // 600ms hangover so the gate doesn't slam shut between words/syllables.
-    if (myLevel >= micThreshold) gateHoldRef.current = now + 600;
-    const open = now < gateHoldRef.current;
-    if (open !== gateOpenRef.current) {
-      gateOpenRef.current = open;
+    let open = true;
+    let holdUntil = 0;
+    let closeTimer: ReturnType<typeof setTimeout> | null = null;
+    const apply = (next: boolean) => {
+      if (next === open) return;
+      open = next;
       // Fade gain (continuous RTP) instead of pub.mute()/unmute() — avoids the per-utterance
       // onset "tick"/glitch some receivers (iPad/WebKit) heard.
-      setMicGateOpen(audioProducerId, open);
-    }
-  }, [noiseGate, micThreshold, myLevel, localAudioTrack, audioProducerId]);
+      setMicGateOpen(audioProducerId, next);
+    };
+    const evaluate = (level: number) => {
+      const now = Date.now();
+      // 600ms hangover so the gate doesn't slam shut between words/syllables.
+      if (level >= micThreshold) holdUntil = now + 600;
+      if (now < holdUntil) {
+        apply(true);
+        // The store goes quiet during silence (it only writes on change), so schedule the
+        // close ourselves instead of waiting for an update that may never come.
+        if (closeTimer) clearTimeout(closeTimer);
+        closeTimer = setTimeout(() => { if (Date.now() >= holdUntil) apply(false); }, holdUntil - now + 30);
+      } else {
+        apply(false);
+      }
+    };
+    evaluate(useVoiceStore.getState().levels[myVoiceKey] ?? 0);
+    const unsub = useVoiceStore.subscribe((s) => evaluate(s.levels[myVoiceKey] ?? 0));
+    return () => {
+      unsub();
+      if (closeTimer) clearTimeout(closeTimer);
+    };
+  }, [noiseGate, micThreshold, localAudioTrack, audioProducerId, myVoiceKey]);
 
   // Apply the user's mic transmit gain (mic volume) to the published mic. Re-applied after a
   // (re)publish (audioProducerId change) so a boost persists across mic device switches.
@@ -987,21 +1041,14 @@ export function RoomPage() {
         {allFeeds.length > 0 ? (
           <LayoutGroup>
             {layoutMode === 'grid' && (
-              <GridLayout
-                feeds={allFeeds}
-                onFeedClick={(id) => {
-                  setLayoutMode('spotlight');
-                  setSpotlightProducer(id);
-                }}
-                onPip={togglePip}
-              />
+              <GridLayout feeds={allFeeds} onFeedClick={focusFeed} onPip={togglePip} />
             )}
             {layoutMode === 'spotlight' && (
               <SpotlightLayout
                 feeds={allFeeds}
                 spotlightId={spotlightProducerId}
-                onFeedClick={(id) => setSpotlightProducer(id)}
-                onExit={() => setLayoutMode('grid')}
+                onFeedClick={setSpotlightProducer}
+                onExit={exitSpotlight}
                 onPip={togglePip}
               />
             )}

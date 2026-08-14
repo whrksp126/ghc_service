@@ -220,7 +220,10 @@ export function CamerasPage() {
   useEffect(() => {
     fetchCameras(deviceId);
     enumerateCameras();
-  }, [deviceId, fetchCameras, enumerateCameras]);
+    // This page IS the camera preview, so acquire here. Devices that don't keep the camera on
+    // standby (desktops — see CAMERA_STANDBY in useGlobalSocket) otherwise land on "카메라 꺼짐".
+    start();
+  }, [deviceId, fetchCameras, enumerateCameras, start]);
 
   useEffect(() => {
     if (previewRef.current) {

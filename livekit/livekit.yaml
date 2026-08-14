@@ -24,6 +24,35 @@ rtc:
   # the router's NAT hairpin. (LiveKit can't advertise LAN + public at once — issue #1898.)
   use_external_ip: true
 
+  # ── 라이브 재생 버퍼가 실제로 동작하려면 (재전송 이력) ──────────────────────
+  # 클라이언트는 라이브(OBS/브라우저 라이브)를 5초 버퍼링해서 재생한다
+  # (frontend/src/lib/livekitRoom.ts의 LIVE_PLAYOUT_DELAY_SEC). 그 5초 안에 유실 패킷을
+  # 다시 받아 끼워넣으면 화질 저하 없이 그냥 이어서 재생된다 — 일반 라이브 서비스의
+  # "버퍼 채우고 계속" 동작.
+  # 그런데 재전송은 SFU가 그 패킷을 아직 들고 있을 때만 가능하다. 기본 500패킷은
+  # 1080p/3.5Mbps에서 겨우 ~1.5초치라, 클라이언트 버퍼가 아무리 깊어도 그 이상 된
+  # 유실은 복구를 못 한다. 버퍼 창을 덮도록 늘린다.
+  # 비용은 메모리뿐: 비디오 트랙당 대략 2000×1.3KB ≈ 2.6MB (mem_limit 4g).
+  packet_buffer_size_video: 2000
+  packet_buffer_size_audio: 800
+
+  # ── 화질 우선 (품질 진동 억제) ───────────────────────────────────────────────
+  # 기본값의 SFU는 시청자별 대역폭 추정치가 흔들릴 때마다 simulcast 레이어를
+  # 올렸다 내렸다 한다. 그래서 "선명 → 흐림 → 다시 선명"이 몇 초 주기로 반복된다.
+  # 제품 방침은 지연·부드러움보다 화질 우선이므로 추정치에 바닥을 깔아 잔떨림으로는
+  # 레이어를 못 내리게 한다.
+  #
+  # 대가(정직하게): 시청자 회선이 정말로 좁으면 깔끔한 저화질로 내려가는 대신
+  # 패킷을 잃어 깨짐/멈춤이 생긴다. 지연이 아니라 손실이 대가다.
+  # 모바일 LTE 시청자가 깨진다는 제보가 오면 min_channel_capacity를 낮추거나 0으로.
+  congestion_control:
+    enabled: true
+    # 대역폭이 모자라도 트랙을 아예 멈추지 않는다(멈췄다 켜지는 게 제일 눈에 띈다).
+    allow_pause: false
+    stream_allocator:
+      # bps. ingress 최상위 레이어(1080p/3.5Mbps)가 항상 통과하도록 5Mbps를 바닥으로.
+      min_channel_capacity: 5000000
+
 # Embedded TURN disabled for now: rely on host-candidate UDP (7882) + TCP fallback
 # (7881). The legacy coturn still serves the P2P device-preview path. Revisit if
 # clients on restrictive/symmetric-NAT networks fail to connect.

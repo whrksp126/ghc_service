@@ -1,4 +1,7 @@
-import { AccessToken, RoomServiceClient, IngressClient, IngressInput } from 'livekit-server-sdk';
+import {
+  AccessToken, RoomServiceClient, IngressClient, IngressInput,
+  IngressVideoOptions, IngressVideoEncodingPreset, TrackSource,
+} from 'livekit-server-sdk';
 import { livekitConfig } from '../config/livekit';
 
 // RoomServiceClient talks to the LiveKit HTTP API (room delete / kick). It needs the
@@ -90,6 +93,34 @@ function toRoomIngress(info: { ingressId: string; url: string; streamKey: string
  * participant. High-quality path: OBS → RTMP → LiveKit Ingress → room track. The track then
  * shows up like any other participant via the client's auto-subscribe.
  */
+/**
+ * Ingress transcode profile. LiveKit's DEFAULT for an RTMP ingress is H264_720P_30FPS_3_LAYERS —
+ * 1280x720 @ ~1.9Mbps — so a pristine 1080p browser-live push was being re-encoded down to 720p at
+ * a modest bitrate before it ever reached a viewer. That, not the sender, was the quality ceiling.
+ * We ask for real 1080p with simulcast kept (3.5Mbps main layer + 540p + 180p), so a good viewer
+ * gets a sharp picture while a phone on cellular can still drop to a lower layer.
+ *
+ * Cost: 1080p×3 layers is roughly 2× the ingress CPU of 720p×3, and the prod compose caps the
+ * ingress container at 4 CPUs — so this trades concurrent-live headroom for picture quality.
+ * Tune with INGRESS_VIDEO_PRESET (any IngressVideoEncodingPreset name):
+ *   H264_1080P_30FPS_3_LAYERS_HIGH_MOTION  4.5Mbps — best for video playback, most CPU
+ *   H264_1080P_30FPS_3_LAYERS              3.5Mbps — default
+ *   H264_720P_30FPS_3_LAYERS               1.9Mbps — LiveKit's old default, cheapest
+ */
+const INGRESS_PRESET: IngressVideoEncodingPreset =
+  (IngressVideoEncodingPreset as unknown as Record<string, number>)[
+    process.env.INGRESS_VIDEO_PRESET || ''
+  ] ?? IngressVideoEncodingPreset.H264_1080P_30FPS_3_LAYERS;
+
+function ingressVideoOptions(): IngressVideoOptions {
+  return new IngressVideoOptions({
+    // Keep publishing as CAMERA: the room UI files a live in with the camera tiles (the OBS /
+    // browser-live tile), not the separate screen-share row. Only the encoding changes here.
+    source: TrackSource.CAMERA,
+    encodingOptions: { case: 'preset', value: INGRESS_PRESET },
+  });
+}
+
 export async function createRoomIngress(roomName: string, displayName = 'OBS 라이브'): Promise<RoomIngress> {
   // The room UI reads the display name from the participant's *metadata* (nickname), not the
   // LiveKit `name` field — so we set both. Without metadata the tile falls back to "참가자".
@@ -101,12 +132,20 @@ export async function createRoomIngress(roomName: string, displayName = 'OBS 라
     const existing = await ingressClient.listIngress({ roomName });
     const rtmp = existing.find((i) => i.inputType === IngressInput.RTMP_INPUT && i.streamKey);
     if (rtmp) {
-      if (rtmp.participantName !== displayName) {
+      // Always push the video options through, not just on a name change: ingresses created
+      // before the explicit preset existed are still pinned to LiveKit's 720p default, and they
+      // are reused forever (one per room). This upgrades them on the next "라이브 열기".
+      const needsRename = rtmp.participantName !== displayName;
+      const needsPreset =
+        rtmp.video?.encodingOptions?.case !== 'preset' ||
+        rtmp.video.encodingOptions.value !== INGRESS_PRESET;
+      if (needsRename || needsPreset) {
         try {
           await ingressClient.updateIngress(rtmp.ingressId, {
             name: rtmp.name || `${roomName}-obs`,
             participantName: displayName,
             participantMetadata,
+            video: ingressVideoOptions(),
           });
         } catch {
           // Update unsupported/failed — keep the existing ingress as-is.
@@ -124,6 +163,7 @@ export async function createRoomIngress(roomName: string, displayName = 'OBS 라
     participantIdentity: `obs:${roomName}`,
     participantName: displayName,
     participantMetadata,
+    video: ingressVideoOptions(),
   });
   return toRoomIngress(info);
 }

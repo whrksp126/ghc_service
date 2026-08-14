@@ -9,6 +9,17 @@ rtc:
   # Localhost testing: announce loopback/LAN directly, no STUN.
   use_external_ip: false
 
+  # Mirror prod's 화질 우선 + 라이브 재생 버퍼 tuning so local testing reproduces prod
+  # behaviour. (See livekit.yaml for the rationale and the trade-offs.)
+  packet_buffer_size_video: 2000
+  packet_buffer_size_audio: 800
+
+  congestion_control:
+    enabled: true
+    allow_pause: false
+    stream_allocator:
+      min_channel_capacity: 5000000
+
 keys:
   devkey: localdevsecret0123456789abcdefghij
 

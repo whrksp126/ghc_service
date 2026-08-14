@@ -42,6 +42,12 @@ export interface GhcNativeLive {
   closeBrowser(): Promise<void>;
   /** Subscribe to the browser helper's current page <title> (for labelling the live tile). */
   onBrowserTitle?(cb: (title: string) => void): () => void;
+  /**
+   * The helper toolbar's "싱크" button. Viewers buffer the live by a few seconds, and one whose
+   * connection stumbled can end up watching behind the others; this asks everyone in the room to
+   * jump to the same instant and re-buffer together. Only the broadcaster's shell emits it.
+   */
+  onBrowserSync?(cb: () => void): () => void;
 }
 
 export interface GhcNative {

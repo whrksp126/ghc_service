@@ -448,6 +448,24 @@ export function setupSocketHandlers(io: Server) {
       }
     });
 
+    // "싱크": the broadcaster asks everyone to line their live playback back up. Viewers buffer the
+    // live by a few seconds and drift apart after a rough patch; this tells them all to snap to the
+    // newest frame and refill together. Owner-only — it visibly interrupts everyone's playback, so
+    // it must not be something any member can fire at the room.
+    socket.on('live:resync', async (_, callback) => {
+      try {
+        if (!currentRoomId) return callback?.({ error: 'Not in a room' });
+        const room = await Room.findOne({
+          where: { slug: currentRoomId, owner_id: user.userId },
+        });
+        if (!room) return callback?.({ error: '방장만 사용할 수 있습니다' });
+        io.to(currentRoomId).emit('live:resync');
+        callback?.({ success: true });
+      } catch (err: any) {
+        callback?.({ error: err.message });
+      }
+    });
+
     socket.on('disconnect', (reason) => {
       handleDisconnect(reason);
     });

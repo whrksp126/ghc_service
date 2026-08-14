@@ -51,7 +51,7 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit, onPip
           belowControls={spotlight.belowControls}
           mirror={spotlight.mirror}
           onDoubleClick={onExit}
-          onPip={onPip ? () => onPip(spotlight.id) : undefined}
+          onPip={onPip}
           isPoppedOut={!!popped[spotlight.id]}
           fitContain
           className="w-full h-full"
@@ -76,8 +76,8 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit, onPip
                 controls={feed.controls}
                 belowControls={feed.belowControls}
                 mirror={feed.mirror}
-                onDoubleClick={() => onFeedClick?.(feed.id)}
-                onPip={onPip ? () => onPip(feed.id) : undefined}
+                onDoubleClick={onFeedClick}
+                onPip={onPip}
                 isPoppedOut={!!popped[feed.id]}
                 className="w-32 h-24 sm:w-full sm:h-32 shrink-0"
               />

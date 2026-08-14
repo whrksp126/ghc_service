@@ -94,8 +94,8 @@ export function GridLayout({ feeds, onFeedClick, onPip }: GridLayoutProps) {
             controls={feed.controls}
             belowControls={feed.belowControls}
             mirror={feed.mirror}
-            onDoubleClick={() => onFeedClick?.(feed.id)}
-            onPip={onPip ? () => onPip(feed.id) : undefined}
+            onDoubleClick={onFeedClick}
+            onPip={onPip}
             isPoppedOut={!!popped[feed.id]}
           />
         ))}

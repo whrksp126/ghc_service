@@ -12,6 +12,24 @@ interface OutgoingPreview {
 
 const outgoing = new Map<string, OutgoingPreview>();
 
+/** Half-resolution, 24fps, 1.2Mbps ceiling for the P2P preview sender. */
+function capPreviewEncoding(pc: RTCPeerConnection): void {
+  const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+  if (!sender) return;
+  try {
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+    for (const enc of params.encodings) {
+      enc.maxBitrate = 1_200_000;
+      enc.maxFramerate = 24;
+      enc.scaleResolutionDownBy = 2;
+    }
+    void sender.setParameters(params).catch(() => {});
+  } catch {
+    /* older browser without setParameters encodings — leave it uncapped */
+  }
+}
+
 export function setupPreviewStreamer() {
   const socket = getSocket();
 
@@ -48,6 +66,11 @@ export function setupPreviewStreamer() {
       for (const track of stream.getTracks()) {
         pc.addTrack(track, stream);
       }
+
+      // A preview is a small tile, but an unconstrained sender ramps the full capture (1080p on
+      // desktop / 720p on a phone) up to several Mbps — pure encoder heat and battery on the
+      // device being previewed, for pixels nobody can see. Cap it at half resolution / 1.2Mbps.
+      capPreviewEncoding(pc);
 
       pc.onicecandidate = (e) => {
         if (e.candidate) {
