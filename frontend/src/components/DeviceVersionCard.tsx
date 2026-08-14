@@ -4,10 +4,14 @@ import { getUpdater, type UpdateStatus } from '../lib/updater';
 import { nativePlatform } from '../lib/native';
 
 /**
- * "이 기기 앱" 버전/업데이트 카드 — 데스크탑 셸에서만 노출.
+ * 앱 버전/업데이트 화면 — 데스크탑 셸에서만 노출.
  * 설치된 버전 vs 최신 버전을 보여주고, 설치 파일을 다시 내려받지 않고 앱 안에서
  * 바로 업데이트(다운로드 + 재시작)한다. 모바일/웹(getUpdater() === null)에서는
  * 아무것도 렌더하지 않는다 — 그쪽은 앱 업데이트가 스토어/브라우저에서 이뤄진다.
+ *
+ * 자체 카드 배경/테두리를 두지 않는다. 이건 "앱 정보" 모달 안에 들어가는 내용이고,
+ * 모달이 이미 카드다 — 안에 또 카드를 그리면 테두리가 겹쳐 보인다. 구획은 얇은
+ * 구분선으로만 준다(설정 목록과 같은 방식).
  */
 export function DeviceVersionCard() {
   const updater = useMemo(() => getUpdater(), []);
@@ -38,14 +42,15 @@ export function DeviceVersionCard() {
     available || downloaded ? status.version : upToDate ? current ?? undefined : undefined;
 
   return (
-    <section className="rounded-feed bg-dark-800 border border-white/10 p-4">
+    <div>
+      {/* 모달 제목이 이미 "앱 정보"라 여기서 이름을 반복하지 않는다 — 어느 기기의 어느 앱인지만. */}
       <div className="flex items-center gap-3">
         <div className="w-10 h-10 rounded-full bg-primary/15 text-primary flex items-center justify-center shrink-0">
           <OsIcon size={18} />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="font-semibold text-white">이 기기 앱</p>
-          <p className="text-xs text-white/40 mt-0.5">GHC · {osLabel}</p>
+          <p className="font-semibold text-white leading-tight">GHC</p>
+          <p className="text-xs text-white/40 mt-0.5">{osLabel} 데스크탑 앱</p>
         </div>
         <button
           onClick={() => updater.check().catch(() => {})}
@@ -57,20 +62,20 @@ export function DeviceVersionCard() {
         </button>
       </div>
 
-      <div className="mt-3 space-y-1.5 text-sm">
-        <div className="flex justify-between">
-          <span className="text-white/50">현재 버전</span>
-          <span className="font-medium text-white">v{current ?? '—'}</span>
+      <dl className="mt-4 text-sm border-y border-white/10 divide-y divide-white/10">
+        <div className="flex items-center justify-between py-2.5">
+          <dt className="text-white/50">현재 버전</dt>
+          <dd className="font-medium text-white tabular-nums">v{current ?? '—'}</dd>
         </div>
-        <div className="flex justify-between">
-          <span className="text-white/50">최신 버전</span>
-          <span className="font-medium text-white">
+        <div className="flex items-center justify-between py-2.5">
+          <dt className="text-white/50">최신 버전</dt>
+          <dd className="font-medium text-white tabular-nums">
             {busy ? '확인 중…' : latestVersion ? `v${latestVersion}` : '—'}
-          </span>
+          </dd>
         </div>
-      </div>
+      </dl>
 
-      <div className="mt-3.5">
+      <div className="mt-4">
         {upToDate && (
           <div className="flex items-center gap-1.5 text-sm text-secondary font-medium">
             <CheckCircle2 size={16} /> 최신 버전이에요
@@ -122,7 +127,7 @@ export function DeviceVersionCard() {
           </div>
         )}
       </div>
-    </section>
+    </div>
   );
 }
 
