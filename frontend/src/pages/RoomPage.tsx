@@ -726,7 +726,9 @@ export function RoomPage() {
 
     // key (`userId:deviceId`) → that device's camera (non-screen) video consumer.
     const camConsumers = new Map<string, any>();
+    const audioByDevice = new Map<string, MediaStreamTrack>();
     for (const c of consumers) {
+      if (c.kind === 'audio' && c.track) audioByDevice.set(`${c.userId}:${c.deviceId}`, c.track);
       if (c.kind !== 'video' || c.source === 'screen') continue;
       camConsumers.set(`${c.userId}:${c.deviceId}`, c);
     }
@@ -788,6 +790,8 @@ export function RoomPage() {
 
       items.push({
         id: key, track: consumer?.track ?? null, lkTrack: consumer?.lkTrack,
+        audioTrack: !isMine && consumer ? audioByDevice.get(key) : undefined,
+        audioKey: !isMine ? key : undefined,
         label: isMine
           ? (nickname || '나')
           : (isObs ? (browserLiveTitle || consumer?.nickname || '브라우저 라이브')
@@ -828,16 +832,20 @@ export function RoomPage() {
   // Everyone (camera roster + screen shares) — one unified set for grid and spotlight.
   const allFeeds = useMemo(() => [...cameraFeeds, ...screenFeeds], [cameraFeeds, screenFeeds]);
 
-  // Remote audio is played through hidden <audio> sinks, not the video tiles (a video
-  // element only renders one track). My own devices' audio is skipped to avoid echo.
+  // Audio belonging to an active camera is played by that camera's <video> element so the browser
+  // can lip-sync both RTP tracks. Keep a hidden sink only for audio-only participants.
   const audioConsumers = useMemo(() => {
     // Dedupe by device — if a reconnect ever leaves two audio consumers for the same
     // source, playing both <audio> sinks produces a delayed-echo doubling. Keep one per
     // `${userId}:${deviceId}` (last wins = freshest track).
     const byDevice = new Map<string, (typeof consumers)[number]>();
+    const devicesWithCamera = new Set(consumers
+      .filter((c) => c.kind === 'video' && c.source !== 'screen' && !!c.track)
+      .map((c) => `${c.userId}:${c.deviceId}`));
     for (const c of consumers) {
       if (c.kind !== 'audio' || c.userId === userId || !c.track) continue;
-      byDevice.set(`${c.userId}:${c.deviceId}`, c);
+      const key = `${c.userId}:${c.deviceId}`;
+      if (!devicesWithCamera.has(key)) byDevice.set(key, c);
     }
     return [...byDevice.values()];
   }, [consumers, userId]);

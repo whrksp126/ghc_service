@@ -5,17 +5,23 @@ import { hasWindowPip, hasVideoPip, enterVideoPip } from '../../lib/pipSupport';
 import { isNativeShell } from '../../lib/native';
 import { compositePip } from '../../lib/compositePip';
 import type { RemoteTrack } from 'livekit-client';
-import { useVoiceStore } from '../../services/voiceActivity';
+import { attachVoice, detachVoice, useVoiceStore } from '../../services/voiceActivity';
 import { useAudioSettings } from '../../stores/audioSettings';
+import { useUIStore } from '../../stores/uiStore';
 import { VoiceBars } from '../common/VoiceBars';
 import { showToast } from '../common/Toast';
 import { BottomSheet } from '../common/BottomSheet';
 import { useActiveTile } from '../../stores/activeTileStore';
+import { registerAudioEl, reportAudioBlocked } from '../../lib/audioUnlock';
 
 interface FeedCardProps {
   track: MediaStreamTrack | null;
   /** LiveKit remote track — attaching via this lets adaptiveStream size the layer. */
   lkTrack?: RemoteTrack;
+  /** Matching remote microphone. Putting A/V in one MediaStream lets the browser use one
+   *  playout clock and prevents speech from running seconds ahead of the camera. */
+  audioTrack?: MediaStreamTrack;
+  audioKey?: string;
   label: string;
   isMuted?: boolean;
   isLocal?: boolean;
@@ -51,6 +57,8 @@ interface FeedCardProps {
 export const FeedCard = memo(function FeedCard({
   track,
   lkTrack,
+  audioTrack,
+  audioKey,
   label,
   isMuted,
   isLocal,
@@ -93,6 +101,8 @@ export const FeedCard = memo(function FeedCard({
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const level = useVoiceStore((s) => (voiceKey ? s.levels[voiceKey] ?? 0 : 0));
   const threshold = useAudioSettings((s) => s.threshold);
+  const audioMuted = useUIStore((s) => audioKey ? !!s.mutedAudio[audioKey] : false);
+  const audioVolume = useUIStore((s) => audioKey ? s.volumeAudio[audioKey] ?? 1 : 1);
   const speaking = level > threshold;
 
   // Remote video → attach through LiveKit so adaptiveStream observes this element's size
@@ -103,13 +113,38 @@ export const FeedCard = memo(function FeedCard({
   useEffect(() => {
     const el = videoRef.current;
     if (!el || !track) return;
-    if (lkTrack && !isLocal) {
-      lkTrack.attach(el);
-      return () => { lkTrack.detach(el); };
+    if (lkTrack && !isLocal) lkTrack.attach(el);
+    else el.srcObject = new MediaStream([track]);
+
+    // LiveKit attaches a video-only MediaStream by default. Add this participant's microphone to
+    // the SAME element so Chromium/WebKit synchronize both RTP timestamps on one media timeline.
+    const stream = el.srcObject as MediaStream | null;
+    if (audioTrack && stream && !stream.getAudioTracks().some((t) => t.id === audioTrack.id)) {
+      stream.addTrack(audioTrack);
     }
-    el.srcObject = new MediaStream([track]);
-    return () => { el.srcObject = null; };
-  }, [track, lkTrack, isLocal, isPoppedOut]);
+    const play = () => el.play().catch(() => { reportAudioBlocked(); });
+    void play();
+    const unregister = audioTrack ? registerAudioEl(() => el.play()) : () => {};
+    return () => {
+      unregister();
+      if (audioTrack && stream?.getTracks().includes(audioTrack)) stream.removeTrack(audioTrack);
+      if (lkTrack && !isLocal) lkTrack.detach(el);
+      else el.srcObject = null;
+    };
+  }, [track, lkTrack, audioTrack, isLocal, isPoppedOut]);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.muted = !!isLocal || !audioTrack || audioMuted;
+      videoRef.current.volume = audioVolume;
+    }
+  }, [isLocal, audioTrack, audioMuted, audioVolume]);
+
+  useEffect(() => {
+    if (!audioTrack || !voiceKey) return;
+    attachVoice(voiceKey, audioTrack);
+    return () => detachVoice(voiceKey);
+  }, [audioTrack, voiceKey]);
 
   // Ambient glow (à la NikxDa/ambient): a low-res copy of the frame sits in a layer that EXACTLY
   // overlays the video's letterboxed box (same aspect + object-contain), and a heavy blur lets its
@@ -389,7 +424,7 @@ export const FeedCard = memo(function FeedCard({
           ref={videoRef}
           autoPlay
           playsInline
-          muted={isLocal || track.kind === 'video'}
+          muted={isLocal || !audioTrack || audioMuted}
           className={`w-full h-full object-contain ${mirror ? 'scale-x-[-1]' : ''}`}
         />
       ) : (
