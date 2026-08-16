@@ -115,7 +115,8 @@ services:
         ws_url: ws://127.0.0.1:7880
         api_key: ${LIVEKIT_API_KEY}
         api_secret: ${LIVEKIT_API_SECRET}
-        rtmp_port: 1935
+        # 1935 belongs to MediaMTX (HLS buffer); it forwards a copy here.
+        rtmp_port: 1936
         http_relay_port: 9090
         health_port: 9091
     depends_on:
@@ -125,6 +126,27 @@ services:
     # cpus 제한: RTMP 트랜스코딩은 스트림당 ~0.5~1코어로 무거운 폭주 가능 워커.
     # 8코어 공용 호스트에서 옆 프로젝트를 굶기지 않도록 4코어 상한을 건다(동시 라이브 ~4~8개).
     cpus: "4.0"
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # High-quality buffered playback for browser live. The incoming H.264/AAC is remuxed, never
+  # transcoded: frames/resolution stay intact. 12×2s retained segments let the web player sit
+  # about 10 seconds behind live and ride through transient network stalls.
+  mediamtx:
+    container_name: ghc_mediamtx_prod
+    image: bluenviron/mediamtx:1-ffmpeg
+    network_mode: host
+    environment:
+      LIVEKIT_RTMP_TARGET: rtmp://127.0.0.1:1936
+    volumes:
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    depends_on:
+      - ingress
+    mem_limit: 512m
     restart: always
     logging:
       driver: json-file

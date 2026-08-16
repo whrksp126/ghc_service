@@ -1,0 +1,23 @@
+logLevel: info
+
+# Browser live enters here first. MediaMTX remuxes the original H.264/AAC into HLS without
+# transcoding (no quality/frame loss), while runOnReady forwards the same stream to LiveKit for
+# compatibility/presence. LIVEKIT_RTMP_TARGET differs between host-network prod and bridge local.
+rtspAddress: :8554
+rtmpAddress: :1935
+hlsAddress: :8888
+hls: true
+hlsAlwaysRemux: true
+hlsVariant: mpegts
+hlsSegmentCount: 12
+hlsSegmentDuration: 2s
+hlsSegmentMaxSize: 50M
+hlsMuxerCloseAfter: 60s
+
+pathDefaults:
+  source: publisher
+  runOnReady: ffmpeg -nostdin -loglevel warning -rtsp_transport tcp -i rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH -map 0 -c copy -f flv $LIVEKIT_RTMP_TARGET/$MTX_PATH
+  runOnReadyRestart: true
+
+paths:
+  all_others:

@@ -32,6 +32,7 @@ export interface PipFeed {
   id: string;
   track: MediaStreamTrack | null;
   lkTrack?: RemoteTrack;
+  hlsUrl?: string;
   label: string;
   isMuted?: boolean;
   isLocal?: boolean;
@@ -115,6 +116,7 @@ export function DocumentPipPortal({ feeds }: DocumentPipPortalProps) {
           <FeedCard
             track={feed.track}
             lkTrack={feed.lkTrack}
+            hlsUrl={feed.hlsUrl}
             label={feed.label}
             isMuted={feed.isMuted}
             isLocal={feed.isLocal}

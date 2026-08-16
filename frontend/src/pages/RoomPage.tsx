@@ -790,8 +790,9 @@ export function RoomPage() {
 
       items.push({
         id: key, track: consumer?.track ?? null, lkTrack: consumer?.lkTrack,
-        audioTrack: !isMine && consumer ? audioByDevice.get(key) : undefined,
+        audioTrack: !isMine && consumer && !consumer.hlsUrl ? audioByDevice.get(key) : undefined,
         audioKey: !isMine ? key : undefined,
+        hlsUrl: consumer?.hlsUrl,
         label: isMine
           ? (nickname || '나')
           : (isObs ? (browserLiveTitle || consumer?.nickname || '브라우저 라이브')
@@ -843,7 +844,7 @@ export function RoomPage() {
       .filter((c) => c.kind === 'video' && c.source !== 'screen' && !!c.track)
       .map((c) => `${c.userId}:${c.deviceId}`));
     for (const c of consumers) {
-      if (c.kind !== 'audio' || c.userId === userId || !c.track) continue;
+      if (c.kind !== 'audio' || c.userId === userId || c.userId === 'obs' || !c.track) continue;
       const key = `${c.userId}:${c.deviceId}`;
       if (!devicesWithCamera.has(key)) byDevice.set(key, c);
     }
@@ -891,6 +892,14 @@ export function RoomPage() {
       setMicGateOpen(audioProducerId, next);
     };
     const evaluate = (level: number) => {
+      // Browsers throttle/stop analyser timers in a background tab. Never interpret that missing
+      // sampling as silence: keep RTP audio open and let the browser's native noise suppression
+      // handle background operation. Otherwise a gate that happened to be closed stays at gain=0.
+      if (document.hidden) {
+        if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+        apply(true);
+        return;
+      }
       const now = Date.now();
       // 600ms hangover so the gate doesn't slam shut between words/syllables.
       if (level >= micThreshold) holdUntil = now + 600;
@@ -906,8 +915,11 @@ export function RoomPage() {
     };
     evaluate(useVoiceStore.getState().levels[myVoiceKey] ?? 0);
     const unsub = useVoiceStore.subscribe((s) => evaluate(s.levels[myVoiceKey] ?? 0));
+    const onVisibility = () => evaluate(useVoiceStore.getState().levels[myVoiceKey] ?? 0);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       unsub();
+      document.removeEventListener('visibilitychange', onVisibility);
       if (closeTimer) clearTimeout(closeTimer);
     };
   }, [noiseGate, micThreshold, localAudioTrack, audioProducerId, myVoiceKey]);

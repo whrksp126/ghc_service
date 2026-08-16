@@ -131,35 +131,40 @@ function ingressVideoOptions(): IngressVideoOptions {
   });
 }
 
+function ingressParticipantMetadata(displayName: string, streamKey?: string): string {
+  const hlsBase = (process.env.HLS_PUBLIC_BASE_URL || 'https://ghc-api.ghmate.com/hls').replace(/\/$/, '');
+  return JSON.stringify({
+    nickname: displayName,
+    deviceLabel: 'OBS',
+    // The key is an unguessable LiveKit ingress UUID. Room subscribers use it to switch only the
+    // live tile from WebRTC to the 10-second buffered HLS path; participant cameras stay WebRTC.
+    hlsUrl: streamKey ? `${hlsBase}/x/${encodeURIComponent(streamKey)}/index.m3u8` : undefined,
+  });
+}
+
 export async function createRoomIngress(roomName: string, displayName = 'OBS 라이브'): Promise<RoomIngress> {
   // The room UI reads the display name from the participant's *metadata* (nickname), not the
   // LiveKit `name` field — so we set both. Without metadata the tile falls back to "참가자".
-  const participantMetadata = JSON.stringify({ nickname: displayName, deviceLabel: 'OBS' });
-
   // Reuse an existing RTMP ingress for this room so we don't pile up stream keys. If the
   // caller asked for a different name, update it in place (takes effect on the next connect).
   try {
     const existing = await ingressClient.listIngress({ roomName });
     const rtmp = existing.find((i) => i.inputType === IngressInput.RTMP_INPUT && i.streamKey);
     if (rtmp) {
+      const participantMetadata = ingressParticipantMetadata(displayName, rtmp.streamKey);
       // Always push the video options through, not just on a name change: ingresses created
       // before the explicit preset existed are still pinned to LiveKit's 720p default, and they
       // are reused forever (one per room). This upgrades them on the next "라이브 열기".
-      const needsRename = rtmp.participantName !== displayName;
-      const needsPreset =
-        rtmp.video?.encodingOptions?.case !== 'preset' ||
-        rtmp.video.encodingOptions.value !== INGRESS_PRESET;
-      if (needsRename || needsPreset) {
-        try {
-          await ingressClient.updateIngress(rtmp.ingressId, {
-            name: rtmp.name || `${roomName}-obs`,
-            participantName: displayName,
-            participantMetadata,
-            video: ingressVideoOptions(),
-          });
-        } catch {
-          // Update unsupported/failed — keep the existing ingress as-is.
-        }
+      // Refresh every time so older reusable ingresses also receive the newly-generated HLS URL.
+      try {
+        await ingressClient.updateIngress(rtmp.ingressId, {
+          name: rtmp.name || `${roomName}-obs`,
+          participantName: displayName,
+          participantMetadata,
+          video: ingressVideoOptions(),
+        });
+      } catch {
+        // Update unsupported/failed — keep the existing ingress as-is.
       }
       return toRoomIngress(rtmp);
     }
@@ -172,9 +177,21 @@ export async function createRoomIngress(roomName: string, displayName = 'OBS 라
     roomName,
     participantIdentity: `obs:${roomName}`,
     participantName: displayName,
-    participantMetadata,
+    participantMetadata: ingressParticipantMetadata(displayName),
     video: ingressVideoOptions(),
   });
+  // createIngress allocates the stream key, so publish its HLS URL in metadata immediately after.
+  // This runs before the owner starts ffmpeg and therefore before the participant joins the room.
+  try {
+    await ingressClient.updateIngress(info.ingressId, {
+      name: info.name || `${roomName}-obs`,
+      participantName: displayName,
+      participantMetadata: ingressParticipantMetadata(displayName, info.streamKey),
+      video: ingressVideoOptions(),
+    });
+  } catch {
+    // A client can still fall back to the LiveKit track if metadata update is unavailable.
+  }
   return toRoomIngress(info);
 }
 

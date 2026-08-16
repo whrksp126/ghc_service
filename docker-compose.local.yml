@@ -46,7 +46,7 @@ services:
       - ghc_local
     restart: unless-stopped
 
-  # LiveKit Ingress: native live / OBS → RTMP(1935) → publishes into the room as a
+  # LiveKit Ingress receives the MediaMTX relay on 1936.
   # participant. On the bridge network it reaches redis + livekit by service name.
   # 1935 is mapped to the host so the desktop app's ffmpeg can push to rtmp://localhost:1935.
   ingress:
@@ -61,14 +61,28 @@ services:
         ws_url: ws://livekit:7880
         api_key: devkey
         api_secret: localdevsecret0123456789abcdefghij
-        rtmp_port: 1935
+        rtmp_port: 1936
         http_relay_port: 9090
         health_port: 9091
-    ports:
-      - "1935:1935"
     depends_on:
       - redis
       - livekit
+    networks:
+      - ghc_local
+    restart: unless-stopped
+
+  mediamtx:
+    container_name: ghc_mediamtx_local
+    image: bluenviron/mediamtx:1-ffmpeg
+    environment:
+      LIVEKIT_RTMP_TARGET: rtmp://ingress:1936
+    volumes:
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    ports:
+      - "1935:1935"
+      - "8888:8888"
+    depends_on:
+      - ingress
     networks:
       - ghc_local
     restart: unless-stopped

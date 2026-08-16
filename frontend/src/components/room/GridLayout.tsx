@@ -10,6 +10,7 @@ interface FeedItem {
   lkTrack?: RemoteTrack;
   audioTrack?: MediaStreamTrack;
   audioKey?: string;
+  hlsUrl?: string;
   label: string;
   isMuted?: boolean;
   isLocal?: boolean;
@@ -89,6 +90,7 @@ export function GridLayout({ feeds, onFeedClick, onPip }: GridLayoutProps) {
             lkTrack={feed.lkTrack}
             audioTrack={feed.audioTrack}
             audioKey={feed.audioKey}
+            hlsUrl={feed.hlsUrl}
             label={feed.label}
             isMuted={feed.isMuted}
             isLocal={feed.isLocal}

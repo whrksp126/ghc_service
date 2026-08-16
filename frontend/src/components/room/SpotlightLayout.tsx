@@ -10,6 +10,7 @@ interface FeedItem {
   lkTrack?: RemoteTrack;
   audioTrack?: MediaStreamTrack;
   audioKey?: string;
+  hlsUrl?: string;
   label: string;
   isMuted?: boolean;
   isLocal?: boolean;
@@ -45,6 +46,7 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit, onPip
           lkTrack={spotlight.lkTrack}
           audioTrack={spotlight.audioTrack}
           audioKey={spotlight.audioKey}
+          hlsUrl={spotlight.hlsUrl}
           label={spotlight.label}
           isMuted={spotlight.isMuted}
           isLocal={spotlight.isLocal}
@@ -73,6 +75,7 @@ export function SpotlightLayout({ feeds, spotlightId, onFeedClick, onExit, onPip
                 lkTrack={feed.lkTrack}
                 audioTrack={feed.audioTrack}
                 audioKey={feed.audioKey}
+                hlsUrl={feed.hlsUrl}
                 label={feed.label}
                 isMuted={feed.isMuted}
                 isLocal={feed.isLocal}

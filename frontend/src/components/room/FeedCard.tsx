@@ -13,6 +13,7 @@ import { showToast } from '../common/Toast';
 import { BottomSheet } from '../common/BottomSheet';
 import { useActiveTile } from '../../stores/activeTileStore';
 import { registerAudioEl, reportAudioBlocked } from '../../lib/audioUnlock';
+import Hls from 'hls.js';
 
 interface FeedCardProps {
   track: MediaStreamTrack | null;
@@ -22,6 +23,8 @@ interface FeedCardProps {
    *  playout clock and prevents speech from running seconds ahead of the camera. */
   audioTrack?: MediaStreamTrack;
   audioKey?: string;
+  /** Buffered high-quality live URL. When present it replaces only this live tile's WebRTC media. */
+  hlsUrl?: string;
   label: string;
   isMuted?: boolean;
   isLocal?: boolean;
@@ -59,6 +62,7 @@ export const FeedCard = memo(function FeedCard({
   lkTrack,
   audioTrack,
   audioKey,
+  hlsUrl,
   label,
   isMuted,
   isLocal,
@@ -112,7 +116,39 @@ export const FeedCard = memo(function FeedCard({
   // tile stays black until the track/source identity happens to change.
   useEffect(() => {
     const el = videoRef.current;
-    if (!el || !track) return;
+    if (!el || (!track && !hlsUrl)) return;
+    if (hlsUrl) {
+      let hls: Hls | null = null;
+      if (el.canPlayType('application/vnd.apple.mpegurl')) {
+        el.src = hlsUrl;
+      } else if (Hls.isSupported()) {
+        hls = new Hls({
+          lowLatencyMode: false,
+          liveSyncDuration: 10,
+          liveMaxLatencyDuration: 24,
+          maxBufferLength: 30,
+          backBufferLength: 30,
+          enableWorker: true,
+        });
+        hls.loadSource(hlsUrl);
+        hls.attachMedia(el);
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (!data.fatal) return;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls?.startLoad();
+          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls?.recoverMediaError();
+        });
+      }
+      const play = () => el.play().catch(() => { reportAudioBlocked(); });
+      void play();
+      const unregister = registerAudioEl(() => el.play());
+      return () => {
+        unregister();
+        hls?.destroy();
+        el.removeAttribute('src');
+        el.load();
+      };
+    }
+    if (!track) return;
     if (lkTrack && !isLocal) lkTrack.attach(el);
     else el.srcObject = new MediaStream([track]);
 
@@ -131,14 +167,14 @@ export const FeedCard = memo(function FeedCard({
       if (lkTrack && !isLocal) lkTrack.detach(el);
       else el.srcObject = null;
     };
-  }, [track, lkTrack, audioTrack, isLocal, isPoppedOut]);
+  }, [track, lkTrack, audioTrack, hlsUrl, isLocal, isPoppedOut]);
 
   useEffect(() => {
     if (videoRef.current) {
-      videoRef.current.muted = !!isLocal || !audioTrack || audioMuted;
+      videoRef.current.muted = !!isLocal || (!audioTrack && !hlsUrl) || audioMuted;
       videoRef.current.volume = audioVolume;
     }
-  }, [isLocal, audioTrack, audioMuted, audioVolume]);
+  }, [isLocal, audioTrack, hlsUrl, audioMuted, audioVolume]);
 
   useEffect(() => {
     // The PiP portal mounts its own FeedCard for this track. Let that visible instance own the
@@ -418,7 +454,7 @@ export const FeedCard = memo(function FeedCard({
           )}
         </div>
       )}
-      {track ? (
+      {(track || hlsUrl) ? (
         // No CSS `filter` on the <video>: a drop-shadow forces the browser to run a filter pass on
         // EVERY decoded frame and drops the element out of the zero-copy video overlay path — it
         // was the single most expensive thing on screen (N tiles × 30fps of GPU work, fans + battery).
@@ -427,7 +463,7 @@ export const FeedCard = memo(function FeedCard({
           ref={videoRef}
           autoPlay
           playsInline
-          muted={isLocal || !audioTrack || audioMuted}
+          muted={isLocal || (!audioTrack && !hlsUrl) || audioMuted}
           className={`${isPoppedOut ? 'absolute inset-0 opacity-0 pointer-events-none' : 'w-full h-full'} object-contain ${mirror ? 'scale-x-[-1]' : ''}`}
         />
       ) : !isPoppedOut ? (

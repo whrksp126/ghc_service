@@ -26,6 +26,8 @@ export interface ConsumerInfo {
   // separate Socket.IO roster lookup.
   nickname?: string;
   deviceLabel?: string;
+  /** Buffered HLS URL for an OBS/browser-live ingress. Participant cameras never set this. */
+  hlsUrl?: string;
   /** Active camera facing from the sender's LiveKit metadata — peers mirror a 'user' (front) feed. */
   facing?: 'user' | 'environment' | 'unknown';
   source?: 'camera' | 'screen' | 'microphone' | 'unknown';

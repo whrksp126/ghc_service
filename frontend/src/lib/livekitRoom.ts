@@ -64,7 +64,7 @@ function parseIdentity(identity: string): { userId: string; deviceId: string } {
   return { userId: identity.slice(0, i), deviceId: identity.slice(i + 1) };
 }
 
-function metaOf(p: RemoteParticipant): { nickname?: string; deviceLabel?: string; facing?: ConsumerInfo['facing'] } {
+function metaOf(p: RemoteParticipant): { nickname?: string; deviceLabel?: string; facing?: ConsumerInfo['facing']; hlsUrl?: string } {
   try {
     return p.metadata ? JSON.parse(p.metadata) : {};
   } catch {
@@ -130,6 +130,12 @@ function onTrackSubscribed(track: RemoteTrack, pub: RemoteTrackPublication, part
   // see the note above resyncLivePlayout.
   if (userId === 'obs') liveTracks.add(track);
   const meta = metaOf(participant);
+  // Buffered live carries audio+video together through HLS. Do not create a second WebRTC audio
+  // sink; it would echo. Keep the video publication just long enough to discover/render the tile.
+  if (userId === 'obs' && meta.hlsUrl && track.kind === Track.Kind.Audio) {
+    window.setTimeout(() => { void pub.setSubscribed(false); }, 1000);
+    return;
+  }
   if (track.kind === Track.Kind.Audio) {
     console.info('[livekit] audio subscribed', { from: `${userId}:${deviceId}`, trackSid: pub.trackSid });
   }
@@ -143,15 +149,27 @@ function onTrackSubscribed(track: RemoteTrack, pub: RemoteTrackPublication, part
     paused: false,
     nickname: meta.nickname,
     deviceLabel: meta.deviceLabel,
+    hlsUrl: meta.hlsUrl,
     facing: meta.facing,
     source: sourceOf(pub),
     lkTrack: track,
   });
+  if (userId === 'obs' && meta.hlsUrl && track.kind === Track.Kind.Video) {
+    // HLS needs a few seconds to expose its first playlist. Then stop downloading the duplicate
+    // 3.5Mbps WebRTC live; participant camera tracks remain subscribed in real time.
+    window.setTimeout(() => { void pub.setSubscribed(false); }, 12_000);
+  }
 }
 
 function onTrackUnsubscribed(track: RemoteTrack, pub: RemoteTrackPublication) {
   liveTracks.delete(track);
-  useRoomStore.getState().removeConsumer(pub.trackSid);
+  const store = useRoomStore.getState();
+  const bufferedLive = store.consumers.find((c) => c.consumerId === pub.trackSid && c.hlsUrl);
+  if (bufferedLive) {
+    store.updateConsumer(pub.trackSid, { paused: true, lkTrack: undefined });
+  } else {
+    store.removeConsumer(pub.trackSid);
+  }
 }
 
 export function getLivekitRoom(): Room | null {
