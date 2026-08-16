@@ -23,6 +23,8 @@ interface Source {
   /** Key into the voice-activity store (`${userId}:${deviceId}` or `obs:<room>`). The feed id can
    *  differ (e.g. the local feed id is `self:<deviceId>`), so the waveform looks this up. */
   voiceKey?: string;
+  /** Matching remote mic, also carried by the canvas output stream so PiP keeps sound. */
+  audioTrack?: MediaStreamTrack;
 }
 
 // The PiP output video can sit fully off-viewport (it's a canvas captureStream, not a LiveKit track).
@@ -71,8 +73,24 @@ class CompositePipController {
   private ensureStream(): MediaStream {
     if (!this.stream) {
       this.stream = (this.canvas as HTMLCanvasElement & { captureStream(fps?: number): MediaStream }).captureStream(24);
+      for (const s of this.sources.values()) {
+        if (s.audioTrack && !this.stream.getAudioTracks().some((t) => t.id === s.audioTrack!.id)) {
+          this.stream.addTrack(s.audioTrack);
+        }
+      }
     }
     return this.stream;
+  }
+
+  /** Keep the already-created canvas stream's audio tracks aligned with the active PiP feeds. */
+  private syncOutputAudio(): void {
+    if (!this.stream) return;
+    const wanted = new Map<string, MediaStreamTrack>();
+    for (const s of this.sources.values()) if (s.audioTrack) wanted.set(s.audioTrack.id, s.audioTrack);
+    for (const t of this.stream.getAudioTracks()) if (!wanted.has(t.id)) this.stream.removeTrack(t);
+    for (const t of wanted.values()) {
+      if (!this.stream.getAudioTracks().some((x) => x.id === t.id)) this.stream.addTrack(t);
+    }
   }
 
   inlineActive(): boolean {
@@ -93,6 +111,7 @@ class CompositePipController {
         'position:fixed;right:12px;bottom:96px;width:150px;z-index:2147483647;border-radius:12px;overflow:hidden;' +
         'box-shadow:0 6px 28px rgba(0,0,0,.55);background:#000;touch-action:none;cursor:grab;user-select:none;';
       const v = mkVideo();
+      v.muted = false;
       v.srcObject = this.ensureStream();
       v.style.cssText = 'width:100%;height:auto;display:block;pointer-events:none;';
       v.play().catch(() => {});
@@ -179,12 +198,13 @@ class CompositePipController {
 
   /** Add (or replace the track of) a feed in the composite. Safe to call repeatedly. Pass the
    *  LiveKit RemoteTrack for peer feeds so adaptiveStream keeps the subscription flowing. */
-  add(id: string, track: MediaStreamTrack, label: string, mirror = false, lkTrack?: RemoteTrack, voiceKey?: string): void {
+  add(id: string, track: MediaStreamTrack, label: string, mirror = false, lkTrack?: RemoteTrack, voiceKey?: string, audioTrack?: MediaStreamTrack): void {
     const existing = this.sources.get(id);
     if (existing) {
       existing.label = label;
       existing.mirror = mirror;
       existing.voiceKey = voiceKey;
+      existing.audioTrack = audioTrack;
       if (existing.track !== track || existing.lkTrack !== lkTrack) {
         this.unbind(existing);
         existing.track = track;
@@ -195,10 +215,11 @@ class CompositePipController {
       const video = mkVideo();
       video.style.cssText = SOURCE_HIDDEN;
       document.body.appendChild(video);
-      const s: Source = { label, mirror, track, lkTrack, video, voiceKey };
+      const s: Source = { label, mirror, track, lkTrack, video, voiceKey, audioTrack };
       this.sources.set(id, s);
       this.bind(s);
     }
+    this.syncOutputAudio();
     this.drawOnce(); // give captureStream a frame immediately (so requestPictureInPicture is ready)
     this.startLoop();
   }
@@ -215,6 +236,7 @@ class CompositePipController {
     this.unbind(s);
     s.video.remove();
     this.sources.delete(id);
+    this.syncOutputAudio();
     if (this.sources.size === 0) this.clear();
   }
 
@@ -237,6 +259,7 @@ class CompositePipController {
       }
       this.out.play().catch(() => {});
     }
+    this.out.muted = false;
     if (document.pictureInPictureElement === this.out) return Promise.resolve(null);
     const req = () =>
       (this.out as HTMLVideoElement & { requestPictureInPicture?: () => Promise<unknown> })

@@ -141,10 +141,12 @@ export const FeedCard = memo(function FeedCard({
   }, [isLocal, audioTrack, audioMuted, audioVolume]);
 
   useEffect(() => {
-    if (!audioTrack || !voiceKey) return;
+    // The PiP portal mounts its own FeedCard for this track. Let that visible instance own the
+    // analyser; otherwise the placeholder and PiP race to attach/detach the same voice key.
+    if (!audioTrack || !voiceKey || isPoppedOut) return;
     attachVoice(voiceKey, audioTrack);
     return () => detachVoice(voiceKey);
-  }, [audioTrack, voiceKey]);
+  }, [audioTrack, voiceKey, isPoppedOut]);
 
   // Ambient glow (à la NikxDa/ambient): a low-res copy of the frame sits in a layer that EXACTLY
   // overlays the video's letterboxed box (same aspect + object-contain), and a heavy blur lets its
@@ -327,7 +329,7 @@ export const FeedCard = memo(function FeedCard({
       onPip?.(feedId); // clears popped[id] → restores the in-grid tile
       return;
     }
-    compositePip.add(id, track, label, !!mirror, lkTrack, voiceKey);
+    compositePip.add(id, track, label, !!mirror, lkTrack, voiceKey, audioTrack);
     void compositePip.enter().then((err) => {
       // OS PiP succeeded → leave it. If the browser blocks the PiP API (e.g. mobile Chrome with
       // Picture-in-Picture disabled at the device level — even Google's own demo can't open it
