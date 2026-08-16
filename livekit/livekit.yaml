@@ -39,19 +39,16 @@ rtc:
   # ── 화질 우선 (품질 진동 억제) ───────────────────────────────────────────────
   # 기본값의 SFU는 시청자별 대역폭 추정치가 흔들릴 때마다 simulcast 레이어를
   # 올렸다 내렸다 한다. 그래서 "선명 → 흐림 → 다시 선명"이 몇 초 주기로 반복된다.
-  # 제품 방침은 지연·부드러움보다 화질 우선이므로 추정치에 바닥을 깔아 잔떨림으로는
-  # 레이어를 못 내리게 한다.
-  #
-  # 대가(정직하게): 시청자 회선이 정말로 좁으면 깔끔한 저화질로 내려가는 대신
-  # 패킷을 잃어 깨짐/멈춤이 생긴다. 지연이 아니라 손실이 대가다.
-  # 모바일 LTE 시청자가 깨진다는 제보가 오면 min_channel_capacity를 낮추거나 0으로.
+  # 라이브는 1080p + 540p 두 레이어를 제공한다. 실제 수신 대역폭을 사용해야 약한 웹
+  # 시청자만 540p로 내려가고, 좋은 회선의 시청자는 1080p를 그대로 유지할 수 있다.
   congestion_control:
     enabled: true
     # 대역폭이 모자라도 트랙을 아예 멈추지 않는다(멈췄다 켜지는 게 제일 눈에 띈다).
     allow_pause: false
     stream_allocator:
-      # bps. ingress 최상위 레이어(1080p/3.5Mbps)가 항상 통과하도록 5Mbps를 바닥으로.
-      min_channel_capacity: 5000000
+      # 0 = LiveKit의 실제 수신 대역폭 추정 사용. 강제 5Mbps는 좁은 회선에서도 1080p를
+      # 밀어 넣어 패킷 손실/재전송/끊김을 만들었다.
+      min_channel_capacity: 0
 
 # Embedded TURN disabled for now: rely on host-candidate UDP (7882) + TCP fallback
 # (7881). The legacy coturn still serves the P2P device-preview path. Revisit if

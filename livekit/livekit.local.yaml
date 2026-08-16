@@ -18,7 +18,7 @@ rtc:
     enabled: true
     allow_pause: false
     stream_allocator:
-      min_channel_capacity: 5000000
+      min_channel_capacity: 0
 
 keys:
   devkey: localdevsecret0123456789abcdefghij

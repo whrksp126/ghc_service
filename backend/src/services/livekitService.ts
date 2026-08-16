@@ -1,7 +1,9 @@
 import {
   AccessToken, RoomServiceClient, IngressClient, IngressInput,
-  IngressVideoOptions, IngressVideoEncodingPreset, TrackSource,
+  IngressVideoOptions, IngressVideoEncodingOptions, IngressVideoEncodingPreset,
+  TrackSource, VideoCodec,
 } from 'livekit-server-sdk';
+import { VideoLayer, VideoQuality } from '@livekit/protocol';
 import { livekitConfig } from '../config/livekit';
 
 // RoomServiceClient talks to the LiveKit HTTP API (room delete / kick). It needs the
@@ -97,7 +99,9 @@ function toRoomIngress(info: { ingressId: string; url: string; streamKey: string
  * Ingress transcode profile. LiveKit's DEFAULT for an RTMP ingress is H264_720P_30FPS_3_LAYERS —
  * 1280x720 @ ~1.9Mbps — so a pristine 1080p browser-live push was being re-encoded down to 720p at
  * a modest bitrate before it ever reached a viewer. That, not the sender, was the quality ceiling.
- * We ask for real 1080p, but as a SINGLE layer rather than simulcast.
+ * The default profile keeps 1080p for healthy viewers and adds ONE 540p fallback. This avoids the
+ * three-encode CPU saturation measured below while allowing a weaker web viewer to receive a clean
+ * sustainable layer instead of dropping packets from a forced 3.5Mbps stream.
  *
  * Measured 2026-08-14: `H264_1080P_30FPS_3_LAYERS` burned 240–270% CPU for ONE stream against the
  * container's 4-CPU cap. Any spike hit the ceiling, GStreamer stopped draining the RTMP socket, and
@@ -106,28 +110,35 @@ function toRoomIngress(info: { ingressId: string; url: string; streamKey: string
  * were: the server, not the sender. Three simulcast layers means three encodes; one 1080p encode is
  * a fraction of that and keeps the full resolution.
  *
- * Dropping the extra layers costs little here on purpose: livekit.yaml already tells the SFU not to
- * step down on bandwidth wobble (congestion_control.min_channel_capacity), so the lower layers were
- * barely being handed out anyway. The trade is that a genuinely weak viewer now gets loss instead of
- * a clean low-res feed — the same quality-first trade already made in livekit.yaml.
- *
- * Tune with INGRESS_VIDEO_PRESET (any IngressVideoEncodingPreset name):
+ * Set INGRESS_VIDEO_PRESET to override the adaptive default with any built-in preset:
  *   H264_1080P_30FPS_1_LAYER_HIGH_MOTION  4.5Mbps 1080p, single — more bitrate for busy video
  *   H264_1080P_30FPS_1_LAYER              3.5Mbps 1080p, single — default
  *   H264_1080P_30FPS_3_LAYERS             adds 540p+180p, but ~2.5 cores per live (see above)
  *   H264_720P_30FPS_3_LAYERS              1.9Mbps — LiveKit's own default, cheapest
  */
-const INGRESS_PRESET: IngressVideoEncodingPreset =
-  (IngressVideoEncodingPreset as unknown as Record<string, number>)[
-    process.env.INGRESS_VIDEO_PRESET || ''
-  ] ?? IngressVideoEncodingPreset.H264_1080P_30FPS_1_LAYER;
+const INGRESS_PRESET = (IngressVideoEncodingPreset as unknown as Record<string, number>)[
+  process.env.INGRESS_VIDEO_PRESET || ''
+] as IngressVideoEncodingPreset | undefined;
+
+function adaptiveIngressEncoding(): IngressVideoEncodingOptions {
+  return new IngressVideoEncodingOptions({
+    videoCodec: VideoCodec.H264_MAIN,
+    frameRate: 30,
+    layers: [
+      new VideoLayer({ quality: VideoQuality.HIGH, width: 1920, height: 1080, bitrate: 3_500_000 }),
+      new VideoLayer({ quality: VideoQuality.MEDIUM, width: 960, height: 540, bitrate: 900_000 }),
+    ],
+  });
+}
 
 function ingressVideoOptions(): IngressVideoOptions {
   return new IngressVideoOptions({
     // Keep publishing as CAMERA: the room UI files a live in with the camera tiles (the OBS /
     // browser-live tile), not the separate screen-share row. Only the encoding changes here.
     source: TrackSource.CAMERA,
-    encodingOptions: { case: 'preset', value: INGRESS_PRESET },
+    encodingOptions: INGRESS_PRESET !== undefined
+      ? { case: 'preset', value: INGRESS_PRESET }
+      : { case: 'options', value: adaptiveIngressEncoding() },
   });
 }
 
@@ -145,21 +156,17 @@ export async function createRoomIngress(roomName: string, displayName = 'OBS 라
       // Always push the video options through, not just on a name change: ingresses created
       // before the explicit preset existed are still pinned to LiveKit's 720p default, and they
       // are reused forever (one per room). This upgrades them on the next "라이브 열기".
-      const needsRename = rtmp.participantName !== displayName;
-      const needsPreset =
-        rtmp.video?.encodingOptions?.case !== 'preset' ||
-        rtmp.video.encodingOptions.value !== INGRESS_PRESET;
-      if (needsRename || needsPreset) {
-        try {
-          await ingressClient.updateIngress(rtmp.ingressId, {
-            name: rtmp.name || `${roomName}-obs`,
-            participantName: displayName,
-            participantMetadata,
-            video: ingressVideoOptions(),
-          });
-        } catch {
-          // Update unsupported/failed — keep the existing ingress as-is.
-        }
+      // Always refresh the video profile. It is cheap (only runs when opening the live) and avoids
+      // brittle deep comparisons between protobuf custom-layer objects.
+      try {
+        await ingressClient.updateIngress(rtmp.ingressId, {
+          name: rtmp.name || `${roomName}-obs`,
+          participantName: displayName,
+          participantMetadata,
+          video: ingressVideoOptions(),
+        });
+      } catch {
+        // Update unsupported/failed — keep the existing ingress as-is.
       }
       return toRoomIngress(rtmp);
     }
