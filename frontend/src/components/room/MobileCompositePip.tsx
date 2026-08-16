@@ -30,7 +30,7 @@ export function MobileCompositePip({ feeds }: { feeds: PipFeed[] }) {
         if (compositePip.has(id)) compositePip.remove(id);
         close(id); // source gone → drop the placeholder too
       } else if (compositePip.has(id)) {
-        compositePip.add(id, f.track, f.label, !!f.mirror, f.lkTrack, f.voiceKey, f.audioTrack); // refresh A/V tracks / label / voice key
+        compositePip.add(id, f.track, f.label, !!f.mirror, f.lkTrack, f.voiceKey); // refresh track / label / voice key
       }
     }
   }, [feeds, popped, close]);

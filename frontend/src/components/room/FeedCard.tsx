@@ -143,10 +143,10 @@ export const FeedCard = memo(function FeedCard({
   useEffect(() => {
     // The PiP portal mounts its own FeedCard for this track. Let that visible instance own the
     // analyser; otherwise the placeholder and PiP race to attach/detach the same voice key.
-    if (!audioTrack || !voiceKey || isPoppedOut) return;
+    if (!audioTrack || !voiceKey) return;
     attachVoice(voiceKey, audioTrack);
     return () => detachVoice(voiceKey);
-  }, [audioTrack, voiceKey, isPoppedOut]);
+  }, [audioTrack, voiceKey]);
 
   // Ambient glow (à la NikxDa/ambient): a low-res copy of the frame sits in a layer that EXACTLY
   // overlays the video's letterboxed box (same aspect + object-contain), and a heavy blur lets its
@@ -329,7 +329,7 @@ export const FeedCard = memo(function FeedCard({
       onPip?.(feedId); // clears popped[id] → restores the in-grid tile
       return;
     }
-    compositePip.add(id, track, label, !!mirror, lkTrack, voiceKey, audioTrack);
+    compositePip.add(id, track, label, !!mirror, lkTrack, voiceKey);
     void compositePip.enter().then((err) => {
       // OS PiP succeeded → leave it. If the browser blocks the PiP API (e.g. mobile Chrome with
       // Picture-in-Picture disabled at the device level — even Google's own demo can't open it
@@ -404,7 +404,7 @@ export const FeedCard = memo(function FeedCard({
           style={{ zIndex: -1, filter: 'blur(36px) saturate(1.4)', opacity: 0.75 }}
         />
       )}
-      {isPoppedOut ? (
+      {isPoppedOut && (
         <div className="w-full h-full flex flex-col items-center justify-center gap-3 bg-dark-800 text-white/40">
           <PictureInPicture2 size={28} strokeWidth={1.5} />
           <span className="text-xs">PiP 창에서 보는 중</span>
@@ -417,7 +417,8 @@ export const FeedCard = memo(function FeedCard({
             </button>
           )}
         </div>
-      ) : track ? (
+      )}
+      {track ? (
         // No CSS `filter` on the <video>: a drop-shadow forces the browser to run a filter pass on
         // EVERY decoded frame and drops the element out of the zero-copy video overlay path — it
         // was the single most expensive thing on screen (N tiles × 30fps of GPU work, fans + battery).
@@ -427,15 +428,15 @@ export const FeedCard = memo(function FeedCard({
           autoPlay
           playsInline
           muted={isLocal || !audioTrack || audioMuted}
-          className={`w-full h-full object-contain ${mirror ? 'scale-x-[-1]' : ''}`}
+          className={`${isPoppedOut ? 'absolute inset-0 opacity-0 pointer-events-none' : 'w-full h-full'} object-contain ${mirror ? 'scale-x-[-1]' : ''}`}
         />
-      ) : (
+      ) : !isPoppedOut ? (
         <div className="w-full h-full flex items-center justify-center bg-dark-800">
           <div className="w-16 h-16 rounded-full bg-gradient-to-br from-primary/30 to-secondary/30 flex items-center justify-center text-2xl font-bold text-white/50">
             {label[0]?.toUpperCase()}
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* Speaking ring — drawn INSET on top of the video so it's never clipped by any
           scroll/grid container's overflow (the old outer box-shadow was getting cut off).
