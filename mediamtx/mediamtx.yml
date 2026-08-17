@@ -1,4 +1,8 @@
 logLevel: info
+api: true
+apiAddress: 127.0.0.1:9997
+metrics: true
+metricsAddress: 127.0.0.1:9998
 
 # Browser live enters here first. MediaMTX remuxes the original H.264/AAC into HLS without
 # transcoding (no quality/frame loss), while runOnReady forwards the same stream to LiveKit for
