@@ -406,12 +406,14 @@ export function setupSocketHandlers(io: Server) {
           deviceLabel,
           canPublish,
         });
+        const turnCredentials = generateTurnCredentials(user.userId);
 
         console.log(`[room:join] ${user.nickname}:${deviceId} joined OK canPublish=${canPublish} (${participantList.length} participants)`);
         callback({
           participants: participantList,
           isOwner,
           token,
+          iceServers: turnCredentials.iceServers,
         });
       } catch (err: any) {
         console.error(`[room:join] ERROR for ${user.nickname}:${deviceId}:`, err.message);

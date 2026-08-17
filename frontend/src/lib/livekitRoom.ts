@@ -180,7 +180,7 @@ export function isRoomConnected(): boolean {
   return room?.state === 'connected';
 }
 
-export async function connectToRoom(token: string): Promise<Room> {
+export async function connectToRoom(token: string, iceServers?: RTCIceServer[]): Promise<Room> {
   if (room && (room.state === 'connected' || room.state === 'connecting')) return room;
   if (room) {
     try { await room.disconnect(); } catch { /* ignore */ }
@@ -249,7 +249,11 @@ export async function connectToRoom(token: string): Promise<Room> {
   r.on(RoomEvent.Reconnecting, () => useRoomStore.getState().setReconnecting(true));
   r.on(RoomEvent.Reconnected, () => useRoomStore.getState().setReconnecting(false));
 
-  await r.connect(LIVEKIT_URL, token);
+  // Direct UDP is fastest, but corporate/mobile networks often block it. The backend returns
+  // short-lived coturn credentials so LiveKit can fall back instead of failing the PeerConnection.
+  await r.connect(LIVEKIT_URL, token, {
+    rtcConfig: iceServers?.length ? { iceServers, iceTransportPolicy: 'all' } : undefined,
+  });
   room = r;
 
   // Browsers block audio autoplay until a user gesture. LiveKit routes subscribed audio through

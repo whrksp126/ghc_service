@@ -370,13 +370,14 @@ export function RoomPage() {
       participants: Participant[];
       isOwner: boolean;
       token: string;
+      iceServers: RTCIceServer[];
     }>('room:join', { roomSlug: slug });
 
     setRoom(slug!, roomNameRef.current || slug!);
     setParticipants(result.participants);
     setIsOwner(!!result.isOwner);
 
-    await connectToRoom(result.token);
+    await connectToRoom(result.token, result.iceServers);
   }, [slug, setRoom, setParticipants]);
 
   const joinRoom = useCallback(async () => {

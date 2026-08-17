@@ -51,8 +51,8 @@ export function useBackgroundCamera() {
       }
 
       // room:join registers presence + returns a LiveKit token; connect & publish.
-      const { token } = await emitWithAck<{ token: string }>('room:join', { roomSlug });
-      await connectToRoom(token);
+      const { token, iceServers } = await emitWithAck<{ token: string; iceServers: RTCIceServer[] }>('room:join', { roomSlug });
+      await connectToRoom(token, iceServers);
 
       const session: BackgroundSession = { roomSlug, trackSids: [] };
 
