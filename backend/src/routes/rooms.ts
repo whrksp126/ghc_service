@@ -248,6 +248,9 @@ router.get('/live/:streamKey/master.m3u8', (req, res) => {
   const key = String(req.params.streamKey);
   if (!/^[A-Za-z0-9_-]{16,200}$/.test(key)) return res.status(400).send('invalid stream key');
   const hlsBase = (process.env.HLS_PUBLIC_BASE_URL || 'https://ghc-api.ghmate.com/hls').replace(/\/$/, '');
+  // Desktop's bundled UI has a file:// (Origin: null) origin. The playlist contains no account
+  // data and its segment endpoints are already public-by-key, so allow cross-origin HLS loading.
+  res.setHeader('Access-Control-Allow-Origin', '*');
   const encoded = encodeURIComponent(key);
   res.type('application/vnd.apple.mpegurl');
   res.setHeader('Cache-Control', 'no-store');
