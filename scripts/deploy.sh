@@ -55,7 +55,11 @@ fi
 # compose / Dockerfile / deploy / scripts / .env.example / turn 중 하나라도 바뀌었거나 --restart면 up
 if [[ "${FORCE_RESTART}" == "1" ]] || echo "${CHANGED}" | grep -qE '(docker-compose.*\.yml|deploy/|scripts/|\.env\.example|backend/Dockerfile|frontend/Dockerfile|turn/)'; then
   echo "  컨테이너 재기동..."
-  docker compose -p ghc_prod up --build -d > /tmp/ghc_up.log 2>&1 || { cat /tmp/ghc_up.log; exit 1; }
+  if [[ "${FORCE_RESTART}" == "1" ]]; then
+    docker compose -p ghc_prod up --build -d --force-recreate > /tmp/ghc_up.log 2>&1 || { cat /tmp/ghc_up.log; exit 1; }
+  else
+    docker compose -p ghc_prod up --build -d > /tmp/ghc_up.log 2>&1 || { cat /tmp/ghc_up.log; exit 1; }
+  fi
   echo "  ✓ up done"
 else
   echo "  컨테이너 기동 생략"
