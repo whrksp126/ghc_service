@@ -117,6 +117,7 @@ export function DocumentPipPortal({ feeds }: DocumentPipPortalProps) {
             track={feed.track}
             lkTrack={feed.lkTrack}
             hlsUrl={feed.hlsUrl}
+            forceMuted
             label={feed.label}
             isMuted={feed.isMuted}
             isLocal={feed.isLocal}

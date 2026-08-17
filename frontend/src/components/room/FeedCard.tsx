@@ -26,6 +26,8 @@ interface FeedCardProps {
   audioKey?: string;
   /** Buffered high-quality live URL. When present it replaces only this live tile's WebRTC media. */
   hlsUrl?: string;
+  /** PiP duplicates render video only; the uninterrupted source tile remains the audio owner. */
+  forceMuted?: boolean;
   label: string;
   isMuted?: boolean;
   isLocal?: boolean;
@@ -64,6 +66,7 @@ export const FeedCard = memo(function FeedCard({
   audioTrack,
   audioKey,
   hlsUrl,
+  forceMuted = false,
   label,
   isMuted,
   isLocal,
@@ -191,14 +194,16 @@ export const FeedCard = memo(function FeedCard({
       if (lkTrack && !isLocal) lkTrack.detach(el);
       else el.srcObject = null;
     };
-  }, [track, lkTrack, audioTrack, hlsUrl, useBufferedLive, isLocal, isPoppedOut]);
+  // PiP only changes this element's CSS visibility. Do NOT depend on isPoppedOut: tearing down
+  // and recreating HLS loses the browser's granted audio playback and makes the live go silent.
+  }, [track, lkTrack, audioTrack, hlsUrl, useBufferedLive, isLocal]);
 
   useEffect(() => {
     if (videoRef.current) {
-      videoRef.current.muted = !!isLocal || (!audioTrack && !useBufferedLive) || audioMuted;
+      videoRef.current.muted = forceMuted || !!isLocal || (!audioTrack && !useBufferedLive) || audioMuted;
       videoRef.current.volume = audioVolume;
     }
-  }, [isLocal, audioTrack, useBufferedLive, audioMuted, audioVolume]);
+  }, [forceMuted, isLocal, audioTrack, useBufferedLive, audioMuted, audioVolume]);
 
   useEffect(() => {
     // The PiP portal mounts its own FeedCard for this track. Let that visible instance own the
@@ -487,7 +492,7 @@ export const FeedCard = memo(function FeedCard({
           ref={videoRef}
           autoPlay
           playsInline
-          muted={isLocal || (!audioTrack && !useBufferedLive) || audioMuted}
+          muted={forceMuted || isLocal || (!audioTrack && !useBufferedLive) || audioMuted}
           className={`${isPoppedOut ? 'absolute inset-0 opacity-0 pointer-events-none' : 'w-full h-full'} object-contain ${mirror ? 'scale-x-[-1]' : ''}`}
         />
       ) : !isPoppedOut ? (
