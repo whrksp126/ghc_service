@@ -28,5 +28,6 @@ paths:
   "~^x/(.+)$":
     runOnReady: sh /relay-live.sh
     runOnReadyRestart: true
-  # Server-generated 720p safety layer. No hook here, otherwise it would recursively relay itself.
-  "~^abr/(.+)$":
+  # Aligned HLS outputs from one FFmpeg reader. No hooks here (avoid recursive relays).
+  "~^abr1080/(.+)$":
+  "~^abr720/(.+)$":

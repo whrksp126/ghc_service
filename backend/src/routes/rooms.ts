@@ -258,9 +258,9 @@ router.get('/live/:streamKey/master.m3u8', (req, res) => {
     '#EXTM3U',
     '#EXT-X-VERSION:3',
     '#EXT-X-STREAM-INF:BANDWIDTH=2000000,AVERAGE-BANDWIDTH=1900000,RESOLUTION=1280x720,FRAME-RATE=30.000,CODECS="avc1.64001f,mp4a.40.2"',
-    `${hlsBase}/abr/${encoded}/index.m3u8`,
+    `${hlsBase}/abr720/${encoded}/index.m3u8`,
     '#EXT-X-STREAM-INF:BANDWIDTH=4800000,AVERAGE-BANDWIDTH=4660000,RESOLUTION=1920x1080,FRAME-RATE=30.000,CODECS="avc1.640028,mp4a.40.2"',
-    `${hlsBase}/x/${encoded}/index.m3u8`,
+    `${hlsBase}/abr1080/${encoded}/index.m3u8`,
     '',
   ].join('\n'));
 });
