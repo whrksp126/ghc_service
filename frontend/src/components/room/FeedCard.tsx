@@ -14,6 +14,7 @@ import { BottomSheet } from '../common/BottomSheet';
 import { useActiveTile } from '../../stores/activeTileStore';
 import { registerAudioEl, reportAudioBlocked } from '../../lib/audioUnlock';
 import Hls from 'hls.js';
+import { setBufferedLiveWebrtcSubscribed } from '../../lib/livekitRoom';
 
 interface FeedCardProps {
   track: MediaStreamTrack | null;
@@ -100,6 +101,7 @@ export const FeedCard = memo(function FeedCard({
   // the window at its normal level so the PiP floats on top of the fullscreened tile.
   const [htmlFullscreen, setHtmlFullscreen] = useState(false);
   const [cssFullscreen, setCssFullscreen] = useState(false);
+  const [hlsFailed, setHlsFailed] = useState(false);
   const isFullscreen = htmlFullscreen || cssFullscreen;
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -108,6 +110,9 @@ export const FeedCard = memo(function FeedCard({
   const audioMuted = useUIStore((s) => audioKey ? !!s.mutedAudio[audioKey] : false);
   const audioVolume = useUIStore((s) => audioKey ? s.volumeAudio[audioKey] ?? 1 : 1);
   const speaking = level > threshold;
+  const useBufferedLive = !!hlsUrl && !hlsFailed;
+
+  useEffect(() => { setHlsFailed(false); }, [hlsUrl]);
 
   // Remote video → attach through LiveKit so adaptiveStream observes this element's size
   // and visibility and requests the matching simulcast layer. Local/screen → plain sink.
@@ -116,9 +121,26 @@ export const FeedCard = memo(function FeedCard({
   // tile stays black until the track/source identity happens to change.
   useEffect(() => {
     const el = videoRef.current;
-    if (!el || (!track && !hlsUrl)) return;
-    if (hlsUrl) {
+    if (!el || (!track && !useBufferedLive)) return;
+    if (useBufferedLive && hlsUrl) {
       let hls: Hls | null = null;
+      let stallTimer: ReturnType<typeof setTimeout> | null = null;
+      const fallback = () => {
+        if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+        setBufferedLiveWebrtcSubscribed(true);
+        setHlsFailed(true);
+      };
+      const onPlaying = () => {
+        if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+        // Release the duplicate WebRTC live only after the buffered player proves it is rendering.
+        setBufferedLiveWebrtcSubscribed(false);
+      };
+      const onWaiting = () => {
+        if (stallTimer) clearTimeout(stallTimer);
+        stallTimer = setTimeout(fallback, 8_000);
+      };
+      el.addEventListener('playing', onPlaying);
+      el.addEventListener('waiting', onWaiting);
       if (el.canPlayType('application/vnd.apple.mpegurl')) {
         el.src = hlsUrl;
       } else if (Hls.isSupported()) {
@@ -134,8 +156,7 @@ export const FeedCard = memo(function FeedCard({
         hls.attachMedia(el);
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal) return;
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls?.startLoad();
-          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls?.recoverMediaError();
+          fallback();
         });
       }
       const play = () => el.play().catch(() => { reportAudioBlocked(); });
@@ -143,6 +164,9 @@ export const FeedCard = memo(function FeedCard({
       const unregister = registerAudioEl(() => el.play());
       return () => {
         unregister();
+        if (stallTimer) clearTimeout(stallTimer);
+        el.removeEventListener('playing', onPlaying);
+        el.removeEventListener('waiting', onWaiting);
         hls?.destroy();
         el.removeAttribute('src');
         el.load();
@@ -167,14 +191,14 @@ export const FeedCard = memo(function FeedCard({
       if (lkTrack && !isLocal) lkTrack.detach(el);
       else el.srcObject = null;
     };
-  }, [track, lkTrack, audioTrack, hlsUrl, isLocal, isPoppedOut]);
+  }, [track, lkTrack, audioTrack, hlsUrl, useBufferedLive, isLocal, isPoppedOut]);
 
   useEffect(() => {
     if (videoRef.current) {
-      videoRef.current.muted = !!isLocal || (!audioTrack && !hlsUrl) || audioMuted;
+      videoRef.current.muted = !!isLocal || (!audioTrack && !useBufferedLive) || audioMuted;
       videoRef.current.volume = audioVolume;
     }
-  }, [isLocal, audioTrack, hlsUrl, audioMuted, audioVolume]);
+  }, [isLocal, audioTrack, useBufferedLive, audioMuted, audioVolume]);
 
   useEffect(() => {
     // The PiP portal mounts its own FeedCard for this track. Let that visible instance own the
@@ -454,7 +478,7 @@ export const FeedCard = memo(function FeedCard({
           )}
         </div>
       )}
-      {(track || hlsUrl) ? (
+      {(track || useBufferedLive) ? (
         // No CSS `filter` on the <video>: a drop-shadow forces the browser to run a filter pass on
         // EVERY decoded frame and drops the element out of the zero-copy video overlay path — it
         // was the single most expensive thing on screen (N tiles × 30fps of GPU work, fans + battery).
@@ -463,7 +487,7 @@ export const FeedCard = memo(function FeedCard({
           ref={videoRef}
           autoPlay
           playsInline
-          muted={isLocal || (!audioTrack && !hlsUrl) || audioMuted}
+          muted={isLocal || (!audioTrack && !useBufferedLive) || audioMuted}
           className={`${isPoppedOut ? 'absolute inset-0 opacity-0 pointer-events-none' : 'w-full h-full'} object-contain ${mirror ? 'scale-x-[-1]' : ''}`}
         />
       ) : !isPoppedOut ? (

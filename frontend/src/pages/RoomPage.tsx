@@ -791,7 +791,7 @@ export function RoomPage() {
 
       items.push({
         id: key, track: consumer?.track ?? null, lkTrack: consumer?.lkTrack,
-        audioTrack: !isMine && consumer && !consumer.hlsUrl ? audioByDevice.get(key) : undefined,
+        audioTrack: !isMine && consumer ? audioByDevice.get(key) : undefined,
         audioKey: !isMine ? key : undefined,
         hlsUrl: consumer?.hlsUrl,
         label: isMine

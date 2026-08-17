@@ -67,7 +67,9 @@ export const useRoomStore = create<RoomState>((set) => ({
     })),
 
   addConsumer: (consumer) =>
-    set((s) => ({ consumers: [...s.consumers, consumer] })),
+    set((s) => ({
+      consumers: [...s.consumers.filter((c) => c.consumerId !== consumer.consumerId), consumer],
+    })),
   removeConsumer: (consumerId) =>
     set((s) => ({ consumers: s.consumers.filter((c) => c.consumerId !== consumerId) })),
   removeConsumersByProducerId: (producerId) =>

@@ -12,6 +12,7 @@ import {
 import { LIVEKIT_URL } from '../config/constants';
 import { useRoomStore } from '../stores/roomStore';
 import type { ConsumerInfo } from '../types/room';
+import { isNativeShell } from './native';
 
 // Phones can't sustain a 1080p uplink and mobile Chrome's H.264 simulcast is unreliable
 // (often only the lowest layer is actually sent → blocky). So phones publish a single
@@ -130,12 +131,6 @@ function onTrackSubscribed(track: RemoteTrack, pub: RemoteTrackPublication, part
   // see the note above resyncLivePlayout.
   if (userId === 'obs') liveTracks.add(track);
   const meta = metaOf(participant);
-  // Buffered live carries audio+video together through HLS. Do not create a second WebRTC audio
-  // sink; it would echo. Keep the video publication just long enough to discover/render the tile.
-  if (userId === 'obs' && meta.hlsUrl && track.kind === Track.Kind.Audio) {
-    window.setTimeout(() => { void pub.setSubscribed(false); }, 1000);
-    return;
-  }
   if (track.kind === Track.Kind.Audio) {
     console.info('[livekit] audio subscribed', { from: `${userId}:${deviceId}`, trackSid: pub.trackSid });
   }
@@ -154,10 +149,16 @@ function onTrackSubscribed(track: RemoteTrack, pub: RemoteTrackPublication, part
     source: sourceOf(pub),
     lkTrack: track,
   });
-  if (userId === 'obs' && meta.hlsUrl && track.kind === Track.Kind.Video) {
-    // HLS needs a few seconds to expose its first playlist. Then stop downloading the duplicate
-    // 3.5Mbps WebRTC live; participant camera tracks remain subscribed in real time.
-    window.setTimeout(() => { void pub.setSubscribed(false); }, 12_000);
+}
+
+/** Switch only OBS/browser-live publications between buffered HLS and the WebRTC safety path. */
+export function setBufferedLiveWebrtcSubscribed(subscribed: boolean): void {
+  if (!room) return;
+  for (const participant of room.remoteParticipants.values()) {
+    if (!participant.identity.startsWith('obs:')) continue;
+    for (const pub of participant.trackPublications.values()) {
+      try { pub.setSubscribed(subscribed); } catch { /* publication may have just ended */ }
+    }
   }
 }
 
@@ -342,6 +343,17 @@ export async function publishTrack(
   if (!room || room.state !== 'connected') return null;
 
   if (source === 'microphone') {
+    // Web Audio contexts can be suspended by Chrome/Safari while another tab or a PiP window is
+    // active. Publishing the native mic track directly keeps capture alive in the background.
+    // The desktop shell is exempt because it owns the process lifecycle and keeps its graph live.
+    if (!isNativeShell()) {
+      const pub = await room.localParticipant.publishTrack(track, {
+        source: Track.Source.Microphone,
+        name: 'microphone',
+      });
+      console.info('[livekit] raw browser mic published', { trackSid: pub.trackSid });
+      return pub.trackSid;
+    }
     // Route the mic through source → gain → destination so the noise gate fades the SENT audio
     // with the gain node (no publication mute glitch). Publish the destination's track.
     const ctx = ensureMicCtx();
