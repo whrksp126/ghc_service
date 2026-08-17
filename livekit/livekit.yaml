@@ -5,8 +5,8 @@
 # Ports (must be forwarded on the home router):
 #   7880/tcp   signaling (WS) — proxied by nginx as ghc-api.ghmate.com/livekit
 #   40100/udp  WebRTC media — top of the already-forwarded 40000-40100 range, so no new
-#              router rule is needed. coturn shares the range but allocates from 40000 up,
-#              so it effectively never reaches 40100.
+#              router rule is needed. coturn is capped at 40099, leaving 40100 exclusively
+#              to LiveKit; the two processes must never share this UDP port.
 port: 7880
 
 # Shared with the ingress service so OBS RTMP streams can be routed into rooms. Loopback
