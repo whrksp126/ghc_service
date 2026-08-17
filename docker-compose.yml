@@ -144,6 +144,7 @@ services:
       LIVEKIT_RTMP_TARGET: rtmp://127.0.0.1:1936
     volumes:
       - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+      - ./mediamtx/relay-live.sh:/relay-live.sh:ro
     depends_on:
       - ingress
     mem_limit: 512m

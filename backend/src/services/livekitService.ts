@@ -132,13 +132,13 @@ function ingressVideoOptions(): IngressVideoOptions {
 }
 
 function ingressParticipantMetadata(displayName: string, streamKey?: string): string {
-  const hlsBase = (process.env.HLS_PUBLIC_BASE_URL || 'https://ghc-api.ghmate.com/hls').replace(/\/$/, '');
+  const masterBase = (process.env.HLS_MASTER_BASE_URL || 'https://ghc-api.ghmate.com/api/live').replace(/\/$/, '');
   return JSON.stringify({
     nickname: displayName,
     deviceLabel: 'OBS',
     // The key is an unguessable LiveKit ingress UUID. Room subscribers use it to switch only the
     // live tile from WebRTC to the 10-second buffered HLS path; participant cameras stay WebRTC.
-    hlsUrl: streamKey ? `${hlsBase}/x/${encodeURIComponent(streamKey)}/index.m3u8` : undefined,
+    hlsUrl: streamKey ? `${masterBase}/${encodeURIComponent(streamKey)}/master.m3u8` : undefined,
   });
 }
 

@@ -18,8 +18,11 @@ hlsMuxerCloseAfter: 60s
 
 pathDefaults:
   source: publisher
-  runOnReady: ffmpeg -nostdin -loglevel warning -rtsp_transport tcp -i rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH -map 0 -c copy -f flv $LIVEKIT_RTMP_TARGET/$MTX_PATH
-  runOnReadyRestart: true
 
 paths:
-  all_others:
+  # Original browser-live input. G1 is the unguessable LiveKit stream key.
+  "~^x/(.+)$":
+    runOnReady: sh /relay-live.sh
+    runOnReadyRestart: true
+  # Server-generated 720p safety layer. No hook here, otherwise it would recursively relay itself.
+  "~^abr/(.+)$":

@@ -242,6 +242,26 @@ router.patch('/rooms/:slug', authMiddleware, async (req, res) => {
 });
 
 // --- OBS live broadcast (RTMP ingress) — owner only -----------------------------------
+// Public ABR master playlist. The stream key is an unguessable UUID disclosed only in the room's
+// LiveKit participant metadata. Both variant playlists remain served by MediaMTX through nginx.
+router.get('/live/:streamKey/master.m3u8', (req, res) => {
+  const key = String(req.params.streamKey);
+  if (!/^[A-Za-z0-9_-]{16,200}$/.test(key)) return res.status(400).send('invalid stream key');
+  const hlsBase = (process.env.HLS_PUBLIC_BASE_URL || 'https://ghc-api.ghmate.com/hls').replace(/\/$/, '');
+  const encoded = encodeURIComponent(key);
+  res.type('application/vnd.apple.mpegurl');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send([
+    '#EXTM3U',
+    '#EXT-X-VERSION:3',
+    '#EXT-X-STREAM-INF:BANDWIDTH=2000000,AVERAGE-BANDWIDTH=1900000,RESOLUTION=1280x720,FRAME-RATE=30.000,CODECS="avc1.64001f,mp4a.40.2"',
+    `${hlsBase}/abr/${encoded}/index.m3u8`,
+    '#EXT-X-STREAM-INF:BANDWIDTH=4800000,AVERAGE-BANDWIDTH=4660000,RESOLUTION=1920x1080,FRAME-RATE=30.000,CODECS="avc1.640028,mp4a.40.2"',
+    `${hlsBase}/x/${encoded}/index.m3u8`,
+    '',
+  ].join('\n'));
+});
+
 // Returns the RTMP server URL + stream key for the room owner to paste into OBS. The
 // ingress publishes into the room as an "OBS 라이브" participant.
 router.post('/rooms/:slug/ingress', authMiddleware, async (req, res) => {
