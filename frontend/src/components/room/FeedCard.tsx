@@ -128,19 +128,24 @@ export const FeedCard = memo(function FeedCard({
     if (useBufferedLive && hlsUrl) {
       let hls: Hls | null = null;
       let stallTimer: ReturnType<typeof setTimeout> | null = null;
-      const fallback = () => {
+      let alive = true;
+      const fallback = async () => {
         if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
-        setBufferedLiveWebrtcSubscribed(true);
-        setHlsFailed(true);
+        // Keep the last HLS frame visible until the replacement WebRTC video is actually ready.
+        // Switching state first caused the long-lived black tile reported by weaker viewers.
+        const ready = await setBufferedLiveWebrtcSubscribed(true);
+        if (alive && ready) setHlsFailed(true);
       };
       const onPlaying = () => {
         if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
         // Release the duplicate WebRTC live only after the buffered player proves it is rendering.
-        setBufferedLiveWebrtcSubscribed(false);
+        void setBufferedLiveWebrtcSubscribed(false);
       };
       const onWaiting = () => {
         if (stallTimer) clearTimeout(stallTimer);
-        stallTimer = setTimeout(fallback, 8_000);
+        // A 10–12s live buffer is expected to wait briefly while refilling. Only abandon HLS after
+        // a sustained 20s stall; hls.js keeps retrying fragments during this window.
+        stallTimer = setTimeout(() => { void fallback(); }, 20_000);
       };
       el.addEventListener('playing', onPlaying);
       el.addEventListener('waiting', onWaiting);
@@ -149,17 +154,21 @@ export const FeedCard = memo(function FeedCard({
       } else if (Hls.isSupported()) {
         hls = new Hls({
           lowLatencyMode: false,
-          liveSyncDuration: 10,
-          liveMaxLatencyDuration: 24,
-          maxBufferLength: 30,
+          liveSyncDuration: 12,
+          liveMaxLatencyDuration: 35,
+          maxBufferLength: 45,
+          maxMaxBufferLength: 60,
           backBufferLength: 30,
+          manifestLoadingMaxRetry: 10,
+          levelLoadingMaxRetry: 10,
+          fragLoadingMaxRetry: 10,
           enableWorker: true,
         });
         hls.loadSource(hlsUrl);
         hls.attachMedia(el);
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal) return;
-          fallback();
+          void fallback();
         });
       }
       const play = () => el.play().catch(() => { reportAudioBlocked(); });
@@ -167,6 +176,7 @@ export const FeedCard = memo(function FeedCard({
       const unregister = registerAudioEl(() => el.play());
       return () => {
         unregister();
+        alive = false;
         if (stallTimer) clearTimeout(stallTimer);
         el.removeEventListener('playing', onPlaying);
         el.removeEventListener('waiting', onWaiting);

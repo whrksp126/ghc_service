@@ -110,6 +110,7 @@ function sourceOf(pub: RemoteTrackPublication): ConsumerInfo['source'] {
 
 /** Currently-subscribed live tracks. Kept so a resync can reach all of them (video + audio). */
 const liveTracks = new Set<RemoteTrack>();
+const bufferedLiveVideoWaiters = new Set<(ready: boolean) => void>();
 
 /**
  * "싱크" (the browser-live toolbar button) — drop whatever each viewer has queued for the live and
@@ -131,6 +132,10 @@ function onTrackSubscribed(track: RemoteTrack, pub: RemoteTrackPublication, part
   // see the note above resyncLivePlayout.
   if (userId === 'obs') liveTracks.add(track);
   const meta = metaOf(participant);
+  if (userId === 'obs' && track.kind === Track.Kind.Video) {
+    for (const resolve of bufferedLiveVideoWaiters) resolve(true);
+    bufferedLiveVideoWaiters.clear();
+  }
   if (track.kind === Track.Kind.Audio) {
     console.info('[livekit] audio subscribed', { from: `${userId}:${deviceId}`, trackSid: pub.trackSid });
   }
@@ -152,14 +157,26 @@ function onTrackSubscribed(track: RemoteTrack, pub: RemoteTrackPublication, part
 }
 
 /** Switch only OBS/browser-live publications between buffered HLS and the WebRTC safety path. */
-export function setBufferedLiveWebrtcSubscribed(subscribed: boolean): void {
-  if (!room) return;
+export function setBufferedLiveWebrtcSubscribed(subscribed: boolean): Promise<boolean> {
+  if (!room) return Promise.resolve(false);
+  let alreadyReady = false;
   for (const participant of room.remoteParticipants.values()) {
     if (!participant.identity.startsWith('obs:')) continue;
     for (const pub of participant.trackPublications.values()) {
+      if (subscribed && pub.kind === Track.Kind.Video && pub.isSubscribed && pub.track) alreadyReady = true;
       try { pub.setSubscribed(subscribed); } catch { /* publication may have just ended */ }
     }
   }
+  if (!subscribed || alreadyReady) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    const done = (ready: boolean) => {
+      clearTimeout(timeout);
+      bufferedLiveVideoWaiters.delete(done);
+      resolve(ready);
+    };
+    const timeout = window.setTimeout(() => done(false), 8_000);
+    bufferedLiveVideoWaiters.add(done);
+  });
 }
 
 function onTrackUnsubscribed(track: RemoteTrack, pub: RemoteTrackPublication) {

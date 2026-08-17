@@ -9,7 +9,9 @@ hlsAddress: :8888
 hls: true
 hlsAlwaysRemux: true
 hlsVariant: mpegts
-hlsSegmentCount: 12
+# Keep ~40 seconds server-side (actual segment boundary follows the broadcaster's 2s GOP).
+# The player stays ~12s behind; the extra history lets it refill after a longer network wobble.
+hlsSegmentCount: 20
 hlsSegmentDuration: 2s
 hlsSegmentMaxSize: 50M
 hlsMuxerCloseAfter: 60s
