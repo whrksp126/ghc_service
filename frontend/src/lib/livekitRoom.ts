@@ -190,6 +190,20 @@ function onTrackUnsubscribed(track: RemoteTrack, pub: RemoteTrackPublication) {
   }
 }
 
+function onTrackUnpublished(pub: RemoteTrackPublication, participant: RemoteParticipant) {
+  // Unsubscribed can be our intentional HLS handoff, so it preserves the live tile. Unpublished
+  // means the publisher actually stopped: remove the consumer so FeedCard unmounts and destroys
+  // its HLS/audio state. A later broadcast with the reused stream key then starts completely fresh.
+  useRoomStore.getState().removeConsumer(pub.trackSid);
+  for (const track of liveTracks) {
+    if (track.sid === pub.trackSid) liveTracks.delete(track);
+  }
+  if (participant.identity.startsWith('obs:') && pub.kind === Track.Kind.Video) {
+    for (const resolve of bufferedLiveVideoWaiters) resolve(false);
+    bufferedLiveVideoWaiters.clear();
+  }
+}
+
 export function getLivekitRoom(): Room | null {
   return room;
 }
@@ -242,6 +256,7 @@ export async function connectToRoom(token: string, iceServers?: RTCIceServer[]):
 
   r.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
   r.on(RoomEvent.TrackUnsubscribed, onTrackUnsubscribed);
+  r.on(RoomEvent.TrackUnpublished, onTrackUnpublished);
   r.on(RoomEvent.ParticipantDisconnected, (p: RemoteParticipant) => {
     for (const pub of p.trackPublications.values()) {
       useRoomStore.getState().removeConsumer(pub.trackSid);
