@@ -11,7 +11,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   const res = await fetch(`${API_URL}${path}`, { ...options, headers });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  if (!res.ok) {
+    // An expired/revoked session must not linger as a logged-in-looking UI whose every socket
+    // call fails: clearing the auth state routes the app to /login (ProtectedRoute). Guarded on
+    // `token` because a 401 from the login endpoint itself just means wrong credentials.
+    if (res.status === 401 && token) useAuthStore.getState().logout();
+    throw new Error(data.error || 'Request failed');
+  }
   return data;
 }
 

@@ -6,7 +6,11 @@ import { getSocket, disconnectSocket } from '../lib/socket';
 import { useBackgroundCamera } from '../services/backgroundCamera';
 import { setupPreviewStreamer, setupCameraChangeListener, cleanupAllOutgoing } from '../services/previewStream';
 
-let initialized = false;
+/** Which credentials the global listeners were wired up for. Keyed (not a plain boolean) because
+ *  a re-login mints a new token and lib/socket rebuilds the socket for it — the listeners below
+ *  live on the OLD instance and must be registered again. With a boolean, a re-login left the app
+ *  holding a socket nobody listened to, and every room join failed with "Socket not connected". */
+let initializedFor: string | null = null;
 
 /**
  * Should this device hold the camera open the whole time it's logged in?
@@ -26,17 +30,28 @@ const CAMERA_STANDBY = /Mobi|Android|iPhone|iPad|iPod/i.test(
 
 /** Unsubscribe for the camera-active broadcaster; torn down on logout with the socket. */
 let unsubCameraActive: (() => void) | null = null;
+/** Unsubscribe for the camera-change → outgoing-preview relay (same lifecycle). */
+let unsubCameraChange: (() => void) | null = null;
 
 export function useGlobalSocket() {
   const token = useAuthStore((s) => s.token);
   const deviceId = useAuthStore((s) => s.deviceId);
   const bgCamera = useBackgroundCamera();
 
-  // Initialize on login
+  // Initialize on login (and re-initialize when the session's credentials change)
   useEffect(() => {
-    if (!token || initialized) return;
-    initialized = true;
+    if (!token) return;
+    const authKey = `${token}|${deviceId ?? ''}`;
+    if (initializedFor === authKey) return;
+    initializedFor = authKey;
+    // Drop the previous session's store subscriptions before re-registering, so a re-login doesn't
+    // stack duplicate broadcasters.
+    unsubCameraActive?.();
+    unsubCameraActive = null;
+    unsubCameraChange?.();
+    unsubCameraChange = null;
 
+    // Rebuilt here when the credentials changed (see lib/socket getSocket).
     const socket = getSocket();
     const { fetchCameras } = useCameraStore.getState();
 
@@ -121,16 +136,18 @@ export function useGlobalSocket() {
     });
 
     setupPreviewStreamer();
-    setupCameraChangeListener();
+    unsubCameraChange = setupCameraChangeListener();
     fetchCameras(deviceId);
-  }, [token]);
+  }, [token, deviceId]);
 
   // Cleanup on logout
   useEffect(() => {
-    if (!token && initialized) {
-      initialized = false;
+    if (!token && initializedFor) {
+      initializedFor = null;
       unsubCameraActive?.();
       unsubCameraActive = null;
+      unsubCameraChange?.();
+      unsubCameraChange = null;
       useAlwaysOnCamera.getState().stop();
       cleanupAllOutgoing();
       disconnectSocket();
