@@ -24,8 +24,13 @@ async function main() {
         : true,
       credentials: true,
     },
-    pingInterval: 10000,
-    pingTimeout: 5000,
+    // Socket.IO defaults. The previous 10s/5s pair was aggressive enough that ordinary jitter
+    // (a Cloudflare-proxied desktop, a briefly busy renderer) read as death: prod logs showed
+    // clients being dropped with "ping timeout" mid-call and immediately reconnecting, each churn
+    // re-running room:join. Slower liveness detection (~45s worst case, then GRACE_MS) is the
+    // right trade against dropping healthy calls.
+    pingInterval: 25000,
+    pingTimeout: 20000,
   });
 
   // Socket handlers (media is handled by the external LiveKit SFU)
