@@ -12,7 +12,7 @@ import { VoiceBars } from '../common/VoiceBars';
 import { showToast } from '../common/Toast';
 import { BottomSheet } from '../common/BottomSheet';
 import { useActiveTile } from '../../stores/activeTileStore';
-import { registerAudioEl, reportAudioBlocked } from '../../lib/audioUnlock';
+import { registerAudioEl, playTracked } from '../../lib/audioUnlock';
 import Hls from 'hls.js';
 import { setBufferedLiveWebrtcSubscribed } from '../../lib/livekitRoom';
 
@@ -171,7 +171,7 @@ export const FeedCard = memo(function FeedCard({
           void fallback();
         });
       }
-      const play = () => el.play().catch(() => { reportAudioBlocked(); });
+      const play = () => playTracked(el).catch(() => {});
       void play();
       const unregister = registerAudioEl(() => el.play());
       return () => {
@@ -195,7 +195,7 @@ export const FeedCard = memo(function FeedCard({
     if (audioTrack && stream && !stream.getAudioTracks().some((t) => t.id === audioTrack.id)) {
       stream.addTrack(audioTrack);
     }
-    const play = () => el.play().catch(() => { reportAudioBlocked(); });
+    const play = () => playTracked(el).catch(() => {});
     void play();
     const unregister = audioTrack ? registerAudioEl(() => el.play()) : () => {};
     return () => {

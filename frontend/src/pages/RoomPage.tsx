@@ -31,7 +31,7 @@ import { MobileCompositePip } from '../components/room/MobileCompositePip';
 import { ObsBroadcastModal } from '../components/room/ObsBroadcastModal';
 import { LiveControlModal } from '../components/room/LiveControlModal';
 import { isNativeShell, nativeBridge } from '../lib/native';
-import { useAudioUnlock, registerAudioEl, reportAudioBlocked, unlockAllAudio } from '../lib/audioUnlock';
+import { useAudioUnlock, registerAudioEl, playTracked, unlockAllAudio } from '../lib/audioUnlock';
 import { Button } from '../components/common/Button';
 import { showToast } from '../components/common/Toast';
 import { Mic, MicOff, Video, VideoOff, Users, Power, Volume2, VolumeX, SwitchCamera } from 'lucide-react';
@@ -58,9 +58,9 @@ function RemoteAudio({ track, voiceKey }: { track: MediaStreamTrack; voiceKey: s
     // refresh, or strict Android Chrome) → silent video-only. <audio autoPlay> alone won't
     // recover. Explicitly play; if rejected, surface the global "tap to enable sound" banner.
     // Also retry on any interaction (incl. touchend/click for mobile) so a tap anywhere unblocks.
-    const play = () => Promise.resolve(el?.play()).catch((e) => { reportAudioBlocked(); throw e; });
+    const play = () => (el ? playTracked(el) : Promise.resolve());
     play().catch(() => {});
-    const tryPlay = () => { el?.play().catch(() => {}); };
+    const tryPlay = () => { play().catch(() => {}); };
     const events: Array<keyof DocumentEventMap> = ['pointerdown', 'keydown', 'touchend', 'click'];
     events.forEach((ev) => document.addEventListener(ev, tryPlay));
     const unregister = registerAudioEl(() => el?.play());
