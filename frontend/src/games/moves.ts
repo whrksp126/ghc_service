@@ -1,5 +1,5 @@
 import { canPick } from './shisen/engine';
-import { EMPTY, LOCKED, MYSTERY, WALL } from './types';
+import { EMPTY, MYSTERY, WALL, isLock } from './types';
 
 export interface MoveView {
   cells: number[]; cols: number; rows: number; nextNumber: number; keysLeft: number;
@@ -13,7 +13,7 @@ export function countMoves(view: MoveView): number {
   const groups = new Map<number, number[]>();
   for (let i = 0; i < view.cells.length; i++) {
     const v = view.cells[i];
-    if (v === EMPTY || v === WALL || v === LOCKED || v === MYSTERY) continue;
+    if (v === EMPTY || v === WALL || isLock(v) || v === MYSTERY) continue;
     const list = groups.get(v);
     if (list) list.push(i); else groups.set(v, [i]);
   }

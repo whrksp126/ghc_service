@@ -27,6 +27,7 @@ const optionsSchema = z
     boardSize: z.enum(['s', 'm', 'l']),
     mapShape: z.enum(['random', 'rect', 'diamond', 'frame', 'towers', 'pyramid', 'cross', 'blob']),
     specials: specialsSchema,
+    difficulty: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]),
     items: z.boolean(),
     timeLimitSec: z.number().int().min(0).max(3600),
   })
@@ -46,7 +47,7 @@ const updateOptionsSchema = z.object({
   options: optionsSchema.optional(),
 });
 
-const revealSchema = z.object({ idx: z.number().int().min(0).max(4095) });
+const peekSchema = z.object({ idx: z.number().int().min(0).max(4095) });
 
 const pickSchema = z.object({
   a: z.number().int().min(0).max(4095),
@@ -163,17 +164,32 @@ export function registerGameHandlers(io: Server, socket: Socket, ctx: GameHandle
     socket.to(slug).emit('game:peerSelect', { userId: user.userId, idx: parsed.data.idx });
   });
 
-  // 물음표 타일 공개(선택으로 치지 않음)
-  socket.on('game:reveal', (payload: unknown, callback: Ack) => {
+  // 물음표 일회성 엿보기 — 요청자에게만, 서버 상태 불변 (v3 §W1)
+  socket.on('game:peek', (payload: unknown, callback: Ack) => {
     withRoom(
       (slug) => {
-        const parsed = revealSchema.safeParse(payload);
+        const parsed = peekSchema.safeParse(payload);
         if (!parsed.success) return callback?.({ ok: false, reason: 'gone' });
-        callback?.(gameManager.reveal(slug, actor, parsed.data.idx));
+        callback?.(gameManager.peek(slug, actor, parsed.data.idx));
       },
       callback,
       { ok: false, reason: 'phase' }
     );
+  });
+
+  // F2 재배치 / F3 여의봉
+  socket.on('game:shuffle', (_payload: unknown, callback: Ack) => {
+    withRoom((slug) => callback?.(gameManager.useShuffle(slug, actor)), callback, {
+      ok: false,
+      reason: 'phase',
+    });
+  });
+
+  socket.on('game:wand', (_payload: unknown, callback: Ack) => {
+    withRoom((slug) => callback?.(gameManager.useWand(slug, actor)), callback, {
+      ok: false,
+      reason: 'phase',
+    });
   });
 
   socket.on('game:hint', (_payload: unknown, callback: Ack) => {

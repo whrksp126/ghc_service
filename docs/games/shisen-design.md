@@ -157,7 +157,7 @@ export const PLAYER_COLORS = ['#FE2C55', '#25F4EE', '#FACC15', '#A78BFA'];
 | `game:sync` | `{}` | `{ state: GameSnapshot \| null }` | 누구나. 패널 열 때·재접속 시 |
 | `game:create` | `{ gameId, mode, options? }` | `{ state }` | 게임 없을 때. 생성자=host, 자동 플레이어 등록 |
 | `game:join` | `{}` | `{ state }` | phase=lobby, 인원 < 4. 관전자→플레이어 |
-| `game:spectate` | `{}` | `{ state }` | 플레이어→관전자(lobby) / playing 중 플레이어는 **기권**(`players[]`에 남아 보드·점수 계속 표시, 순위 최하위 그룹, 리매치 때 관전자로 이동) |
+| `game:spectate` | `{}` | `{ state }` | 플레이어→관전자(lobby) / playing 중 플레이어는 **기권**(`players[]`에 남아 보드·점수 계속 표시, 순위 최하위 그룹. 리매치하면 기권 표시가 풀리고 **그대로 다음 판 플레이어**로 남는다 — 빠지려면 로비에서 다시 `game:spectate`) |
 | `game:updateOptions` | `{ mode?, options? }` | `{ state }` | host, lobby |
 | `game:start` | `{}` | `{ state }` | host, lobby, 플레이어 ≥ 1 (혼자 연습 허용) |
 | `game:pick` | `{ a: number, b: number }` | `{ ok: true, path: Point[] } \| { ok: false, reason }` | playing 플레이어. reason: `'same'`,`'symbol'`,`'gone'`,`'nopath'`,`'frozen'`,`'phase'` |
@@ -447,3 +447,65 @@ previewMask(options, seed, sizeOverride?): boolean[]   // 로비 썸네일용(�
 - [x] 테마 배경(night/wood/stone), 상아색 타일, 콤보 팝/플로팅 점수(연출은 스크린샷 정지 프레임으로 부분 확인)
 - [ ] 사운드 v2 실청취, 4인 동시, 모바일에서 `크게` 판은 타일이 작음(폭 맞춤) — 작게/보통 권장
 - 부수 수정: 보드 크롭 캐시가 다음 판을 잘라내던 버그, 테마 배경이 헤더를 덮던 z-index, 경로 스파클 circle 초기 cx 미지정
+
+---
+
+# v3 — 넷마블 사천성 수준 고도화 (2026-09-23 새벽, 구현 계약)
+
+사용자 피드백: 물음표는 클릭 시 **일회성 엿보기**(연결 실패하면 다시 숨김) / 초반에 같은 타일이 바로 옆에 붙어 너무 쉬움 → **난이도 설정** / 자물쇠 **종류(색)별 열쇠** / 리듬게임처럼 **화려한 콤보 연출** / 게임 방 안에 **게임 팩 여러 개**, 사천성 팩은 **넷마블 사천성** 방·인게임 UI 수준으로.
+
+## W1. 규칙 변경
+- **물음표(엿보기)**: `game:peek {idx}` → ack `{ ok:true, symbol }` (요청자에게만, 브로드캐스트 없음, 서버 상태 불변). 클라는 그 타일을 **첫 선택 상태로** 심볼을 보여 준다. 두 번째 선택이 성공하면 제거, 실패·선택 해제·다른 타일 선택 시 즉시 다시 `?`로 숨긴다(재클릭하면 다시 엿보기 가능, 횟수 제한 없음). `game:pick`은 숨김 타일도 **허용**(서버는 진실 심볼로 판정) → reason `'hidden'` 삭제. 인접 제거 시 자동 영구 공개(`game:revealed`)는 유지.
+- **난이도** `difficulty: 1|2|3|4|5` (기본 3). 생성기 영향: (a) 심볼 다양성 — 사용 심볼 수 = `clamp(round(tiles/4 × [0.55,0.7,0.85,1,1][d-1]), 6, 28)` (낮을수록 같은 그림이 많아 쉬움); (b) 쌍 배치 거리 — 역재생에서 후보 쌍을 고를 때 가중치 `w = 1 + α·dist` (d=1: α=-0.6 → 붙은 쌍 선호, d=3: 0, d=5: α=+1.2 → 멀고 꺾인 쌍 선호; dist = 맨해튼 거리 + 꺾임 수×2). (c) d≥4는 초기 판에서 **인접한 같은 심볼 쌍의 수를 최대 2개**로 제한(재시도).
+- **자물쇠 종류**: 열쇠 종류 수 `keyTypes` = s:1, m:2, l:3 (옵션 `specials.keys`가 true일 때). 인코딩 `LOCK_BASE=90` → 자물쇠 = `90+k`(k=1..3, 색 보임, 심볼 숨김), `KEY_BASE=100` → 열쇠 = `100+k`. (기존 `LOCKED=98`, `KEY_SYMBOL=100` 폐기.) 열쇠 k쌍 제거 시 그 종류의 자물쇠만 공개 → `game:unlocked { …, keyType:k, tiles }`. `Board.keysLeft` = 남은 열쇠 쌍 수. 역재생 순서 R의 앞 K쌍이 열쇠(k=1..K 순), 자물쇠는 그 뒤 쌍 중 종류별로 균등 배정. 색: k=1 빨강 `#F87171`, 2 파랑 `#60A5FA`, 3 초록 `#4ADE80`.
+- **아이템(소모품, 넷마블식)**: `PlayerState.items: { hint: number; shuffle: number; wand: number }` (레이스 기본 힌트 3·재배치 2·여의봉 1, 쟁탈전은 공유 카운트를 각 플레이어에 미러). `hintsLeft` 필드는 `items.hint`로 대체.
+  - `game:hint` 그대로(F1). 
+  - `game:shuffle`(F2 재배치) → 자기 판(쟁탈전=공유 판) `shuffleNormals` 후 `game:shuffled {cause:'item', userId}`; 콤보 리셋.
+  - `game:wand`(F3 여의봉) → 서버가 규칙상 유효한 쌍 하나를 골라 **제거**(`game:matched` userId=본인, `byItem:'wand'`, 점수 +10 고정, 콤보 리셋).
+  - 잔여 0이면 `{ok:false, reason:'none'}`.
+- 방해 아이템(공격) 규칙은 그대로.
+
+## W2. 타입 변경
+```ts
+export type Difficulty = 1 | 2 | 3 | 4 | 5;
+export interface GameOptions { boardSize; mapShape; specials; difficulty: Difficulty; items: boolean; timeLimitSec: number; }
+export const LOCK_BASE = 90;  export const KEY_BASE = 100;  export const MAX_KEY_TYPES = 3;
+export const isLock = (v) => v > LOCK_BASE && v <= LOCK_BASE + MAX_KEY_TYPES;
+export const isKey  = (v) => v > KEY_BASE  && v <= KEY_BASE  + MAX_KEY_TYPES;
+export const KEY_COLORS = ['#F87171', '#60A5FA', '#4ADE80'];
+export interface PlayerItems { hint: number; shuffle: number; wand: number; }
+PlayerState: hintsLeft 제거 → items: PlayerItems
+UnlockedEvent: + keyType: number
+MatchedEvent: + byItem?: 'wand'
+ShuffledEvent.cause: 'stuck' | 'attack' | 'item'
+PickReason에서 'hidden' 제거
+```
+
+## W3. 게임 방 UI (넷마블 참고, 프론트)
+- **팩 선택 화면**(게임 방 생성 직후, 방장): 카드 그리드 — 사천성(활성), 테트리스(준비 중), 그 외 자리(빈 카드 "곧 추가"). 방장이 팩을 고르면 전원이 해당 팩 방으로 이동(`gameId`). 비방장은 팩 선택 화면에서 "방장이 게임을 고르는 중…" 대기.
+- **사천성 방(로비) 레이아웃** (데스크탑 3컬럼 / 모바일 세로 스택):
+  - 좌: **플레이어 컬럼** — 슬롯 4개 카드(색 아바타 이니셜, 닉네임, 방장 왕관, 오늘 밤 승/판, 준비 상태 점) + 관전자 칩.
+  - 중: **설정 패널** — 상단 "맵 선택 ▸"(맵 썸네일 큰 미리보기 + 모양 그리드 팝오버), "개인전(레이스) / 쟁탈전" 큰 토글, **난이도 ? 1 2 3 4 5** 버튼 열(?=랜덤), 판 크기, 특수 타일, 제한 시간, 방해 아이템, 그리고 크고 붉은 **게임시작!** 버튼(Space 바 힌트). 비방장은 잠금 표시.
+  - 우: **맵 가이드** — 선택된 맵 이름·설명·특수 타일 규칙 설명(물음표=엿보기, 숫자=순서, 자물쇠=같은 색 열쇠, 벽=통과 불가), 미리보기 실루엣.
+  - 하단: **방 로그 스트립**(입장/퇴장/설정 변경/방장 이양 이벤트를 시간순으로, 클라 로컬 생성) + 나가기 / 방 닫기.
+- **인게임 HUD**(넷마블 참고): 상단 카운터 바 — `남은 패 N` · `소거 가능 패 N`(movesLeft) · `F1 힌트 n` · `F2 재배치 n` · `F3 여의봉 n`(클릭 가능 버튼, 키보드 F1/F2/F3, 0이면 회색), 우측 큰 **`N등`**(실시간 순위: 레이스=남은 패 오름차순, 쟁탈전=지운 쌍). 좌측 **플레이어 컬럼**(아바타·닉·남은 패·진행 바·콤보) — 데스크탑에서 미니보드 대신/함께(미니보드는 컬럼 아래 작게), 모바일은 상단 스트립. 중앙 보드. 하단 좁은 상태줄(모드·시간).
+- **콤보 연출(리듬게임식)**: `ComboBurst` — 콤보 ≥2에서 보드 중앙 위에 대형 텍스트 `N COMBO` (3중 레이어: 무지개/골드 그라디언트 채움 + 두꺼운 흰 스트로크 + 진한 그림자, 살짝 기울임), 숫자는 티어마다 커지고(2~3 작게, 4~6 중간, 7+ 크게) 등장 시 0.6→1.15→1 스프링 + 글로우 펄스, 주변 별·하트·다각형 파티클 방사(12~24개, 색 랜덤), 보조 콜아웃 `매치!`(항상) / `콤보!`(≥3) / `대단해요!`(≥6) / `완벽!!`(≥10) 이 다른 각도로 튀어나옴, 콤보 티어 상승 시 화면 가장자리 빛 줄기(레이 스윕). 콤보 끊기면 텍스트가 흔들리며 떨어져 사라짐. reduced-motion이면 텍스트만 짧게.
+- 물음표 엿보기 UI: 클릭 → 카드 뒤집기 150ms로 심볼 표시 + 선택 링; 실패 시 붉은 링과 함께 다시 뒤집혀 `?`.
+- 자물쇠/열쇠 색: `KEY_COLORS`로 자물쇠 테두리·열쇠 배경 색 구분, 해당 색 열쇠 쌍 제거 시 같은 색 자물쇠만 순차 flip.
+
+## W4. 작업 분할
+- **A7 backend**: W1·W2 전부(peek, pick 숨김 허용, 난이도 생성, 색 자물쇠, 아이템 3종), selfcheck(난이도별 인접 동일쌍 수·심볼 수 통계, 색 자물쇠 규칙 재생, 여의봉/재배치 카운트).
+- **B8 frontend**: W2 복제 반영, W3 전부(팩 선택·3컬럼 방·맵 가이드·로그·인게임 HUD·N등·플레이어 컬럼·ComboBurst·엿보기·색 자물쇠·아이템 버튼/F키).
+- **C3 Fable**: E2E 갱신(엿보기 실패 시 재숨김, 색 자물쇠, 여의봉/재배치, 난이도 1 vs 5 인접 동일쌍 수 비교) + 스크린샷 → 배포 + 데스크탑 0.1.27.
+
+## v3 검증 결과 (2026-09-23, Playwright 3계정 자동 플레이 + 스크린샷)
+- [x] 게임 방 만들기 → 팩 선택(사천성) → 넷마블식 3컬럼 방(플레이어 컬럼·설정·맵 가이드·방 기록) → 입장/관전 → 게임시작!
+- [x] 난이도 1~5 반영(초기 판 인접 동일쌍 5→2, 백엔드 100판 통계 25.5→6.3), 옵션 병합 버그 수정
+- [x] 물음표 엿보기: 클릭 시 심볼 표시+선택, 실패/해제 시 즉시 `?`로 복귀(서버 상태 불변)
+- [x] 색 자물쇠·열쇠: 같은 색 열쇠 쌍 제거 시 그 색 자물쇠만 공개, keysLeft/HUD 색 점
+- [x] F1 힌트 / F2 재배치 / F3 여의봉 소모품 카운트·키보드, 쟁탈전 공유 카운트(5/3/2)
+- [x] 인게임 HUD(남은 패·소거 가능 패·아이템·N등·플레이어 컬럼), 관전자 HUD 정리
+- [x] 리듬게임식 콤보 버스트(N COMBO 그라디언트 텍스트·콜아웃·파티클·플로팅 점수)
+- [x] 리매치 시 기권자도 플레이어로 유지(설계 변경), 결과·전적·쟁탈전
+- 부수: 로비 중앙 컬럼이 눌려 게임시작 버튼이 잘리던 레이아웃, 로컬 MySQL `rooms.slug` 유니크 인덱스 중복(sync alter) 정리
+- [ ] 사운드 v2 실청취, 4인 동시, 모바일 `크게` 판 가독성

@@ -8,16 +8,20 @@
 import {
   BOARD_DIMS,
   BoardSize,
+  Difficulty,
   EMPTY,
   GameOptions,
-  KEY_SYMBOL,
-  LOCKED,
+  KEY_BASE,
+  LOCK_BASE,
+  MAX_KEY_TYPES,
   MYSTERY,
   MapShape,
   NUMBER_BASE,
   PickReason,
   Point,
   WALL,
+  isKey,
+  isLock,
   isNormalSymbol,
 } from '../types';
 
@@ -169,11 +173,11 @@ export function countRemaining(cells: number[]): number {
 // --- 규칙 판정 (클라·서버 공용) --------------------------------------------
 
 const isNumberTile = (v: number) => v > NUMBER_BASE;
-/** 지금 고를 수 있는 "종류"의 타일인가 (빈칸·벽·자물쇠·물음표 제외) */
+/** 지금 고를 수 있는 "종류"의 타일인가 (빈칸·벽·자물쇠·아직 안 뒤집힌 물음표 제외) */
 const isPickableValue = (v: number, nextNumber: number) => {
-  if (v <= EMPTY || v === WALL || v === LOCKED || v === MYSTERY) return false;
+  if (v <= EMPTY || v === WALL || v === MYSTERY || isLock(v)) return false;
   if (isNumberTile(v)) return v === NUMBER_BASE + nextNumber;
-  return isNormalSymbol(v) || v === KEY_SYMBOL;
+  return isNormalSymbol(v) || isKey(v);
 };
 
 /**
@@ -189,8 +193,9 @@ export function canPick(view: PickView, a: number, b: number): PickReason | null
   const vb = cells[b];
   if (va === WALL || vb === WALL) return 'wall';
   if (va === EMPTY || vb === EMPTY) return 'gone';
-  if (va === LOCKED || vb === LOCKED) return 'locked';
-  if (va === MYSTERY || vb === MYSTERY) return 'hidden';
+  if (isLock(va) || isLock(vb)) return 'locked';
+  // v3: 물음표는 서버가 진실 심볼로 판정한다. 클라가 아직 엿보지 않은 칸(MYSTERY)은 예측 불가 → 'symbol'.
+  if (va === MYSTERY || vb === MYSTERY) return 'symbol';
   if (va !== vb) return 'symbol';
   if (isNumberTile(va) && va !== NUMBER_BASE + nextNumber) return 'order';
   if (!isPickableValue(va, nextNumber)) return 'symbol';
@@ -236,17 +241,23 @@ export function findAllMoves(view: PickView): [number, number][] {
   return scanMoves(view, false);
 }
 
-/** 진실 cells에 물음표/자물쇠 플레이스홀더를 씌운다(클라 전송용). */
+/**
+ * 진실 cells에 물음표/자물쇠 플레이스홀더를 씌운다(클라 전송용).
+ * locks는 idx → 열쇠 종류(1..MAX_KEY_TYPES) 맵. 자물쇠는 LOCK_BASE+k 로 나간다(색만 보임).
+ */
 export function maskForClient(
   cells: number[],
   hidden: Iterable<number>,
-  locked: Iterable<number>
+  locks: ReadonlyMap<number, number>
 ): number[] {
   const out = cells.slice();
-  for (const idx of locked) if (out[idx] > 0) out[idx] = LOCKED;
-  for (const idx of hidden) if (out[idx] > 0 && out[idx] !== LOCKED) out[idx] = MYSTERY;
+  for (const [idx, keyType] of locks) if (out[idx] > 0) out[idx] = LOCK_BASE + keyType;
+  for (const idx of hidden) if (out[idx] > 0 && !isLock(out[idx])) out[idx] = MYSTERY;
   return out;
 }
+
+/** 자물쇠만 씌운 뷰(막힘 검사·movesLeft 용): 물음표는 심볼을 아는 것으로 본다. */
+export const NO_HIDDEN: readonly number[] = [];
 
 /**
  * 일반 심볼(1..28)만 자리끼리 재배치. 벽·열쇠·숫자는 고정, 자물쇠/물음표는 "자리"가 유지되므로
@@ -256,7 +267,7 @@ export function maskForClient(
 export function shuffleNormals(
   view: PickView,
   hidden: ReadonlySet<number>,
-  locked: ReadonlySet<number>,
+  locks: ReadonlyMap<number, number>,
   rng: () => number
 ): number[] {
   const { cells, cols, rows, nextNumber, keysLeft } = view;
@@ -276,11 +287,11 @@ export function shuffleNormals(
     const next = cells.slice();
     for (let i = 0; i < positions.length; i++) next[positions[i]] = shuffled[i];
 
-    const lockedView: PickView = { cells: maskForClient(next, [], locked), cols, rows, nextNumber, keysLeft };
+    const lockedView: PickView = { cells: maskForClient(next, NO_HIDDEN, locks), cols, rows, nextNumber, keysLeft };
     if (!findAnyMove(lockedView)) continue;
     if (!fallback) fallback = next;
     // 물음표까지 가린 상태에서도 수가 보이면 더 좋은 결과
-    const visibleView: PickView = { ...lockedView, cells: maskForClient(next, hidden, locked) };
+    const visibleView: PickView = { ...lockedView, cells: maskForClient(next, hidden, locks) };
     if (findAnyMove(visibleView)) return next;
   }
   return fallback ?? cells.slice();
@@ -469,6 +480,50 @@ const BACKTRACK_DEPTH = 4;
 const MAX_BACKTRACKS = 400;
 const ENDGAME_EMPTIES = 16;
 
+/** 난이도 튜닝 (v3 §W1) */
+const SYMBOL_VARIETY = [0.55, 0.7, 0.85, 1, 1];      // 사용 심볼 수 배율
+const DISTANCE_ALPHA = [-0.6, -0.3, 0, 0.6, 1.2];    // 쌍 배치 거리 가중치
+const HARD_FROM = 4;                                  // d≥4: 붙은 쌍 회피 + 인접 동일쌍 상한
+const MAX_ADJACENT_PAIRS_HARD = 2;
+const HARD_RETRIES = [2, 5];                          // d4 / d5 — 상한을 못 맞추면 그중 제일 좋은 판
+const HARD_TIME_BUDGET_MS = 45;                       // 재시도가 게임 시작을 붙잡지 않도록
+
+export interface DifficultyTuning {
+  alpha: number;
+  endgameAdjacency: boolean;
+  avoidAdjacent: boolean;
+  minimizeAdjacency: boolean;
+  symbolVariety: number;
+  /** 인접 상한을 못 맞췄을 때 다시 만들어 보는 횟수(가장 좋은 판을 쓴다) */
+  hardRetries: number;
+}
+
+export function difficultyTuning(difficulty: Difficulty): DifficultyTuning {
+  const d = Math.min(5, Math.max(1, difficulty)) as Difficulty;
+  return {
+    alpha: DISTANCE_ALPHA[d - 1],
+    endgameAdjacency: d < HARD_FROM,
+    avoidAdjacent: d >= HARD_FROM,
+    minimizeAdjacency: d >= HARD_FROM,
+    symbolVariety: SYMBOL_VARIETY[d - 1],
+    hardRetries: d >= HARD_FROM ? HARD_RETRIES[d - HARD_FROM] : 0,
+  };
+}
+
+/** 초기 판에서 상하좌우로 붙어 있는 같은 심볼 쌍 수 (난이도 지표) */
+export function countAdjacentEqualPairs(cells: number[], cols: number, rows: number): number {
+  let n = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const v = cells[r * cols + c];
+      if (!isNormalSymbol(v)) continue;
+      if (c + 1 < cols && cells[r * cols + c + 1] === v) n++;
+      if (r + 1 < rows && cells[(r + 1) * cols + c] === v) n++;
+    }
+  }
+  return n;
+}
+
 /**
  * 현재 빈칸들 중 "빈칸만 지나서" 이어지는 쌍 하나를 고른다. 반환은 empties 배열 안의 인덱스 쌍.
  *
@@ -483,7 +538,8 @@ function pickConnectablePair(
   empties: number[],
   depth: Int32Array,
   rng: () => number,
-  stuckOut: { cell: number }
+  stuckOut: { cell: number },
+  tuning: DifficultyTuning
 ): [number, number] | null {
   const n = empties.length;
   stuckOut.cell = -1;
@@ -523,22 +579,24 @@ function pickConnectablePair(
     return null;
   }
 
-  // 2) p와 이어지는 후보 전수 열거. 이웃을 고립시키지 않는 "안전한" 후보 우선.
+  // 2) p와 이어지는 후보 전수 열거. 이웃을 고립시키지 않는 "안전한" 후보를 모아
+  //    난이도 가중치(거리)로 뽑는다. 안전한 게 하나도 없으면 아무 후보나.
   const p = empties[pi];
-  let safeCount = 0;
-  let safeKey = Infinity;
+  const pr = (p / w) | 0;
+  const pc = p % w;
+  const maxDist = w + h + 4;
+  const safe: { j: number; weight: number; adjacent: boolean }[] = [];
   let anyCount = 0;
-  let adjCount = 0;
-  let safeQi = -1;
   let anyQi = -1;
-  let adjQi = -1;
+  let minSafeDepth = Infinity;
   for (let j = 0; j < n; j++) {
     if (j === pi) continue;
     const q = empties[j];
-    if (!findPathPadded(free, w, h, p, q)) continue;
+    const path = findPathPadded(free, w, h, p, q);
+    if (!path) continue;
     anyCount++;
     if (rng() * anyCount < 1) anyQi = j;
-    let safe = true;
+    let ok = true;
     for (const c of [p - 1, p + 1, p - w, p + w, q - 1, q + 1, q - w, q + w]) {
       if (c === p || c === q || free[c] !== 1) continue;
       if (depth[c] < 0) continue; // 영구 빈칸(마스크 밖·테두리)은 고립될 일이 없다
@@ -546,28 +604,56 @@ function pickConnectablePair(
       if (c === p - 1 || c === p + 1 || c === p - w || c === p + w) d--;
       if (c === q - 1 || c === q + 1 || c === q - w || c === q + w) d--;
       if (d <= 0) {
-        safe = false;
+        ok = false;
         break;
       }
     }
-    if (safe) {
-      const key = depth[q];
-      if (key < safeKey) {
-        safeKey = key;
-        safeCount = 1;
-        safeQi = j;
-      } else if (key === safeKey) {
-        safeCount++;
-        if (rng() * safeCount < 1) safeQi = j;
-      }
-      const dd = Math.abs(q - p);
-      if (dd === 1 || dd === w) {
-        adjCount++;
-        if (rng() * adjCount < 1) adjQi = j;
-      }
-    }
+    if (!ok) continue;
+    // dist = 맨해튼 거리 + 꺾임 수×2. 0..1로 정규화해 가중치가 음수가 되지 않게 한다.
+    const qr = (q / w) | 0;
+    const qc = q % w;
+    const dist = Math.abs(qr - pr) + Math.abs(qc - pc) + (path.length - 2) * 2;
+    const gap = Math.abs(q - p);
+    const adjacent = gap === 1 || gap === w;
+    const weight = Math.max(0.05, 1 + tuning.alpha * Math.min(1, dist / maxDist));
+    safe.push({ j, weight, adjacent });
+    if (depth[q] < minSafeDepth) minSafeDepth = depth[q];
   }
-  const qi = n <= ENDGAME_EMPTIES && adjQi >= 0 ? adjQi : safeQi >= 0 ? safeQi : anyQi;
+
+  // d≥4: 붙은 쌍은 다른 안전한 후보가 하나도 없을 때만 쓴다(초기 판의 "바로 옆 같은 그림" 최소화).
+  // 끝물에서는 붙은 쌍 말고 선택지가 거의 없어서, 거기까지 막으면 생성이 몇 배로 느려진다 → 제외.
+  if (tuning.avoidAdjacent && n > ENDGAME_EMPTIES && safe.some((c) => !c.adjacent)) {
+    for (let i = safe.length - 1; i >= 0; i--) if (safe[i].adjacent) safe.splice(i, 1);
+  }
+
+  let qi = -1;
+  if (safe.length > 0) {
+    // 바깥쪽(깊이가 얕은) 칸을 먼저 소진하는 성질은 유지하되 절대 우선은 아니게 — 난이도 가중치가 먹히도록.
+    let total = 0;
+    for (const cand of safe) {
+      cand.weight /= 1 + (depth[empties[cand.j]] - minSafeDepth);
+      total += cand.weight;
+    }
+    // 끝물에는 붙은 칸을 우선한다(쉬운 난이도에서만). 판이 거의 꽉 차 긴 경로가 사라지는 구간이라
+    // 이걸 맞춰두면 막다른 길이 거의 없어진다.
+    if (tuning.endgameAdjacency && n <= ENDGAME_EMPTIES) {
+      const adj = safe.filter((c) => c.adjacent);
+      if (adj.length > 0) qi = adj[Math.floor(rng() * adj.length)].j;
+    }
+    if (qi < 0) {
+      let roll = rng() * total;
+      for (const cand of safe) {
+        roll -= cand.weight;
+        if (roll <= 0) {
+          qi = cand.j;
+          break;
+        }
+      }
+      if (qi < 0) qi = safe[safe.length - 1].j;
+    }
+  } else {
+    qi = anyQi;
+  }
   if (qi < 0) {
     stuckOut.cell = p; // 이어지는 짝이 하나도 없는 칸
     return null;
@@ -607,15 +693,18 @@ export interface GenerateV2Options {
   walls: boolean;
   /** 숫자 순서 쌍 수 K (0 = 끄기) */
   numbers: number;
-  keys: boolean;
+  /** 열쇠 종류 수 (0 = 자물쇠/열쇠 끄기). 종류마다 열쇠 1쌍 */
+  keyTypes: number;
   mystery: boolean;
+  difficulty: Difficulty;
 }
 
 export interface GeneratedBoard {
   /** 서버 진실: 숨김/잠금 마스킹 없음 */
   cells: number[];
   hidden: number[];
-  locked: number[];
+  /** [칸, 열쇠 종류] — 그 색 열쇠 쌍을 지우면 풀린다 */
+  locks: [number, number][];
   /** 정방향 제거 순서 R — 이대로 지우면 규칙(순서·잠금 포함)을 지켜도 반드시 풀린다 */
   order: [number, number][];
 }
@@ -679,7 +768,8 @@ function reversePlay(
   rows: number,
   mask: boolean[],
   wallSet: Set<number>,
-  rng: () => number
+  rng: () => number,
+  tuning: DifficultyTuning
 ): [number, number][] | null {
   const w = cols + 2;
   const h = rows + 2;
@@ -711,7 +801,7 @@ function reversePlay(
   const stuckOut = { cell: -1 };
   let backtracks = 0;
   while (empties.length > 0) {
-    const pair = pickConnectablePair(free, w, h, empties, depth, rng, stuckOut);
+    const pair = pickConnectablePair(free, w, h, empties, depth, rng, stuckOut, tuning);
     if (!pair) {
       if (placed.length === 0 || backtracks >= MAX_BACKTRACKS) return null;
       backtracks++;
@@ -768,28 +858,35 @@ function reversePlay(
  * R 순서대로 지우면 순서·잠금 규칙을 지켜도 항상 끝까지 풀린다(자물쇠는 열쇠가 R[0]이라 바로 풀린다).
  */
 export function generateBoardV2(opts: GenerateV2Options, rng: () => number): GeneratedBoard {
-  const { cols, rows, mask, walls, numbers, keys, mystery } = opts;
+  const { cols, rows, mask, walls, numbers, keyTypes, mystery, difficulty } = opts;
+  const tuning = difficultyTuning(difficulty);
+  let best: GeneratedBoard | null = null;
+  let bestAdjacency = Infinity;
+  let hardTries = 0;
+  const startedAt = Date.now();
 
   for (let attempt = 0; attempt < 50; attempt++) {
     const wallList = walls ? placeWalls(mask, cols, rows, rng) : [];
     const wallSet = new Set(wallList);
-    const placed = reversePlay(cols, rows, mask, wallSet, rng);
+    const placed = reversePlay(cols, rows, mask, wallSet, rng, tuning);
     if (!placed) continue;
 
     const order: [number, number][] = placed.slice().reverse(); // 정방향 제거 순서 R
     const cells = new Array<number>(cols * rows).fill(EMPTY);
     for (const idx of wallSet) cells[idx] = WALL;
 
+    // 열쇠: R의 앞 K쌍 (k=1..K 순) → 색깔 자물쇠는 그 뒤 쌍에서 종류별로 배정된다.
+    const keyPairs = Math.max(0, Math.min(keyTypes, MAX_KEY_TYPES, order.length));
     const usedByRule = new Set<number>(); // R 인덱스
-    if (keys && order.length > 0) {
-      const [a, b] = order[0];
-      cells[a] = KEY_SYMBOL;
-      cells[b] = KEY_SYMBOL;
-      usedByRule.add(0);
+    for (let k = 1; k <= keyPairs; k++) {
+      const [a, b] = order[k - 1];
+      cells[a] = KEY_BASE + k;
+      cells[b] = KEY_BASE + k;
+      usedByRule.add(k - 1);
     }
     const numberCount = Math.max(0, Math.min(numbers, order.length - usedByRule.size));
     if (numberCount > 0) {
-      const first = keys ? 1 : 0;
+      const first = keyPairs;
       const span = order.length - first;
       for (let n = 1; n <= numberCount; n++) {
         // R 안에서 균등 간격
@@ -804,27 +901,29 @@ export function generateBoardV2(opts: GenerateV2Options, rng: () => number): Gen
       }
     }
 
-    // 나머지 쌍 = 일반 심볼. 심볼 하나당 2쌍(=4타일)씩, 28종을 순환한다.
+    // 나머지 쌍 = 일반 심볼. 심볼 종류 수는 난이도가 정한다(적을수록 같은 그림이 많아 쉬움).
     const normalPairs: number[] = [];
     for (let i = 0; i < order.length; i++) if (!usedByRule.has(i)) normalPairs.push(i);
+    const tiles = normalPairs.length * 2;
+    const symbolCount = Math.max(
+      6,
+      Math.min(SYMBOL_COUNT, Math.round((tiles / 4) * tuning.symbolVariety))
+    );
     const shuffledPairs = shuffleInPlace(normalPairs.slice(), rng);
-    for (let k = 0; k < shuffledPairs.length; k++) {
-      const symbol = 1 + (Math.floor(k / 2) % SYMBOL_COUNT);
-      const [a, b] = order[shuffledPairs[k]];
-      cells[a] = symbol;
-      cells[b] = symbol;
-    }
+    assignSymbols(cells, order, shuffledPairs, cols, rows, symbolCount, tuning.minimizeAdjacency, rng);
 
-    // 자물쇠: 일반 쌍의 25% (열쇠 쌍 제거로 한 번에 풀린다)
-    const locked: number[] = [];
-    if (keys && shuffledPairs.length > 0) {
+
+    // 자물쇠: 열쇠를 쓴 뒤의 일반 쌍 중 25%를 종류별로 균등 배정
+    const locks: [number, number][] = [];
+    if (keyPairs > 0 && shuffledPairs.length > 0) {
       const lockCount = Math.floor(shuffledPairs.length * LOCK_RATIO);
       for (let k = 0; k < lockCount; k++) {
         const [a, b] = order[shuffledPairs[k]];
-        locked.push(a, b);
+        const keyType = (k % keyPairs) + 1;
+        locks.push([a, keyType], [b, keyType]);
       }
     }
-    const lockedSet = new Set(locked);
+    const lockedSet = new Set(locks.map(([idx]) => idx));
 
     // 물음표: 자물쇠가 아닌 일반 타일의 20%
     const hidden: number[] = [];
@@ -839,8 +938,75 @@ export function generateBoardV2(opts: GenerateV2Options, rng: () => number): Gen
       hidden.sort((a, b) => a - b);
     }
 
-    locked.sort((a, b) => a - b);
-    return { cells, hidden, locked, order };
+    locks.sort((x, y) => x[0] - y[0]);
+    const board: GeneratedBoard = { cells, hidden, locks, order };
+
+    // d≥4는 "붙어 있는 같은 그림"을 상한 이하로. 못 맞추면 몇 번 다시 만들어 그중 제일 좋은 판을 쓴다
+    // (판 구조상 어쩔 수 없이 붙는 쌍이 남는다 — 상한 0은 불가능).
+    if (!tuning.minimizeAdjacency) return board;
+    const adjacency = countAdjacentEqualPairs(cells, cols, rows);
+    if (adjacency <= MAX_ADJACENT_PAIRS_HARD) return board;
+    hardTries++;
+    if (adjacency < bestAdjacency) {
+      bestAdjacency = adjacency;
+      best = board;
+    }
+    if (hardTries >= tuning.hardRetries || Date.now() - startedAt > HARD_TIME_BUDGET_MS) return best!;
   }
+  if (best) return best;
   throw new Error(`generateBoardV2 failed for ${cols}x${rows} after 50 attempts`);
+}
+
+/**
+ * 일반 쌍에 심볼을 배정한다. 심볼 하나당 2쌍(=4타일)씩 symbolCount 종류를 순환.
+ * minimizeAdjacency면 "붙어 있는 같은 심볼"이 최소가 되도록 탐욕 배정한다(어려운 난이도).
+ */
+function assignSymbols(
+  cells: number[],
+  order: [number, number][],
+  pairIdx: number[],
+  cols: number,
+  rows: number,
+  symbolCount: number,
+  minimizeAdjacency: boolean,
+  rng: () => number
+): void {
+  const quota = new Map<number, number>();
+  for (let k = 0; k < pairIdx.length; k++) {
+    const symbol = 1 + (Math.floor(k / 2) % symbolCount);
+    quota.set(symbol, (quota.get(symbol) ?? 0) + 1);
+  }
+  if (!minimizeAdjacency) {
+    for (let k = 0; k < pairIdx.length; k++) {
+      const symbol = 1 + (Math.floor(k / 2) % symbolCount);
+      const [a, b] = order[pairIdx[k]];
+      cells[a] = symbol;
+      cells[b] = symbol;
+    }
+    return;
+  }
+  const neighborsAt = (idx: number) => neighborsOf(idx, cols, rows);
+  for (const pi of pairIdx) {
+    const [a, b] = order[pi];
+    const around = [...neighborsAt(a), ...neighborsAt(b)];
+    let best: number[] = [];
+    let bestCost = Infinity;
+    for (const [symbol, left] of quota) {
+      if (left <= 0) continue;
+      let cost = 0;
+      for (const nb of around) if (nb !== a && nb !== b && cells[nb] === symbol) cost++;
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = [symbol];
+      } else if (cost === bestCost) {
+        best.push(symbol);
+      }
+      if (bestCost === 0 && best.length > 6) break; // 충분히 많이 모였으면 그만
+    }
+    const symbol = best[Math.floor(rng() * best.length)];
+    quota.set(symbol, (quota.get(symbol) ?? 1) - 1);
+    if ((quota.get(symbol) ?? 0) <= 0) quota.delete(symbol);
+    cells[a] = symbol;
+    cells[b] = symbol;
+  }
 }

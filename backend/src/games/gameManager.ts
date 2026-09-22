@@ -20,19 +20,24 @@ import {
   GamePhase,
   GameSnapshot,
   HintAck,
-  KEY_SYMBOL,
+  ItemAck,
+  KEY_BASE,
+  KEY_TYPES_PER_SIZE,
+  MAX_KEY_TYPES,
   MAX_PLAYERS,
-  MapShape,
   NUMBER_BASE,
   PLAYER_COLORS,
   PickAck,
+  PeekAck,
+  PlayerItems,
   PlayerState,
   ResultRow,
-  RevealAck,
   ScoreboardRow,
   SpecialToggles,
+  isKey,
 } from './types';
 import {
+  NO_HIDDEN,
   PickView,
   Shape,
   buildMask,
@@ -57,8 +62,9 @@ export interface GameActor {
 
 export type StateResult = { error: string } | { state: GameSnapshot };
 
-const RACE_HINTS = 3;
-const COOP_HINTS = 5;
+const RACE_ITEMS: PlayerItems = { hint: 3, shuffle: 2, wand: 1 };
+const COOP_ITEMS: PlayerItems = { hint: 5, shuffle: 3, wand: 2 };
+const WAND_SCORE = 10;
 const DISCONNECT_FORFEIT_MS = 30000;
 const ATTACK_COMBO_STEPS = [3, 6, 9];
 const ATTACK_TYPES: AttackType[] = ['freeze', 'fog', 'shuffle'];
@@ -85,14 +91,14 @@ interface ServerBoard {
   cols: number;
   rows: number;
   cells: number[];         // 진실(물음표/자물쇠 마스킹 없음)
-  hidden: Set<number>;     // 물음표로 가려진 칸
-  locked: Set<number>;     // 자물쇠로 가려진 칸
+  hidden: Set<number>;         // 물음표로 가려진 칸(엿보기 가능, 진실 심볼로 판정)
+  locks: Map<number, number>;  // 자물쇠 칸 → 열쇠 종류(1..MAX_KEY_TYPES)
   remaining: number;       // 벽 제외 남은 타일 수
   effects: Effect[];
   shape: Shape;
   nextNumber: number;      // 다음에 지워야 할 숫자(없으면 0)
   maxNumber: number;
-  keysLeft: number;
+  keysLeft: number;            // 남은 열쇠 쌍 수
   movesLeft: number;       // v2.1: 지금 연결 가능한 쌍 수(stuckView 기준)
 }
 
@@ -112,7 +118,7 @@ interface RoomGame {
   results: ResultRow[] | null;
   seq: number;
   rng: () => number;
-  sharedHintsLeft: number;
+  sharedItems: PlayerItems;   // 쟁탈전 공유 카운트
   countdownTimer: ReturnType<typeof setTimeout> | null;
   limitTimer: ReturnType<typeof setTimeout> | null;
   forfeitTimers: Map<string, ReturnType<typeof setTimeout>>;
@@ -155,7 +161,7 @@ function makePlayer(game: RoomGame, actor: GameActor): InternalPlayer {
     maxCombo: 0,
     pairsCleared: 0,
     lastMatchAt: 0,
-    hintsLeft: game.mode === 'coop' ? COOP_HINTS : RACE_HINTS,
+    items: { ...(game.mode === 'coop' ? game.sharedItems : RACE_ITEMS) },
     finishedAt: null,
     connected: true,
     forfeited: false,
@@ -181,7 +187,7 @@ function toPublicPlayer(p: InternalPlayer): PlayerState {
     maxCombo: p.maxCombo,
     pairsCleared: p.pairsCleared,
     lastMatchAt: p.lastMatchAt,
-    hintsLeft: p.hintsLeft,
+    items: { ...p.items },
     finishedAt: p.finishedAt,
     connected: p.connected,
     forfeited: p.forfeited,
@@ -250,21 +256,13 @@ function boardOf(game: RoomGame, p: InternalPlayer): ServerBoard | undefined {
   return game.boards.get(p.boardId);
 }
 
-/** 클라가 보는 판(물음표·자물쇠 마스킹). pick 검증도 이 뷰로 한다 — 그래야 locked/hidden 사유가 나온다. */
-function clientView(board: ServerBoard): PickView {
+/**
+ * 규칙 판정·막힘 검사용 뷰. v3부터 물음표 타일도 **진실 심볼로 판정**하므로(엿보기가 공짜라서)
+ * 자물쇠만 장애물로 씌운다. pick/hint/movesLeft 전부 이 뷰를 쓴다.
+ */
+function ruleView(board: ServerBoard): PickView {
   return {
-    cells: maskForClient(board.cells, board.hidden, board.locked),
-    cols: board.cols,
-    rows: board.rows,
-    nextNumber: board.nextNumber,
-    keysLeft: board.keysLeft,
-  };
-}
-
-/** 막힘 검사용 뷰: 물음표는 "심볼을 아는 상태"로 보고, 자물쇠만 장애물로 본다 (v2 §V3). */
-function stuckView(board: ServerBoard): PickView {
-  return {
-    cells: maskForClient(board.cells, [], board.locked),
+    cells: maskForClient(board.cells, NO_HIDDEN, board.locks),
     cols: board.cols,
     rows: board.rows,
     nextNumber: board.nextNumber,
@@ -277,7 +275,7 @@ function toPublicBoard(b: ServerBoard): Board {
     id: b.id,
     cols: b.cols,
     rows: b.rows,
-    cells: maskForClient(b.cells, b.hidden, b.locked),
+    cells: maskForClient(b.cells, b.hidden, b.locks),
     remaining: b.remaining,
     effects: b.effects.map((e) => ({ ...e })),
     shape: b.shape,
@@ -294,7 +292,7 @@ function boardPatch(b: ServerBoard): BoardPatch {
 
 /** v2.1: 연결 가능 쌍 수를 다시 센다. 판이 바뀔 때마다 호출. */
 function recomputeMoves(board: ServerBoard): number {
-  board.movesLeft = board.remaining > 0 ? findAllMoves(stuckView(board)).length : 0;
+  board.movesLeft = board.remaining > 0 ? findAllMoves(ruleView(board)).length : 0;
   return board.movesLeft;
 }
 
@@ -313,23 +311,30 @@ interface ShuffledPayload {
   seq: number;
   boardId: string;
   cells: number[];
-  cause: 'stuck' | 'attack';
+  cause: 'stuck' | 'attack' | 'item';
   movesLeft: number;
   board: BoardPatch;
+  userId?: string;
 }
 
 /** 일반 심볼만 섞고 seq를 올린 페이로드를 만든다(브로드캐스트는 호출자가 순서를 맞춰서). */
-function shuffleBoard(game: RoomGame, board: ServerBoard, cause: 'stuck' | 'attack'): ShuffledPayload {
-  board.cells = shuffleNormals({ ...stuckView(board), cells: board.cells }, board.hidden, board.locked, game.rng);
+function shuffleBoard(
+  game: RoomGame,
+  board: ServerBoard,
+  cause: 'stuck' | 'attack' | 'item',
+  userId?: string
+): ShuffledPayload {
+  board.cells = shuffleNormals({ ...ruleView(board), cells: board.cells }, board.hidden, board.locks, game.rng);
   recomputeMoves(board);
   game.seq++;
   return {
     seq: game.seq,
     boardId: board.id,
-    cells: maskForClient(board.cells, board.hidden, board.locked),
+    cells: maskForClient(board.cells, board.hidden, board.locks),
     cause,
     movesLeft: board.movesLeft,
     board: boardPatch(board),
+    ...(userId ? { userId } : {}),
   };
 }
 
@@ -541,21 +546,47 @@ function deleteGame(game: RoomGame, notify: boolean): void {
   if (notify) broadcast(game.slug, 'game:state', { state: null });
 }
 
+/** 소모품 1개 사용. 쟁탈전은 공유 카운트라 전원에 미러한다. 남은 게 없으면 false. */
+function consumeItem(game: RoomGame, player: InternalPlayer, kind: keyof PlayerItems): boolean {
+  if (game.mode === 'coop') {
+    if (game.sharedItems[kind] <= 0) return false;
+    game.sharedItems[kind] -= 1;
+    for (const p of game.players.values()) p.items = { ...game.sharedItems };
+    return true;
+  }
+  if (player.items[kind] <= 0) return false;
+  player.items[kind] -= 1;
+  return true;
+}
+
+/** 아이템 사용은 콤보를 끊는다 (v3 §W1). */
+function breakCombo(player: InternalPlayer): void {
+  player.combo = 0;
+  player.lastMatchAt = 0;
+  player.hintBreak = false;
+}
+
+/** 판을 다 지웠을 때의 종료 처리 (pick / 여의봉 공용) */
+function finishBoard(game: RoomGame, player: InternalPlayer): void {
+  if (game.mode === 'race') {
+    player.finishedAt = Date.now();
+    endGame(game, `${player.userId} cleared`); // 레이스는 1등이 나오면 즉시 종료
+  } else {
+    endGame(game, 'coop cleared');
+  }
+}
+
 // --- 옵션 병합 (v2 §V2: 전부 optional, 부분 병합) ----------------------------
 
-export interface OptionsPatch {
-  boardSize?: BoardSize;
-  mapShape?: MapShape;
-  specials?: Partial<SpecialToggles>;
-  items?: boolean;
-  timeLimitSec?: number;
-}
+/** GameOptions 의 모든 필드를 optional 로 — 새 필드를 넣으면 여기와 mergeOptions 둘 다 고칠 것. */
+export type OptionsPatch = Partial<Omit<GameOptions, 'specials'>> & { specials?: Partial<SpecialToggles> };
 
 function mergeOptions(base: GameOptions, patch: OptionsPatch | undefined, mode: GameMode): GameOptions {
   const next: GameOptions = { ...base, specials: { ...base.specials } };
   if (patch) {
     if (patch.boardSize) next.boardSize = patch.boardSize;
     if (patch.mapShape) next.mapShape = patch.mapShape;
+    if (patch.difficulty) next.difficulty = patch.difficulty;
     if (typeof patch.items === 'boolean') next.items = patch.items;
     if (typeof patch.timeLimitSec === 'number') next.timeLimitSec = patch.timeLimitSec;
     if (patch.specials) next.specials = { ...next.specials, ...patch.specials };
@@ -572,6 +603,7 @@ interface TilesPayload {
   tiles: { idx: number; symbol: number }[];
   movesLeft: number;
   board: BoardPatch;
+  keyType?: number;
 }
 
 interface RemovalEffects {
@@ -588,14 +620,14 @@ interface RemovalEffects {
  */
 function applyRemoval(game: RoomGame, board: ServerBoard, a: number, b: number): RemovalEffects {
   const value = board.cells[a];
-  const wasKey = value === KEY_SYMBOL;
+  const keyType = isKey(value) ? value - KEY_BASE : 0;
   const wasNumber = value > NUMBER_BASE;
 
   board.cells[a] = EMPTY;
   board.cells[b] = EMPTY;
   for (const idx of [a, b]) {
     board.hidden.delete(idx);
-    board.locked.delete(idx);
+    board.locks.delete(idx);
   }
   board.remaining -= 2;
 
@@ -613,13 +645,21 @@ function applyRemoval(game: RoomGame, board: ServerBoard, a: number, b: number):
     : null;
 
   let unlocked: TilesPayload | null = null;
-  if (wasKey) {
-    board.keysLeft = 0;
-    if (board.locked.size > 0) {
-      const tiles = [...board.locked].sort((x, y) => x - y).map((idx) => ({ idx, symbol: board.cells[idx] }));
-      board.locked.clear();
+  if (keyType > 0) {
+    board.keysLeft = Math.max(0, board.keysLeft - 1);
+    // 같은 색 자물쇠만 풀린다 (v3 §W1)
+    const freed = [...board.locks.entries()].filter(([, k]) => k === keyType).map(([idx]) => idx);
+    if (freed.length > 0) {
+      for (const idx of freed) board.locks.delete(idx);
       recomputeMoves(board); // 자물쇠가 풀리면 연결 가능 쌍이 늘어난다
-      unlocked = { seq: ++game.seq, boardId: board.id, tiles, movesLeft: board.movesLeft, board: boardPatch(board) };
+      unlocked = {
+        seq: ++game.seq,
+        boardId: board.id,
+        tiles: freed.sort((x, y) => x - y).map((idx) => ({ idx, symbol: board.cells[idx] })),
+        movesLeft: board.movesLeft,
+        board: boardPatch(board),
+        keyType,
+      };
     }
   }
   if (wasNumber) {
@@ -718,8 +758,10 @@ function findBlockerPair(board: ServerBoard): [number, number] | null {
     return null;
   };
   if (board.keysLeft > 0) {
-    const keyPair = pick((v) => v === KEY_SYMBOL);
-    if (keyPair) return keyPair;
+    for (let k = 1; k <= MAX_KEY_TYPES; k++) {
+      const keyPair = pick((v) => v === KEY_BASE + k);
+      if (keyPair) return keyPair;
+    }
   }
   if (board.nextNumber > 0) {
     const numberPair = pick((v) => v === NUMBER_BASE + board.nextNumber);
@@ -771,7 +813,7 @@ export const gameManager = {
       results: null,
       seq: 0,
       rng: mulberry32(newSeed()),
-      sharedHintsLeft: COOP_HINTS,
+      sharedItems: { ...COOP_ITEMS },
       countdownTimer: null,
       limitTimer: null,
       forfeitTimers: new Map(),
@@ -870,9 +912,21 @@ export const gameManager = {
     const t0 = Date.now();
     const shape: Shape = game.options.mapShape === 'random' ? pickShape(game.rng) : game.options.mapShape;
     const numbers = specials.numbers ? NUMBERS_PER_SIZE[game.options.boardSize] : 0;
-    const mask = buildMask(shape, cols, rows, game.rng, specials.keys ? 2 : 0);
+    const keyTypes = specials.keys ? KEY_TYPES_PER_SIZE[game.options.boardSize] : 0;
+    // 일반 심볼이 4타일 단위로 딱 떨어지도록 열쇠 쌍 수만큼 여분을 둔다
+    const wantMod4Plus = ((keyTypes * 2) % 4) as 0 | 2;
+    const mask = buildMask(shape, cols, rows, game.rng, wantMod4Plus);
     const generated = generateBoardV2(
-      { cols, rows, mask, walls: specials.walls, numbers, keys: specials.keys, mystery: specials.mystery },
+      {
+        cols,
+        rows,
+        mask,
+        walls: specials.walls,
+        numbers,
+        keyTypes,
+        mystery: specials.mystery,
+        difficulty: game.options.difficulty,
+      },
       game.rng
     );
     const makeBoard = (id: string): ServerBoard => ({
@@ -881,13 +935,13 @@ export const gameManager = {
       rows,
       cells: generated.cells.slice(),
       hidden: new Set(generated.hidden),
-      locked: new Set(generated.locked),
+      locks: new Map(generated.locks),
       remaining: countRemaining(generated.cells),
       effects: [],
       shape,
       nextNumber: numbers > 0 ? 1 : 0,
       maxNumber: numbers,
-      keysLeft: specials.keys ? 1 : 0,
+      keysLeft: keyTypes,
       movesLeft: 0,
     });
     if (game.mode === 'coop') {
@@ -898,11 +952,12 @@ export const gameManager = {
     for (const b of game.boards.values()) recomputeMoves(b);
     console.log(
       `[game] ${slug} board ${shape} ${cols}x${rows} tiles=${countRemaining(generated.cells)} ` +
-        `walls=${specials.walls} numbers=${numbers} keys=${specials.keys} mystery=${specials.mystery} ` +
+        `walls=${specials.walls} numbers=${numbers} keyTypes=${keyTypes} mystery=${specials.mystery} ` +
+        `d=${game.options.difficulty} ` +
         `in ${Date.now() - t0}ms (seed ${game.seed})`
     );
 
-    game.sharedHintsLeft = COOP_HINTS;
+    game.sharedItems = { ...COOP_ITEMS };
     for (const p of players) {
       p.boardId = boardIdFor(game.mode, p.userId);
       p.score = 0;
@@ -910,7 +965,7 @@ export const gameManager = {
       p.maxCombo = 0;
       p.pairsCleared = 0;
       p.lastMatchAt = 0;
-      p.hintsLeft = game.mode === 'coop' ? COOP_HINTS : RACE_HINTS;
+      p.items = { ...(game.mode === 'coop' ? game.sharedItems : RACE_ITEMS) };
       p.finishedAt = null;
       p.forfeited = false;
       p.hintBreak = false;
@@ -951,9 +1006,8 @@ export const gameManager = {
     if (board.effects.some((e) => e.type === 'freeze' && e.until > now)) {
       return { ok: false, reason: 'frozen' };
     }
-    // 규칙 판정은 "클라가 보는 판"으로 — 그래야 locked/hidden 사유가 그대로 나온다.
-    // (점유 상태는 진실 판과 동일하므로 경로 계산 결과도 같다.)
-    const view = clientView(board);
+    // v3: 물음표도 진실 심볼로 판정한다(엿보기가 공짜라서). 자물쇠만 장애물.
+    const view = ruleView(board);
     const reason = canPick(view, a, b);
     if (reason) return { ok: false, reason };
     const path = findPath(view.cells, board.cols, board.rows, a, b)!;
@@ -1018,20 +1072,16 @@ export const gameManager = {
     deltas.push(...collectStuckResolution(game, board));
     flushDeltas(game, deltas);
 
-    if (board.remaining === 0) {
-      if (game.mode === 'race') {
-        player.finishedAt = Date.now();
-        endGame(game, `${player.userId} cleared`); // 레이스는 1등이 나오면 즉시 종료
-      } else {
-        endGame(game, 'coop cleared');
-      }
-    }
+    if (board.remaining === 0) finishBoard(game, player);
 
     return { ok: true, path };
   },
 
-  /** 물음표 타일 공개 (v2 §V3). 선택으로 치지 않으므로 콤보/점수와 무관하다. */
-  reveal(slug: string, actor: GameActor, idx: number): RevealAck {
+  /**
+   * 물음표 일회성 엿보기 (v3 §W1). 요청자에게만 심볼을 알려 주고 **서버 상태는 바뀌지 않는다**
+   * (브로드캐스트 없음). 영구 공개는 인접 제거(game:revealed)로만 일어난다.
+   */
+  peek(slug: string, actor: GameActor, idx: number): PeekAck {
     const game = games.get(slug);
     if (!game) return { ok: false, reason: 'phase' };
     const player = game.players.get(actor.userId);
@@ -1043,23 +1093,84 @@ export const gameManager = {
     if (board.effects.some((e) => e.type === 'freeze' && e.until > now)) {
       return { ok: false, reason: 'frozen' };
     }
-    if (!board.hidden.has(idx) || board.cells[idx] <= 0) return { ok: false, reason: 'gone' };
+    if (idx < 0 || idx >= board.cells.length || board.cells[idx] <= 0) return { ok: false, reason: 'gone' };
+    if (board.locks.has(idx)) return { ok: false, reason: 'locked' };
+    if (!board.hidden.has(idx)) return { ok: false, reason: 'gone' };
+    return { ok: true, symbol: board.cells[idx] };
+  },
 
-    board.hidden.delete(idx);
-    const symbol = board.cells[idx];
-    recomputeMoves(board);
-    const payload: TilesPayload = {
-      seq: ++game.seq,
-      boardId: board.id,
-      tiles: [{ idx, symbol }],
-      movesLeft: board.movesLeft,
-      board: boardPatch(board),
-    };
-    // v2.1: 연결 가능 쌍이 0이면 예외 없이 재배치. patch는 그 뒤 값으로 찍힌다.
-    const deltas: PendingDelta[] = [{ event: 'game:revealed', payload: { ...payload }, board }];
+  /** F2 재배치: 자기 판(쟁탈전=공유 판)을 섞는다. 콤보는 끊긴다. */
+  useShuffle(slug: string, actor: GameActor): ItemAck {
+    const game = games.get(slug);
+    if (!game) return { ok: false, reason: 'phase' };
+    const player = game.players.get(actor.userId);
+    if (!player) return { ok: false, reason: 'phase' };
+    const now = Date.now();
+    if (!isPlayable(game, player, now)) return { ok: false, reason: 'phase' };
+    const board = boardOf(game, player);
+    if (!board) return { ok: false, reason: 'phase' };
+    if (board.effects.some((e) => e.type === 'freeze' && e.until > now)) return { ok: false, reason: 'frozen' };
+    if (!consumeItem(game, player, 'shuffle')) return { ok: false, reason: 'none' };
+
+    breakCombo(player);
+    const deltas: PendingDelta[] = [
+      { event: 'game:shuffled', payload: { ...shuffleBoard(game, board, 'item', player.userId) }, board },
+    ];
     deltas.push(...collectStuckResolution(game, board));
     flushDeltas(game, deltas);
-    return { ok: true, symbol };
+    emitState(game);
+    return { ok: true };
+  },
+
+  /** F3 여의봉: 서버가 유효한 쌍 하나를 대신 지워 준다. 점수 +10 고정, 콤보는 끊긴다. */
+  useWand(slug: string, actor: GameActor): ItemAck {
+    const game = games.get(slug);
+    if (!game) return { ok: false, reason: 'phase' };
+    const player = game.players.get(actor.userId);
+    if (!player) return { ok: false, reason: 'phase' };
+    const now = Date.now();
+    if (!isPlayable(game, player, now)) return { ok: false, reason: 'phase' };
+    const board = boardOf(game, player);
+    if (!board) return { ok: false, reason: 'phase' };
+    if (board.effects.some((e) => e.type === 'freeze' && e.until > now)) return { ok: false, reason: 'frozen' };
+
+    const pair = findAnyMove(ruleView(board));
+    if (!pair) return { ok: false, reason: 'none' };
+    if (!consumeItem(game, player, 'wand')) return { ok: false, reason: 'none' };
+
+    breakCombo(player);
+    player.pairsCleared += 1;
+    player.score += WAND_SCORE;
+    const [a, b] = pair;
+    const path = findPath(ruleView(board).cells, board.cols, board.rows, a, b) ?? [];
+    const matchedSeq = ++game.seq;
+    const effects = applyRemoval(game, board, a, b);
+    const deltas: PendingDelta[] = [
+      {
+        event: 'game:matched',
+        payload: {
+          seq: matchedSeq,
+          userId: player.userId,
+          boardId: board.id,
+          a,
+          b,
+          path,
+          combo: player.combo,
+          score: player.score,
+          remaining: board.remaining,
+          movesLeft: board.movesLeft,
+          byItem: 'wand',
+        },
+        board,
+      },
+    ];
+    if (effects.revealed) deltas.push({ event: 'game:revealed', payload: { ...effects.revealed }, board });
+    if (effects.unlocked) deltas.push({ event: 'game:unlocked', payload: { ...effects.unlocked }, board });
+    deltas.push(...collectStuckResolution(game, board));
+    flushDeltas(game, deltas);
+    emitState(game);
+    if (board.remaining === 0) finishBoard(game, player);
+    return { ok: true };
   },
 
   hint(slug: string, actor: GameActor): HintAck {
@@ -1071,19 +1182,9 @@ export const gameManager = {
     const board = boardOf(game, player);
     if (!board) return { ok: false, reason: 'none' };
 
-    const available = game.mode === 'coop' ? game.sharedHintsLeft : player.hintsLeft;
-    if (available <= 0) return { ok: false, reason: 'none' };
-
-    // 바로 누를 수 있는(물음표가 아닌) 쌍을 먼저 찾고, 없으면 숨김까지 포함해서 찾는다.
-    const pair = findAnyMove(clientView(board)) ?? findAnyMove(stuckView(board));
+    const pair = findAnyMove(ruleView(board));
     if (!pair) return { ok: false, reason: 'none' };
-
-    if (game.mode === 'coop') {
-      game.sharedHintsLeft -= 1;
-      for (const p of game.players.values()) p.hintsLeft = game.sharedHintsLeft; // 협동은 힌트 공유
-    } else {
-      player.hintsLeft -= 1;
-    }
+    if (!consumeItem(game, player, 'hint')) return { ok: false, reason: 'none' };
     player.hintBreak = true;
     emitState(game);
     return { ok: true, pair };
@@ -1096,26 +1197,20 @@ export const gameManager = {
     if (game.phase !== 'finished') return { error: '끝난 뒤에만 다시 할 수 있어요' };
 
     clearTimers(game);
-    // 기권했던 사람은 관전자로 내린다(다시 참가하려면 game:join).
-    for (const p of [...game.players.values()]) {
-      if (p.forfeited) {
-        game.players.delete(p.userId);
-        game.spectators.set(p.userId, { userId: p.userId, nickname: p.nickname });
-      }
-    }
+    // 기권했던 사람도 다음 판 기본 참가(아래 루프에서 forfeited 까지 리셋된다). 빠지려면 game:spectate.
     game.phase = 'lobby';
     game.startAt = null;
     game.endedAt = null;
     game.results = null;
     game.boards.clear();
-    game.sharedHintsLeft = COOP_HINTS;
+    game.sharedItems = { ...COOP_ITEMS };
     for (const p of game.players.values()) {
       p.score = 0;
       p.combo = 0;
       p.maxCombo = 0;
       p.pairsCleared = 0;
       p.lastMatchAt = 0;
-      p.hintsLeft = game.mode === 'coop' ? COOP_HINTS : RACE_HINTS;
+      p.items = { ...(game.mode === 'coop' ? game.sharedItems : RACE_ITEMS) };
       p.finishedAt = null;
       p.forfeited = false;
       p.hintBreak = false;

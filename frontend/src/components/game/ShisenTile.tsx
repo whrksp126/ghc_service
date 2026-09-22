@@ -2,16 +2,17 @@ import { memo, useEffect } from 'react';
 import { motion, useAnimationControls } from 'framer-motion';
 import { Lock, Key } from 'lucide-react';
 import { symbolOf, inkOf } from '../../games/symbols';
-import { KEY_SYMBOL, LOCKED, MYSTERY, NUMBER_BASE, WALL } from '../../games/types';
+import { MYSTERY, NUMBER_BASE, WALL } from '../../games/types';
+import { isKeyValue, isLockValue, keyColor, keyTypeOf } from '../../games/v3';
 
 export type TileKind = 'normal' | 'number' | 'lock' | 'key' | 'mystery' | 'wall';
 
 export function kindOf(value: number): TileKind {
   if (value === WALL) return 'wall';
-  if (value === LOCKED) return 'lock';
+  if (isLockValue(value)) return 'lock';
   if (value === MYSTERY) return 'mystery';
-  if (value === KEY_SYMBOL) return 'key';
-  if (value >= NUMBER_BASE) return 'number';
+  if (isKeyValue(value)) return 'key';
+  if (value > NUMBER_BASE) return 'number';
   return 'normal';
 }
 
@@ -47,6 +48,8 @@ interface ShisenTileProps {
   flipKey?: number;
   flipDelay?: number;
   reduced?: boolean;
+  /** 이 타일이 속한 보드 id — 같은 idx가 여러 보드(내 판 + 상대 미니)에 존재하므로 구분자가 필요하다 */
+  boardId?: string;
   interactive?: boolean;
   onClick?: (idx: number) => void;
 }
@@ -67,9 +70,12 @@ const FACE: Record<TileKind, string> = {
  */
 export const ShisenTile = memo(function ShisenTile({
   idx, value, x, y, size, selected, peerColor, hint, masked, isNext, shake, flashColor,
-  focused, tumble, tumbleDelay = 0, flipKey, flipDelay = 0, reduced, interactive, onClick,
+  focused, tumble, tumbleDelay = 0, flipKey, flipDelay = 0, reduced, boardId, interactive, onClick,
 }: ShisenTileProps) {
   const kind = kindOf(value);
+  // 색깔 자물쇠·열쇠(v3): 같은 색 열쇠 쌍을 지워야 그 색 자물쇠가 열린다.
+  const keyK = kind === 'lock' || kind === 'key' ? keyTypeOf(value) : 0;
+  const kColor = keyK > 0 ? keyColor(keyK) : null;
   const flip = useAnimationControls();
   const iconSize = Math.max(10, Math.round(size * 0.58));
   const solid = kind === 'wall';
@@ -90,8 +96,14 @@ export const ShisenTile = memo(function ShisenTile({
   return (
     <motion.button
       data-idx={idx}
+      data-board={boardId}
+      /* 엿보는 중이면 부모가 실제 심볼을 넘겨 주므로 data-sym도 그 값이 된다 */
       data-sym={value}
+      data-kind={kind}
+      data-interactive={interactive ? '1' : '0'}
       type="button"
+      /* 판이 조작 가능하면 **모든 종류**(물음표·자물쇠·벽 포함)를 누를 수 있어야 한다.
+         물음표는 엿보기, 자물쇠·벽은 흔들림 피드백을 handleTile이 준다. */
       disabled={!interactive}
       onClick={() => onClick?.(idx)}
       whileTap={interactive && !reduced ? { scale: 0.93 } : undefined}
@@ -128,7 +140,9 @@ export const ShisenTile = memo(function ShisenTile({
         animate={flip}
         className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-[10px]"
         style={{
-          background: FACE[kind],
+          background: kind === 'key' && kColor
+          ? `linear-gradient(160deg, ${kColor}FF 0%, ${kColor}CC 55%, ${kColor}99 100%)`
+          : FACE[kind],
           // 베벨: 우하단 어두운 2px + 좌상단 하이라이트
           boxShadow: [
             'inset -2px -2px 0 rgba(0,0,0,0.22)',
@@ -155,9 +169,9 @@ export const ShisenTile = memo(function ShisenTile({
             {number}
           </span>
         ) : kind === 'lock' ? (
-          <Lock size={iconSize} color="#C7CDD6" strokeWidth={2.2} />
+          <Lock size={iconSize} color={kColor ?? '#C7CDD6'} strokeWidth={2.2} />
         ) : kind === 'key' ? (
-          <Key size={iconSize} color="#166534" strokeWidth={2.4} />
+          <Key size={iconSize} color="#1F2937" strokeWidth={2.4} />
         ) : kind === 'mystery' ? (
           <span
             className="font-display font-black text-[#4A3208]"

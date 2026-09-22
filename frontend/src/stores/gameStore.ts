@@ -1,13 +1,15 @@
 import { create } from 'zustand';
 import { COMBO_WINDOW_MS, type Board, type GameSnapshot, type PlayerState, type Point } from '../games/types';
 import type {
-  AttackEvent, BoardPatch, MatchedEvent, PeerSelectEvent, ShuffledEvent, TilesEvent,
+  AttackEvent, MatchedEvent, PeerSelectEvent, ShuffledEvent, TilesEvent,
 } from '../games/events';
+import type { BoardPatch } from '../games/types';
 import { patchOf } from '../games/events';
-import { KEY_SYMBOL, NUMBER_BASE } from '../games/types';
+import { NUMBER_BASE, isKey } from '../games/types';
 import { countMoves } from '../games/moves';
 import { useAuthStore } from './authStore';
 import * as engine from '../games/shisen/engine';
+import { emitWithAck } from '../lib/socket';
 
 /** 보드 컴포넌트가 소비하는 일회성 연출 이벤트. B2에서 종류가 늘어난다. */
 export interface FxEvent {
@@ -58,6 +60,12 @@ interface GameStore {
   focusBoardId: string | null;
   /** 키보드 커서 위치(내 보드 기준). null = 커서 없음 */
   cursorIdx: number | null;
+  /** 물음표 엿보기(v3 W1): 내 첫 선택인 동안에만 심볼이 보인다. 실패·해제하면 즉시 다시 숨김 */
+  peek: { idx: number; symbol: number } | null;
+  /** 게임 팩 선택 완료(로컬 UI 단계) */
+  packChosen: boolean;
+  /** 방 로그 스트립 — 스냅샷 차이로 클라가 직접 만든다 */
+  roomLog: Array<{ id: number; at: number; text: string }>;
   fxQueue: FxEvent[];
 
   openPanel: () => void;
@@ -84,6 +92,9 @@ interface GameStore {
   setHintPair: (pair: [number, number] | null) => void;
   setFocusBoard: (boardId: string | null) => void;
   setCursor: (idx: number | null) => void;
+  setPeek: (peek: { idx: number; symbol: number } | null) => void;
+  setPackChosen: (v: boolean) => void;
+  pushLog: (text: string) => void;
 
   /** 예측 제거: 즉시 두 타일을 비우고 pendingPick 등록 */
   predictPick: (boardId: string, a: number, b: number, path: Point[], color: string) => void;
@@ -136,7 +147,10 @@ function pruneEffects(boards: Record<string, Board>): Record<string, Board> {
  * 그래야 내 예측 제거 직후에도 `canPick`이 "1번부터 지워야 해요"로 막히지 않는다.
  * `removed`는 이번에 사라진 타일의 원래 값(숫자/열쇠 판단용).
  */
-function withMeta(b: Board, opts: { removed?: number; unlocked?: boolean; patch?: BoardPatch }): Board {
+function withMeta(
+  b: Board,
+  opts: { removed?: number; unlocked?: boolean; patch?: Partial<BoardPatch> },
+): Board {
   let nextNumber = b.nextNumber;
   let keysLeft = b.keysLeft;
 
@@ -145,7 +159,8 @@ function withMeta(b: Board, opts: { removed?: number; unlocked?: boolean; patch?
     const n = removed - NUMBER_BASE;
     if (nextNumber === n) nextNumber = b.cells.includes(NUMBER_BASE + n + 1) ? n + 1 : 0;
   }
-  if (removed === KEY_SYMBOL || opts.unlocked) keysLeft = 0;
+  // 열쇠 쌍을 지웠거나 해제 이벤트가 오면 남은 열쇠 쌍이 하나 줄어든다(색 종류별 1쌍).
+  if ((removed !== undefined && isKey(removed)) || opts.unlocked) keysLeft = Math.max(0, keysLeft - 1);
 
   const next: Board = { ...b, nextNumber, keysLeft };
   next.movesLeft = countMoves(next);
@@ -174,6 +189,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   peerSelect: {},
   focusBoardId: null,
   cursorIdx: null,
+  peek: null,
+  packChosen: false,
+  roomLog: [],
   notice: null,
   banner: null,
   fxQueue: [],
@@ -190,6 +208,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       // 스냅샷은 권위 — 예측/선택 상태를 모두 버린다.
       pendingPicks: [],
       selectedIdx: s && s.phase === 'playing' ? prev.selectedIdx : null,
+      peek: s && s.phase === 'playing' ? prev.peek : null,
       hintPair: null,
       peerSelect: s ? prev.peerSelect : {},
       focusBoardId: s ? prev.focusBoardId : null,
@@ -335,10 +354,19 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   setNotice: (text) => set({ notice: text ? { text, at: Date.now() } : null }),
   setBanner: (text) => set({ banner: text ? { text, at: Date.now() } : null }),
 
-  setSelected: (idx) => set({ selectedIdx: idx }),
+  // 선택이 바뀌면 엿보던 물음표는 즉시 다시 숨긴다(W1).
+  setSelected: (idx) => set((prev) => ({
+    selectedIdx: idx,
+    peek: prev.peek && prev.peek.idx === idx ? prev.peek : null,
+  })),
   setHintPair: (pair) => set({ hintPair: pair }),
   setFocusBoard: (boardId) => set({ focusBoardId: boardId }),
   setCursor: (idx) => set({ cursorIdx: idx }),
+  setPeek: (peek) => set({ peek }),
+  setPackChosen: (v) => set({ packChosen: v }),
+  pushLog: (text) => set((prev) => ({
+    roomLog: [...prev.roomLog.slice(-40), { id: nextFxId++, at: Date.now(), text }],
+  })),
 
   predictPick: (boardId, a, b, path, color) => {
     const s = get().snapshot;
@@ -354,6 +382,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         return withMeta({ ...bd, cells, remaining: Math.max(0, bd.remaining - 2) }, { removed: sym });
       }),
       selectedIdx: null,
+      peek: null,
       hintPair: null,
       pendingPicks: [...get().pendingPicks, { a, b, sym, boardId }],
     });
@@ -441,6 +470,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       peerSelect: {},
       focusBoardId: null,
       cursorIdx: null,
+      peek: null,
+      packChosen: false,
+      roomLog: [],
       notice: null,
       banner: null,
       fxQueue: [],
@@ -449,5 +481,5 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
 // 개발용 디버그 훅 (E2E 자동 플레이 스크립트가 상태·엔진에 접근)
 if (import.meta.env.DEV) {
-  (window as unknown as { __ghcGame?: unknown }).__ghcGame = { store: useGameStore, engine };
+  (window as unknown as { __ghcGame?: unknown }).__ghcGame = { store: useGameStore, engine, emit: emitWithAck };
 }

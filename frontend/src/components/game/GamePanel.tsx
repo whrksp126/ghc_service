@@ -8,6 +8,7 @@ import { useGameStore } from '../../stores/gameStore';
 import { useAuthStore } from '../../stores/authStore';
 import { initGameAudio } from '../../games/sounds';
 import { GameLobby } from './GameLobby';
+import { PackSelect } from './PackSelect';
 import { ShisenArena } from './ShisenArena';
 import { MAX_PLAYERS, type GameSnapshot } from '../../games/types';
 
@@ -107,6 +108,11 @@ export function GamePanel() {
     snapshot.players.some((p) => p.userId === myUserId)
     || snapshot.spectators.some((p) => p.userId === myUserId)
   );
+  const packChosen = useGameStore((s) => s.packChosen);
+  // 방장: 팩을 고르기 전까지 선택 화면. 비방장: 방장이 혼자 있는 동안 "고르는 중" 대기.
+  const needsPack = !!snapshot && !packChosen && (
+    snapshot.hostUserId === myUserId || snapshot.players.length <= 1
+  );
 
   return (
     <motion.div
@@ -132,6 +138,9 @@ export function GamePanel() {
       <div className="min-h-0 flex-1">
         {!snapshot || !joined ? (
           <GameIdle snapshot={snapshot} />
+        ) : snapshot.phase === 'lobby' && needsPack ? (
+          /* 팩 선택은 로컬 UI 단계 — 방장이 고르면 모두 그 팩 방으로 들어간다 */
+          <PackSelect isHost={snapshot.hostUserId === myUserId} />
         ) : snapshot.phase === 'lobby' ? (
           <GameLobby snapshot={snapshot} />
         ) : (

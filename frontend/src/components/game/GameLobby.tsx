@@ -1,21 +1,25 @@
 import { useState } from 'react';
-import { Crown, Eye, LogOut, Play, UserPlus, Volume2, VolumeX, X } from 'lucide-react';
+import { Crown, Eye, LogOut, UserPlus, Volume2, VolumeX, X } from 'lucide-react';
 import { emitWithAck } from '../../lib/socket';
 import { showToast } from '../common/Toast';
 import { Button } from '../common/Button';
 import { useAuthStore } from '../../stores/authStore';
 import { useUIStore } from '../../stores/uiStore';
-import { Scoreboard } from './Scoreboard';
 import { ShisenSettings } from './ShisenSettings';
+import { MapGuide } from './MapGuide';
+import { RoomLog } from './RoomLog';
+import { Scoreboard } from './Scoreboard';
 import { MAX_PLAYERS, type GameMode, type GameOptions, type GameSnapshot } from '../../games/types';
 
-/** 게임 선택 카드 (v2 §V1-1). 테트리스는 자리만 잡아 둔다. */
-const GAMES: Array<{ id: string; name: string; desc: string; ready: boolean }> = [
-  { id: 'shisen', name: '사천성', desc: '같은 그림 두 개를 이어서 지우기', ready: true },
-  { id: 'tetris', name: '테트리스', desc: '준비 중', ready: false },
-];
+function initials(nickname: string): string {
+  return nickname.trim().slice(0, 2) || '?';
+}
 
-/** 로비: 게임 선택 → 상세 설정 → 플레이어 슬롯 → 시작/나가기 → 전적. */
+/**
+ * 사천성 방(로비) — 넷마블식 3컬럼 (v3 §W3).
+ * 좌: 플레이어 / 중: 설정 + 게임시작 / 우: 맵 가이드. 하단: 방 로그 + 나가기·방 닫기.
+ * 모바일에서는 같은 순서로 세로 스택.
+ */
 export function GameLobby({ snapshot }: { snapshot: GameSnapshot }) {
   const myUserId = useAuthStore((s) => s.userId);
   const soundOn = useUIStore((s) => s.gameSoundOn);
@@ -37,96 +41,101 @@ export function GameLobby({ snapshot }: { snapshot: GameSnapshot }) {
     }
   };
 
-  // options는 서버에서 부분 병합된다(v2 §V2).
+  // options는 서버에서 부분 병합된다.
   const patchOptions = (patch: Partial<GameOptions>) => call('game:updateOptions', { options: patch });
+  const winsOf = (userId: string) => snapshot.scoreboard.find((r) => r.userId === userId);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-3">
-      {/* 1. 게임 선택 */}
-      <div className="flex items-center gap-2">
-        {GAMES.map((g) => {
-          const selected = snapshot.gameId === g.id;
-          return (
+    <div className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto p-3">
+      <div className="flex shrink-0 flex-col gap-2 lg:flex-row">
+        {/* 좌: 플레이어 컬럼 */}
+        <div className="flex shrink-0 flex-col gap-2 lg:w-[210px]">
+          <div className="flex items-center gap-2 px-1">
+            <span className="text-xs text-white/50">플레이어 {snapshot.players.length}/{MAX_PLAYERS}</span>
             <button
-              key={g.id}
-              disabled={!g.ready || !isHost || busy}
-              onClick={() => call('game:updateOptions', { gameId: g.id })}
-              className={`flex-1 rounded-feed border p-2.5 text-left transition-colors ${
-                selected ? 'border-primary bg-primary/10' : 'border-white/10 bg-white/5'
-              } ${!g.ready ? 'opacity-40' : isHost ? 'hover:border-white/20' : 'opacity-80'}`}
+              onClick={toggleSound}
+              className="ml-auto text-white/40 transition-colors hover:text-white"
+              title={soundOn ? '효과음 끄기' : '효과음 켜기'}
             >
-              <p className="text-sm font-semibold">{g.name}</p>
-              <p className="mt-0.5 text-[11px] leading-tight text-white/45">{g.desc}</p>
+              {soundOn ? <Volume2 size={16} /> : <VolumeX size={16} />}
             </button>
-          );
-        })}
-        <button
-          onClick={toggleSound}
-          className="btn-icon shrink-0 bg-dark-700 hover:bg-dark-600"
-          title={soundOn ? '효과음 끄기' : '효과음 켜기'}
-        >
-          {soundOn ? <Volume2 size={18} /> : <VolumeX size={18} />}
-        </button>
-      </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2 lg:grid-cols-1">
+            {Array.from({ length: MAX_PLAYERS }).map((_, i) => {
+              const p = snapshot.players[i];
+              const record = p ? winsOf(p.userId) : undefined;
+              return (
+                <div
+                  key={i}
+                  className={`flex items-center gap-2 rounded-feed px-2 py-2 ${
+                    p ? 'bg-white/5' : 'border border-dashed border-white/10'
+                  }`}
+                  style={p ? { boxShadow: `inset 0 0 0 1px ${p.color}44` } : undefined}
+                >
+                  {p ? (
+                    <>
+                      <span
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-dark-900"
+                        style={{ background: p.color }}
+                      >
+                        {initials(p.nickname)}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1">
+                          <span className="min-w-0 truncate text-xs text-white/90">{p.nickname}</span>
+                          {p.userId === snapshot.hostUserId && <Crown size={12} className="shrink-0 text-warning" />}
+                          {p.userId === myUserId && <span className="shrink-0 text-[10px] text-white/35">나</span>}
+                        </span>
+                        <span className="block text-[10px] text-white/35">
+                          오늘 {record?.wins ?? 0}승 / {record?.games ?? 0}판
+                        </span>
+                      </span>
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-success" title="대기 중" />
+                    </>
+                  ) : (
+                    <span className="w-full text-center text-[11px] text-white/25">빈 자리</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
 
-      {/* 2. 상세 설정 */}
-      <ShisenSettings
-        mode={snapshot.mode}
-        options={snapshot.options}
-        seed={snapshot.seed}
-        canEdit={isHost}
-        busy={busy}
-        onMode={(mode: GameMode) => call('game:updateOptions', { mode })}
-        onOptions={patchOptions}
-      />
+          {snapshot.spectators.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1 px-1">
+              <Eye size={12} className="text-white/35" />
+              {snapshot.spectators.map((s) => (
+                <span key={s.userId} className="rounded-full bg-white/5 px-1.5 py-0.5 text-[10px] text-white/55">
+                  {s.nickname}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
 
-      {/* 3. 플레이어 슬롯 */}
-      <div>
-        <p className="mb-1.5 px-1 text-xs text-white/50">플레이어 {snapshot.players.length}/{MAX_PLAYERS}</p>
-        <div className="grid grid-cols-2 gap-2">
-          {Array.from({ length: MAX_PLAYERS }).map((_, i) => {
-            const p = snapshot.players[i];
-            return (
-              <div
-                key={i}
-                className={`flex items-center gap-2 rounded-btn px-3 py-2 text-sm ${
-                  p ? 'bg-white/5' : 'border border-dashed border-white/10 text-white/25'
-                }`}
-              >
-                {p ? (
-                  <>
-                    <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: p.color }} />
-                    <span className="min-w-0 flex-1 truncate">{p.nickname}</span>
-                    {p.userId === snapshot.hostUserId && <Crown size={13} className="shrink-0 text-warning" />}
-                    {p.userId === myUserId && <span className="shrink-0 text-[11px] text-white/40">나</span>}
-                  </>
-                ) : (
-                  <span className="text-xs">빈 자리</span>
-                )}
-              </div>
-            );
-          })}
+        {/* 중: 설정 */}
+        <div className="min-w-0 flex-1">
+          <ShisenSettings
+            mode={snapshot.mode}
+            options={snapshot.options}
+            seed={snapshot.seed}
+            canEdit={isHost}
+            busy={busy}
+            canStart={isHost && snapshot.players.length >= 1}
+            onMode={(mode: GameMode) => call('game:updateOptions', { mode })}
+            onOptions={patchOptions}
+            onStart={() => call('game:start')}
+          />
+        </div>
+
+        {/* 우: 맵 가이드 */}
+        <div className="shrink-0 lg:w-[220px]">
+          <MapGuide options={snapshot.options} seed={snapshot.seed} />
         </div>
       </div>
 
-      {snapshot.spectators.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 px-1">
-          <Eye size={13} className="text-white/40" />
-          {snapshot.spectators.map((s) => (
-            <span key={s.userId} className="rounded-full bg-white/5 px-2 py-0.5 text-[11px] text-white/60">
-              {s.nickname}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* 4. 액션 */}
+      {/* 하단: 로그 + 액션 + 전적 */}
+      <RoomLog />
       <div className="flex flex-wrap items-center gap-2">
-        {isHost && (
-          <Button size="sm" loading={busy} disabled={snapshot.players.length < 1} onClick={() => call('game:start')}>
-            <Play size={14} /> 시작
-          </Button>
-        )}
         {amPlayer ? (
           <Button size="sm" variant="secondary" loading={busy} onClick={() => call('game:spectate')}>
             <LogOut size={14} /> 나가기
@@ -142,7 +151,6 @@ export function GameLobby({ snapshot }: { snapshot: GameSnapshot }) {
           </Button>
         )}
       </div>
-
       <Scoreboard rows={snapshot.scoreboard} />
     </div>
   );

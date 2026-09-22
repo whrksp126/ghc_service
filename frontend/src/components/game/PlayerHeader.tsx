@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Lightbulb, WifiOff, Crown } from 'lucide-react';
 import type { Board, PlayerState } from '../../games/types';
 import { isForfeited } from '../../games/events';
+import { itemsOf } from '../../games/v3';
 import { ATTACK_ICON } from './AttackFx';
 import { prefersReducedMotion } from '../../games/motion';
 
@@ -109,7 +110,7 @@ export function PlayerHeader({ player, board, compact, isMe, isHost, showMeter }
         )}
         {isMe && !compact && (
           <span className="flex items-center gap-0.5 text-white/45" title="남은 힌트">
-            <Lightbulb size={11} />{player.hintsLeft}
+            <Lightbulb size={11} />{itemsOf(player).hint}
           </span>
         )}
         <span className="text-white/55">{player.score}</span>

@@ -6,6 +6,8 @@ import {
   Shape,
   buildMask,
   canPick,
+  NO_HIDDEN,
+  countAdjacentEqualPairs,
   countRemaining,
   findAllMoves,
   findAnyMove,
@@ -19,13 +21,19 @@ import {
 import {
   BOARD_DIMS,
   BoardSize,
+  Difficulty,
   GameOptions,
   GameSnapshot,
-  KEY_SYMBOL,
+  KEY_BASE,
+  KEY_TYPES_PER_SIZE,
+  LOCK_BASE,
+  MYSTERY,
   NUMBER_BASE,
   Point,
   SpecialToggles,
   WALL,
+  isKey,
+  isLock,
   isNormalSymbol,
 } from './types';
 import { gameManager } from './gameManager';
@@ -74,19 +82,26 @@ interface SimBoard {
   rows: number;
   cells: number[];
   hidden: Set<number>;
-  locked: Set<number>;
+  locks: Map<number, number>;
   nextNumber: number;
   maxNumber: number;
   keysLeft: number;
 }
 
-function makeBoard(size: BoardSize, shape: Shape, specials: SpecialToggles, seed: number) {
+function makeBoard(
+  size: BoardSize,
+  shape: Shape,
+  specials: SpecialToggles,
+  seed: number,
+  difficulty: Difficulty = 3
+) {
   const { cols, rows } = BOARD_DIMS[size];
   const rng = mulberry32(seed);
-  const mask = buildMask(shape, cols, rows, rng, specials.keys ? 2 : 0);
+  const keyTypes = specials.keys ? KEY_TYPES_PER_SIZE[size] : 0;
+  const mask = buildMask(shape, cols, rows, rng, ((keyTypes * 2) % 4) as 0 | 2);
   const numbers = specials.numbers ? NUMBERS_PER_SIZE[size] : 0;
   const gen = generateBoardV2(
-    { cols, rows, mask, walls: specials.walls, numbers, keys: specials.keys, mystery: specials.mystery },
+    { cols, rows, mask, walls: specials.walls, numbers, keyTypes, mystery: specials.mystery, difficulty },
     rng
   );
   const board: SimBoard = {
@@ -94,23 +109,25 @@ function makeBoard(size: BoardSize, shape: Shape, specials: SpecialToggles, seed
     rows,
     cells: gen.cells.slice(),
     hidden: new Set(gen.hidden),
-    locked: new Set(gen.locked),
+    locks: new Map(gen.locks),
     nextNumber: numbers > 0 ? 1 : 0,
     maxNumber: numbers,
-    keysLeft: specials.keys ? 1 : 0,
+    keysLeft: keyTypes,
   };
-  return { board, mask, gen, rng };
+  return { board, mask, gen, rng, keyTypes };
 }
 
+/** 클라가 보는 판(물음표까지 가림) — 엿보기 전 상태 확인용 */
 const clientView = (b: SimBoard): PickView => ({
-  cells: maskForClient(b.cells, b.hidden, b.locked),
+  cells: maskForClient(b.cells, b.hidden, b.locks),
   cols: b.cols,
   rows: b.rows,
   nextNumber: b.nextNumber,
   keysLeft: b.keysLeft,
 });
-const stuckView = (b: SimBoard): PickView => ({
-  cells: maskForClient(b.cells, [], b.locked),
+/** 서버 규칙 뷰: 물음표는 진실 심볼, 자물쇠만 장애물 (v3) */
+const ruleView = (b: SimBoard): PickView => ({
+  cells: maskForClient(b.cells, NO_HIDDEN, b.locks),
   cols: b.cols,
   rows: b.rows,
   nextNumber: b.nextNumber,
@@ -124,7 +141,7 @@ function removePair(b: SimBoard, a: number, c: number): void {
   b.cells[c] = 0;
   for (const idx of [a, c]) {
     b.hidden.delete(idx);
-    b.locked.delete(idx);
+    b.locks.delete(idx);
   }
   for (const idx of [a, c]) {
     const r = (idx / b.cols) | 0;
@@ -132,9 +149,10 @@ function removePair(b: SimBoard, a: number, c: number): void {
     const nbs = [r > 0 ? idx - b.cols : -1, r < b.rows - 1 ? idx + b.cols : -1, col > 0 ? idx - 1 : -1, col < b.cols - 1 ? idx + 1 : -1];
     for (const nb of nbs) if (nb >= 0) b.hidden.delete(nb);
   }
-  if (value === KEY_SYMBOL) {
-    b.keysLeft = 0;
-    b.locked.clear();
+  if (isKey(value)) {
+    const keyType = value - KEY_BASE;
+    b.keysLeft = Math.max(0, b.keysLeft - 1);
+    for (const [idx, k] of [...b.locks]) if (k === keyType) b.locks.delete(idx); // 같은 색만 풀린다
   }
   if (value > NUMBER_BASE) b.nextNumber = b.nextNumber < b.maxNumber ? b.nextNumber + 1 : 0;
 }
@@ -218,6 +236,7 @@ check('previewMask — 같은 seed면 항상 같은 마스크', () => {
     boardSize: 'm',
     mapShape: 'random',
     specials: { mystery: true, numbers: true, keys: true, walls: true },
+    difficulty: 3,
     items: false,
     timeLimitSec: 300,
   };
@@ -231,6 +250,39 @@ check('previewMask — 같은 seed면 항상 같은 마스크', () => {
   const fixed = previewMask({ ...opts, mapShape: 'diamond' }, 7);
   assert(fixed.join('') === previewMask({ ...opts, mapShape: 'diamond' }, 7).join(''), 'fixed shape drifted');
   return '20 seeds × random/고정 모양';
+});
+
+// --- 1.5 난이도 (v3 §W1) ----------------------------------------------------
+
+const DIFFICULTIES: Difficulty[] = [1, 2, 3, 4, 5];
+const VARIETY_FACTOR = [0.55, 0.7, 0.85, 1, 1];
+
+check('난이도 — 붙어 있는 같은 그림 수가 d1→d5로 단조 감소 (각 100판)', () => {
+  const rows: string[] = [];
+  let prevAdj = Infinity;
+  for (const d of DIFFICULTIES) {
+    let adj = 0;
+    let symbols = 0;
+    let expected = 0;
+    for (let i = 0; i < 100; i++) {
+      const { board, gen } = makeBoard('m', 'rect', SPECIAL_SETS[0].specials, 600000 + i * 11, d);
+      adj += countAdjacentEqualPairs(board.cells, board.cols, board.rows);
+      symbols += new Set(board.cells.filter(isNormalSymbol)).size;
+      const tiles = gen.order.length * 2;
+      expected += Math.max(6, Math.min(28, Math.round((tiles / 4) * VARIETY_FACTOR[d - 1])));
+    }
+    const avgAdj = adj / 100;
+    const avgSym = symbols / 100;
+    const wantSym = expected / 100;
+    assert(
+      Math.abs(avgSym - wantSym) < 0.01,
+      `d${d}: 심볼 종류 ${avgSym} != 공식값 ${wantSym}`
+    );
+    assert(avgAdj < prevAdj, `d${d}: 인접 동일쌍 ${avgAdj.toFixed(2)} 가 d${d - 1}(${prevAdj.toFixed(2)}) 보다 작지 않다`);
+    prevAdj = avgAdj;
+    rows.push(`d${d} adj ${avgAdj.toFixed(1)} / sym ${avgSym.toFixed(0)}`);
+  }
+  return rows.join(' | ');
 });
 
 // --- 2. 대표 조합 × 50판: 생성 순서 R을 실제 규칙으로 재생 ------------------
@@ -253,7 +305,11 @@ function replayOrder(size: BoardSize, shape: Shape, specials: SpecialToggles, se
   for (const [v, n] of counts) {
     if (n % 2 !== 0) return { ok: false, detail: `symbol ${v} appears ${n} times (odd)` };
   }
-  if (specials.keys && (counts.get(KEY_SYMBOL) ?? 0) !== 2) return { ok: false, detail: 'key pair missing' };
+  if (specials.keys) {
+    for (let k = 1; k <= KEY_TYPES_PER_SIZE[size]; k++) {
+      if ((counts.get(KEY_BASE + k) ?? 0) !== 2) return { ok: false, detail: `key ${k} pair missing` };
+    }
+  }
   if (specials.numbers) {
     for (let n = 1; n <= NUMBERS_PER_SIZE[size]; n++) {
       if ((counts.get(NUMBER_BASE + n) ?? 0) !== 2) return { ok: false, detail: `number ${n} pair missing` };
@@ -295,6 +351,46 @@ check('생성 순서 재생 — 크기 3종 × 랜덤 모양 × 특수 전부 ON
   return `${SIZES.length * 50} boards`;
 });
 
+check('색 자물쇠 — 같은 색 열쇠만 그 색을 연다 (l = 3색)', () => {
+  let checked = 0;
+  for (let i = 0; i < 40; i++) {
+    const { board, keyTypes } = makeBoard('l', SHAPES[i % SHAPES.length], SPECIAL_SETS[3].specials, 610000 + i);
+    assert(keyTypes === 3, `l 은 열쇠 3종이어야 한다 (${keyTypes})`);
+    assert(board.keysLeft === 3, 'keysLeft 는 열쇠 쌍 수');
+    const byType = new Map<number, number[]>();
+    for (const [idx, k] of board.locks) {
+      const list = byType.get(k) ?? [];
+      list.push(idx);
+      byType.set(k, list);
+    }
+    if (byType.size < 2) continue; // 자물쇠가 거의 없는 판은 건너뛴다
+    const target = [...byType.keys()][0];
+    // 열쇠를 쓰기 전: 그 색 자물쇠는 잠겨 보인다
+    const masked = clientView(board).cells;
+    for (const idx of byType.get(target)!) {
+      assert(masked[idx] === LOCK_BASE + target, `자물쇠 칸이 색으로 마스킹되지 않았다 (${masked[idx]})`);
+    }
+    const pairOfTarget = byType.get(target)!;
+    assert(canPick(ruleView(board), pairOfTarget[0], pairOfTarget[1]) === 'locked', '잠긴 칸은 선택 불가');
+    // 그 색 열쇠 쌍을 제거하면 그 색만 열린다
+    const keyIdx: number[] = [];
+    for (let k = 0; k < board.cells.length && keyIdx.length < 2; k++) {
+      if (board.cells[k] === KEY_BASE + target) keyIdx.push(k);
+    }
+    assert(keyIdx.length === 2, `열쇠 ${target} 쌍이 없다`);
+    removePair(board, keyIdx[0], keyIdx[1]);
+    assert(board.keysLeft === 2, '열쇠 쌍 수가 줄어야 한다');
+    for (const idx of byType.get(target)!) assert(!board.locks.has(idx), '같은 색 자물쇠가 안 열렸다');
+    for (const [k, list] of byType) {
+      if (k === target) continue;
+      for (const idx of list) assert(board.locks.has(idx), `다른 색(${k}) 자물쇠까지 열렸다`);
+    }
+    checked++;
+  }
+  assert(checked > 0, 'no board with locks to check');
+  return `${checked} boards`;
+});
+
 // --- 3. 무작위 순서 플레이: 셔플 복구 / 막힘 해소(system) 비율 ---------------
 
 check('무작위 순서 완주 — 셔플로 복구, 시스템 제거 < 1%', () => {
@@ -312,17 +408,17 @@ check('무작위 순서 완주 — 셔플로 복구, 시스템 제거 < 1%', () 
           let guard = 0;
           while (countRemaining(board.cells) > 0) {
             assert(++guard < 500, 'play loop did not terminate');
-            let move = findAnyMove(stuckView(board));
+            let move = findAnyMove(ruleView(board));
             if (!move) {
               // 서버와 동일한 순서: 일반 심볼 셔플 → 그래도 없으면 시스템 제거
               board.cells = shuffleNormals(
-                { ...stuckView(board), cells: board.cells },
+                { ...ruleView(board), cells: board.cells },
                 board.hidden,
-                board.locked,
+                board.locks,
                 rng
               );
               stuckShuffles++;
-              move = findAnyMove(stuckView(board));
+              move = findAnyMove(ruleView(board));
               if (!move) {
                 // 서버 findBlockerPair와 같은 순서: 열쇠 → nextNumber → 아무 같은 값 쌍
                 systemRemovals++;
@@ -335,7 +431,9 @@ check('무작위 순서 완주 — 셔플로 복구, 시스템 제거 < 1%', () 
                   return null;
                 };
                 let blocker: [number, number] | null = null;
-                if (board.keysLeft > 0) blocker = pickPair((v) => v === KEY_SYMBOL);
+                if (board.keysLeft > 0) {
+                  for (let k = 1; k <= 3 && !blocker; k++) blocker = pickPair((v) => v === KEY_BASE + k);
+                }
                 if (!blocker && board.nextNumber > 0) blocker = pickPair((v) => v === NUMBER_BASE + board.nextNumber);
                 if (!blocker) {
                   const seen = new Map<number, number>();
@@ -353,9 +451,9 @@ check('무작위 순서 완주 — 셔플로 복구, 시스템 제거 < 1%', () 
                 continue;
               }
             }
-            const reason = canPick(stuckView(board), move[0], move[1]);
+            const reason = canPick(ruleView(board), move[0], move[1]);
             assert(reason === null, `findAnyMove returned an illegal pair (${reason})`);
-            assert(findAllMoves(stuckView(board)).length > 0, 'findAllMoves disagrees with findAnyMove');
+            assert(findAllMoves(ruleView(board)).length > 0, 'findAllMoves disagrees with findAnyMove');
             removePair(board, move[0], move[1]);
             totalPairs++;
           }
@@ -375,12 +473,12 @@ check('shuffleNormals — 위치·특수 타일 유지 + 항상 한 수', () => 
       const { board, rng } = makeBoard(size, SHAPES[i % SHAPES.length], SPECIAL_SETS[1].specials, 950000 + i);
       // 절반쯤 지운 상태에서 섞는다
       for (let k = 0; k < 8; k++) {
-        const move = findAnyMove(stuckView(board));
+        const move = findAnyMove(ruleView(board));
         if (!move) break;
         removePair(board, move[0], move[1]);
       }
       const before = board.cells.slice();
-      const next = shuffleNormals({ ...stuckView(board), cells: board.cells }, board.hidden, board.locked, rng);
+      const next = shuffleNormals({ ...ruleView(board), cells: board.cells }, board.hidden, board.locks, rng);
       for (let idx = 0; idx < before.length; idx++) {
         const wasNormal = isNormalSymbol(before[idx]);
         if (!wasNormal) assert(next[idx] === before[idx], `special/wall tile moved at ${idx}`);
@@ -389,7 +487,7 @@ check('shuffleNormals — 위치·특수 타일 유지 + 항상 한 수', () => 
       const sortNormals = (arr: number[]) => arr.filter(isNormalSymbol).sort((a, b) => a - b).join(',');
       assert(sortNormals(before) === sortNormals(next), 'normal symbol multiset changed');
       board.cells = next;
-      assert(findAnyMove(stuckView(board)) !== null, 'no move after shuffle');
+      assert(findAnyMove(ruleView(board)) !== null, 'no move after shuffle');
       tested++;
     }
   }
@@ -472,12 +570,17 @@ check('findPath — 같은 칸 / 범위 밖 → null', () => {
 
 // --- 5. canPick 특수 타일 사유 ----------------------------------------------
 
-check('canPick — 벽/자물쇠/물음표/숫자 순서 사유', () => {
+check('canPick — 벽/자물쇠/물음표/열쇠/숫자 순서 사유', () => {
   const view = (cells: number[], nextNumber = 0): PickView => ({ cells, cols: 4, rows: 2, nextNumber, keysLeft: 0 });
   const WALLED = [WALL, 1, 0, 0, 1, 0, 0, 0];
   assert(canPick(view(WALLED), 0, 1) === 'wall', 'wall reason');
-  assert(canPick(view([98, 0, 0, 0, 98, 0, 0, 0]), 0, 4) === 'locked', 'locked reason');
-  assert(canPick(view([99, 0, 0, 0, 99, 0, 0, 0]), 0, 4) === 'hidden', 'hidden reason');
+  assert(canPick(view([LOCK_BASE + 1, 0, 0, 0, LOCK_BASE + 1, 0, 0, 0]), 0, 4) === 'locked', 'locked reason');
+  // v3: 아직 엿보지 않은 물음표는 클라가 예측할 수 없다 → 'symbol'
+  assert(canPick(view([MYSTERY, 0, 0, 0, MYSTERY, 0, 0, 0]), 0, 4) === 'symbol', 'mystery is not matchable');
+  // 열쇠는 같은 색끼리만
+  assert(canPick(view([KEY_BASE + 1, 0, 0, 0, KEY_BASE + 1, 0, 0, 0]), 0, 4) === null, 'same-colour keys pair');
+  assert(canPick(view([KEY_BASE + 1, 0, 0, 0, KEY_BASE + 2, 0, 0, 0]), 0, 4) === 'symbol', 'different keys must not pair');
+  assert(isLock(LOCK_BASE + 3) && !isLock(MYSTERY) && isKey(KEY_BASE + 2), 'lock/key predicates');
   assert(canPick(view([1, 0, 0, 0, 2, 0, 0, 0]), 0, 4) === 'symbol', 'symbol reason');
   assert(canPick(view([1, 0, 0, 0, 0, 0, 0, 0]), 0, 4) === 'gone', 'gone reason');
   assert(canPick(view([1, 0, 0, 0, 1, 0, 0, 0]), 2, 2) === 'same', 'same reason');
@@ -485,7 +588,7 @@ check('canPick — 벽/자물쇠/물음표/숫자 순서 사유', () => {
   assert(canPick(view(numbers, 1), 0, 4) === 'order', 'order reason');
   assert(canPick(view(numbers, 2), 0, 4) === null, 'nextNumber pair must be allowed');
   assert(canPick(view([1, 0, 0, 0, 1, 0, 0, 0]), 0, 4) === null, 'plain pair must be allowed');
-  return '8 cases';
+  return '10 cases';
 });
 
 // --- 6. gameManager 한 판 흐름 ----------------------------------------------
@@ -528,6 +631,17 @@ async function managerFlow(): Promise<string> {
   const backToRace = gameManager.getSnapshot(slug)!.options;
   assert(backToRace.mapShape === 'diamond' && backToRace.specials.mystery, '되돌릴 때도 유지돼야 한다');
   assert(backToRace.boardSize === 's' && backToRace.items, 'patch가 모드 기본값을 덮어써야 한다');
+
+  // A8: GameOptions 의 모든 필드가 부분 병합돼야 한다 (difficulty 가 빠져 있었다)
+  assert(gameManager.getSnapshot(slug)!.options.difficulty === 3, '기본 난이도는 3');
+  const diffAck = gameManager.updateOptions(slug, p1, { options: { difficulty: 5 } });
+  assert('state' in diffAck && diffAck.state.options.difficulty === 5, 'ack 에 난이도가 반영돼야 한다');
+  const afterDiff = gameManager.getSnapshot(slug)!.options;
+  assert(afterDiff.difficulty === 5, `스냅샷 난이도 ${afterDiff.difficulty}`);
+  assert(
+    afterDiff.boardSize === 's' && afterDiff.mapShape === 'diamond' && afterDiff.specials.keys,
+    '난이도만 바꿨는데 다른 옵션이 날아갔다'
+  );
   assert('error' in gameManager.start(slug, p2), 'non-host start must fail');
 
   const started = gameManager.start(slug, p1);
@@ -540,26 +654,61 @@ async function managerFlow(): Promise<string> {
     'race boards must be identical (cells incl. hidden/locked masking)'
   );
   assert(startState.boards['u1'].shape === 'diamond', 'board shape not reported');
-  assert(startState.boards['u1'].keysLeft === 1, 'keysLeft not reported');
+  // 난이도 5로 만든 판이어야 한다: d5 는 붙어 있는 같은 그림이 거의 없다(같은 크기 d1 대비)
+  {
+    const b = startState.boards['u1'];
+    const adjHard = countAdjacentEqualPairs(b.cells, b.cols, b.rows);
+    const easy = makeBoard('s', 'diamond', SPECIAL_SETS[0].specials, 777, 1);
+    const adjEasy = countAdjacentEqualPairs(easy.board.cells, easy.board.cols, easy.board.rows);
+    assert(adjHard < adjEasy, `d5 보드 인접 동일쌍 ${adjHard} 이 d1 ${adjEasy} 보다 많다`);
+  }
+  assert(startState.boards['u1'].keysLeft === KEY_TYPES_PER_SIZE.s, 'keysLeft must be the number of key pairs');
+  assert(
+    startState.players[0].items.hint === 3 && startState.players[0].items.shuffle === 2 && startState.players[0].items.wand === 1,
+    `race item defaults wrong: ${JSON.stringify(startState.players[0].items)}`
+  );
   assert(startState.boards['u1'].movesLeft > 0, 'movesLeft missing in snapshot');
   assert(gameManager.pick(slug, p1, 0, 1).ok === false, 'pick before startAt must be rejected');
 
   await sleep(3200); // 카운트다운
 
-  // 물음표 타일은 reveal 해야 고를 수 있다
+  // 물음표는 엿보기(peek) — 서버 상태는 바뀌지 않는다
   const snap1 = gameManager.getSnapshot(slug)!;
-  const mysteryIdx = snap1.boards['u1'].cells.findIndex((v) => v === 99);
+  const mysteryIdx = snap1.boards['u1'].cells.findIndex((v) => v === MYSTERY);
   assert(mysteryIdx >= 0, 'mystery tiles should exist with mystery:true');
-  const lockedIdx = snap1.boards['u1'].cells.findIndex((v) => v === 98);
+  const lockedIdx = snap1.boards['u1'].cells.findIndex((v) => isLock(v));
   assert(lockedIdx >= 0, 'locked tiles should exist with keys:true');
-  const revealed = gameManager.reveal(slug, p1, mysteryIdx);
-  assert(revealed.ok === true, 'reveal failed');
-  assert(gameManager.getSnapshot(slug)!.boards['u1'].cells[mysteryIdx] !== 99, 'tile still masked after reveal');
+  const peeked = gameManager.peek(slug, p1, mysteryIdx);
+  assert(peeked.ok === true && isNormalSymbol(peeked.symbol), `peek failed: ${JSON.stringify(peeked)}`);
+  const afterPeek = gameManager.getSnapshot(slug)!;
+  assert(afterPeek.boards['u1'].cells[mysteryIdx] === MYSTERY, 'peek must NOT reveal the tile for everyone');
+  assert(afterPeek.seq === snap1.seq, 'peek must not bump seq / mutate state');
+  assert(gameManager.peek(slug, p1, mysteryIdx).ok === true, 'peek must be repeatable');
 
-  // 자물쇠는 선택 불가
-  const otherLocked = gameManager.getSnapshot(slug)!.boards['u1'].cells.findIndex((v, i) => v === 98 && i !== lockedIdx);
+  // 자물쇠는 선택 불가 / 같은 색 열쇠끼리만 짝
+  const lockValue = afterPeek.boards['u1'].cells[lockedIdx];
+  const otherLocked = afterPeek.boards['u1'].cells.findIndex((v, i) => v === lockValue && i !== lockedIdx);
   const lockedPick = gameManager.pick(slug, p1, lockedIdx, otherLocked);
   assert(lockedPick.ok === false && lockedPick.reason === 'locked', `expected locked, got ${JSON.stringify(lockedPick)}`);
+  assert(gameManager.peek(slug, p1, lockedIdx).ok === false, 'peeking a lock must fail');
+
+  // 아이템: 재배치 / 여의봉
+  const beforeItems = gameManager.getSnapshot(slug)!.players[0].items;
+  assert(gameManager.useShuffle(slug, p1).ok === true, 'F2 shuffle failed');
+  assert(gameManager.getSnapshot(slug)!.players[0].items.shuffle === beforeItems.shuffle - 1, 'shuffle not consumed');
+  const beforeWand = gameManager.getSnapshot(slug)!;
+  assert(gameManager.useWand(slug, p1).ok === true, 'F3 wand failed');
+  const afterWand = gameManager.getSnapshot(slug)!;
+  assert(afterWand.players[0].items.wand === 0, 'wand not consumed');
+  assert(afterWand.boards['u1'].remaining === beforeWand.boards['u1'].remaining - 2, 'wand did not remove a pair');
+  assert(afterWand.players[0].combo === 0, 'wand must break the combo');
+  assert(gameManager.useWand(slug, p1).ok === false, 'wand must be empty now');
+
+  // A9 준비: u2는 진행 중에 기권(플레이어 목록에는 남는다)
+  gameManager.spectate(slug, p2);
+  const afterForfeit = gameManager.getSnapshot(slug)!;
+  assert(afterForfeit.players.length === 2, '기권해도 플레이어 목록에는 남는다');
+  assert(afterForfeit.players.find((p) => p.userId === 'u2')!.forfeited === true, 'u2 기권 표시');
 
   // u1이 판을 전부 지운다(막히면 서버가 알아서 셔플)
   let guard = 0;
@@ -570,14 +719,28 @@ async function managerFlow(): Promise<string> {
     const view: PickView = { cells: b.cells, cols: b.cols, rows: b.rows, nextNumber: b.nextNumber, keysLeft: b.keysLeft };
     let move = findAnyMove(view);
     if (!move) {
-      // 보이는 수가 없으면 물음표를 하나 열어 본다
-      const hiddenIdx = b.cells.findIndex((v) => v === 99);
-      assert(hiddenIdx >= 0, `no move and no mystery tile with ${b.remaining} left`);
-      assert(gameManager.reveal(slug, p1, hiddenIdx).ok === true, 'reveal failed mid-game');
-      assert(++guard < 400, 'play loop did not terminate');
-      continue;
+      // 보이는 수가 없으면 물음표를 엿본 뒤 그 심볼로 짝을 찾는다(v3: 숨김 타일도 pick 가능)
+      const peekIdx = b.cells.findIndex((v) => v === MYSTERY);
+      assert(peekIdx >= 0, `no move and no mystery tile with ${b.remaining} left`);
+      const ack = gameManager.peek(slug, p1, peekIdx);
+      assert(ack.ok === true, 'peek failed mid-game');
+      const symbol = (ack as { ok: true; symbol: number }).symbol;
+      const cells = b.cells.slice();
+      cells[peekIdx] = symbol;
+      move = findAnyMove({ ...view, cells });
+      if (!move) {
+        // 엿본 심볼로도 짝이 없으면 다른 물음표를 계속 열어 본다
+        for (let i = 0; i < cells.length && !move; i++) {
+          if (cells[i] !== MYSTERY) continue;
+          const one = gameManager.peek(slug, p1, i);
+          if (!one.ok) continue;
+          cells[i] = one.symbol;
+          move = findAnyMove({ ...view, cells });
+        }
+      }
+      assert(move !== null, `no move even after peeking everything (${b.remaining} left)`);
     }
-    const ack = gameManager.pick(slug, p1, move[0], move[1]);
+    const ack = gameManager.pick(slug, p1, move![0], move![1]);
     assert(ack.ok === true, `pick rejected: ${JSON.stringify(ack)} (remaining ${b.remaining})`);
     assert(++guard < 400, 'play loop did not terminate');
   }
@@ -589,6 +752,14 @@ async function managerFlow(): Promise<string> {
 
   const rematched = gameManager.rematch(slug, p1);
   assert('state' in rematched && (rematched as any).state.phase === 'lobby', 'rematch must return to lobby');
+  const lobbyAgain = gameManager.getSnapshot(slug)!;
+  assert(lobbyAgain.players.length === 2, `리매치 후 플레이어 ${lobbyAgain.players.length}명 (2명이어야 함)`);
+  assert(
+    lobbyAgain.players.every((p) => !p.forfeited && p.finishedAt === null && p.score === 0 && p.combo === 0),
+    '리매치는 기권/점수/콤보를 전부 리셋해야 한다'
+  );
+  assert(lobbyAgain.players.every((p) => p.items.hint === 3 && p.items.wand === 1), '리매치는 아이템도 리셋');
+  assert(lobbyAgain.spectators.length === 0, '리매치 후 관전자로 내려간 사람이 없어야 한다');
   gameManager.onParticipantLeft(slug, 'u2', false);
   gameManager.onParticipantLeft(slug, 'u1', false);
   assert(gameManager.getSnapshot(slug) === null, 'game must be deleted when no players remain');
@@ -658,7 +829,12 @@ async function coopFlow(): Promise<string> {
   assert(Object.keys(playing.boards).join(',') === 'shared', `coop boards: ${Object.keys(playing.boards)}`);
   assert(playing.boards.shared.nextNumber === 1, 'numbers:true must start at nextNumber 1');
   assert(playing.boards.shared.cells.some((v) => v === WALL), 'walls:true must place walls');
-  assert(playing.players.every((p) => p.hintsLeft === 5), '협동 힌트는 5회 공유');
+  assert(playing.players.every((p) => p.items.hint === 5 && p.items.shuffle === 3 && p.items.wand === 2), '쟁탈전 아이템은 공유 카운트');
+  assert(gameManager.useShuffle(slug, p2).ok === true, 'coop F2 failed');
+  assert(
+    gameManager.getSnapshot(slug)!.players.every((p) => p.items.shuffle === 2),
+    '쟁탈전 아이템은 전원에 미러돼야 한다'
+  );
 
   // 숫자 순서 위반 → 'order'
   const b0 = gameManager.getSnapshot(slug)!.boards.shared;

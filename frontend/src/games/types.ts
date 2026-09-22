@@ -12,12 +12,15 @@ export type MapShape = 'random' | 'rect' | 'diamond' | 'frame' | 'towers' | 'pyr
 export const MAP_SHAPES: MapShape[] = ['random', 'rect', 'diamond', 'frame', 'towers', 'pyramid', 'cross', 'blob'];
 export interface SpecialToggles { mystery: boolean; numbers: boolean; keys: boolean; walls: boolean; }
 
+/** 1 = 가장 쉬움(같은 그림 많고 붙어 있음), 5 = 가장 어려움 (v3 §W1) */
+export type Difficulty = 1 | 2 | 3 | 4 | 5;
 export interface GameOptions {
-  boardSize: BoardSize; mapShape: MapShape; specials: SpecialToggles; items: boolean; timeLimitSec: number;
+  boardSize: BoardSize; mapShape: MapShape; specials: SpecialToggles;
+  difficulty: Difficulty; items: boolean; timeLimitSec: number;
 }
 export const DEFAULT_OPTIONS: Record<GameMode, GameOptions> = {
-  race: { boardSize: 'm', mapShape: 'random', specials: { mystery: false, numbers: false, keys: false, walls: false }, items: false, timeLimitSec: 300 },
-  coop: { boardSize: 'l', mapShape: 'random', specials: { mystery: false, numbers: false, keys: false, walls: false }, items: false, timeLimitSec: 0 },
+  race: { boardSize: 'm', mapShape: 'random', specials: { mystery: false, numbers: false, keys: false, walls: false }, difficulty: 3, items: false, timeLimitSec: 300 },
+  coop: { boardSize: 'l', mapShape: 'random', specials: { mystery: false, numbers: false, keys: false, walls: false }, difficulty: 3, items: false, timeLimitSec: 0 },
 };
 // 격자(모양은 이 안에서 마스크) — 타일 수는 마스크가 정함(대략 s≈40, m≈72~80, l≈112~120)
 export const BOARD_DIMS: Record<BoardSize, { cols: number; rows: number }> = {
@@ -26,11 +29,22 @@ export const BOARD_DIMS: Record<BoardSize, { cols: number; rows: number }> = {
 // cells 인코딩
 export const EMPTY = 0;
 export const WALL = -1;          // 벽: 영구 점유. 선택 불가, 경로 차단, 셔플 대상 아님
-export const LOCKED = 98;        // 자물쇠(플레이스홀더): 실제 심볼은 서버만 앎. 열쇠 쌍 제거 시 game:unlocked 로 공개
-export const MYSTERY = 99;       // 물음표(플레이스홀더): game:reveal 또는 인접 제거로 공개
-export const KEY_SYMBOL = 100;   // 열쇠 타일(정확히 1쌍)
+export const MYSTERY = 99;       // 물음표(플레이스홀더): game:peek로 엿보기, 인접 제거 시 영구 공개
 export const NUMBER_BASE = 200;  // 숫자 타일: NUMBER_BASE + n (n=1..K, 각 n 1쌍). n 순서대로만 제거 가능
 export const isNormalSymbol = (v: number) => v >= 1 && v <= 28;
+
+// 색깔 자물쇠·열쇠 (v3 §W1). 자물쇠는 색만 보이고 안의 심볼은 서버만 안다.
+export const LOCK_BASE = 90;
+export const KEY_BASE = 100;
+export const MAX_KEY_TYPES = 3;
+export const isLock = (v: number) => v > LOCK_BASE && v <= LOCK_BASE + MAX_KEY_TYPES;
+export const isKey = (v: number) => v > KEY_BASE && v <= KEY_BASE + MAX_KEY_TYPES;
+export const KEY_COLORS = ['#F87171', '#60A5FA', '#4ADE80'];
+/** 판 크기별 열쇠 종류 수 (specials.keys 가 true일 때) */
+export const KEY_TYPES_PER_SIZE: Record<BoardSize, number> = { s: 1, m: 2, l: 3 };
+
+/** 소모품 아이템 (v3 §W1). 쟁탈전은 공유 카운트를 각 플레이어에 미러한다. */
+export interface PlayerItems { hint: number; shuffle: number; wand: number; }
 
 export const MAX_PLAYERS = 4;
 export const COMBO_WINDOW_MS = 2000;
@@ -47,7 +61,7 @@ export interface Board {
   effects: Effect[];
   shape: Exclude<MapShape, 'random'>;   // 실제 결정된 모양(랜덤이면 서버가 고른 값)
   nextNumber: number;    // 숫자 순서 타일이 있으면 다음에 지워야 할 n, 없거나 끝났으면 0
-  keysLeft: number;      // 열쇠 쌍 남았으면 1, 아니면 0
+  keysLeft: number;      // 남은 열쇠 쌍 수 (종류별 1쌍씩)
   movesLeft: number;     // v2.1: 지금 연결 가능한 쌍 수(서버 진실 기준, 물음표는 심볼을 아는 것으로 계산)
 }
 
@@ -58,7 +72,7 @@ export interface PlayerState {
   score: number; combo: number; maxCombo: number;
   pairsCleared: number;
   lastMatchAt: number;   // ms epoch, 0 = 없음
-  hintsLeft: number;
+  items: PlayerItems;    // 남은 소모품 (힌트/재배치/여의봉)
   finishedAt: number | null;   // race 완주 시각
   connected: boolean;    // 소켓 끊김(10s 유예 중) 표시용
   forfeited: boolean;    // playing 중 기권(보드는 남지만 순위는 최하위 그룹)
@@ -109,11 +123,13 @@ export interface MatchedEvent {
   a: number; b: number; path: Point[];
   combo: number; score: number; remaining: number; movesLeft: number;
   board: BoardPatch;
+  byItem?: 'wand';      // 여의봉으로 지운 쌍
   attack?: AttackEvent;
 }
 export interface ShuffledEvent {
-  seq: number; boardId: string; cells: number[]; cause: 'stuck' | 'attack'; movesLeft: number;
+  seq: number; boardId: string; cells: number[]; cause: 'stuck' | 'attack' | 'item'; movesLeft: number;
   board: BoardPatch;
+  userId?: string;      // cause:'item' 일 때 아이템을 쓴 사람
 }
 export interface PeerSelectEvent { userId: string; idx: number | null; }
 /** game:revealed — 물음표 공개(클릭 또는 인접 제거) */
@@ -121,14 +137,18 @@ export interface RevealedEvent {
   seq: number; boardId: string; tiles: { idx: number; symbol: number }[]; movesLeft: number;
   board: BoardPatch;
 }
-/** game:unlocked — 열쇠 쌍 제거로 자물쇠 전부 해제 */
+/** game:unlocked — 그 색 열쇠 쌍 제거로 같은 색 자물쇠만 해제 */
 export interface UnlockedEvent {
   seq: number; boardId: string; tiles: { idx: number; symbol: number }[]; movesLeft: number;
   board: BoardPatch;
+  keyType: number;      // 1..MAX_KEY_TYPES
 }
 export type PickReason =
   | 'same' | 'symbol' | 'gone' | 'nopath' | 'frozen' | 'phase'
-  | 'locked' | 'order' | 'hidden' | 'wall';
+  | 'locked' | 'order' | 'wall';
 export type PickAck = { ok: true; path: Point[] } | { ok: false; reason: PickReason };
 export type HintAck = { ok: true; pair: [number, number] } | { ok: false; reason: 'none' };
-export type RevealAck = { ok: true; symbol: number } | { ok: false; reason: PickReason };
+/** game:peek — 물음표 일회성 엿보기(요청자에게만, 서버 상태 불변) */
+export type PeekAck = { ok: true; symbol: number } | { ok: false; reason: PickReason };
+/** game:shuffle / game:wand — 소모품 사용 */
+export type ItemAck = { ok: true } | { ok: false; reason: 'none' | PickReason };

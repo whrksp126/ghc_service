@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useGameStore, predictedCombo, type FxEvent } from '../../stores/gameStore';
 import { useAuthStore } from '../../stores/authStore';
@@ -12,10 +12,11 @@ import { ShisenTile, kindOf } from './ShisenTile';
 import { BoardEffectOverlay } from './AttackFx';
 import { symbolOf } from '../../games/symbols';
 import {
-  EMPTY, LOCKED, MYSTERY, NUMBER_BASE, WALL,
+  EMPTY, MYSTERY, NUMBER_BASE, WALL,
   type Board, type Effect, type PlayerState, type Point,
 } from '../../games/types';
-import type { PickAck, PickReason, RevealAck } from '../../games/events';
+import { isLockValue } from '../../games/v3';
+import type { PeekAck, PickAck, PickReason } from '../../games/events';
 
 export const BOARD_GAP = 4;
 
@@ -32,10 +33,10 @@ interface ShisenBoardProps {
 const REASON_NOTICE: Partial<Record<PickReason, string>> = {
   symbol: '다른 그림이에요',
   nopath: '이어지지 않아요',
-  locked: '열쇠를 먼저 찾아요',
-  hidden: '먼저 뒤집어 보세요',
+  locked: '같은 색 열쇠를 먼저 찾아요',
   wall: '벽은 지울 수 없어요',
   phase: '아직 시작 전이에요',
+  gone: '먼저 지워졌어요',
 };
 
 /** 마스크(맵 모양)의 바운딩 박스 — 빈 가장자리 때문에 타일이 작아지지 않게. */
@@ -136,6 +137,7 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
   const snapshot = useGameStore((s) => s.snapshot);
   const selectedIdx = useGameStore((s) => s.selectedIdx);
   const cursorIdx = useGameStore((s) => s.cursorIdx);
+  const peek = useGameStore((s) => s.peek);
   const hintPair = useGameStore((s) => s.hintPair);
   const peerSelect = useGameStore((s) => s.peerSelect);
   const fxQueue = useGameStore((s) => s.fxQueue);
@@ -198,6 +200,18 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
   }, [fx]);
   const tumbling = fx.some((f) => f.type === 'shuffle');
 
+  // 엿보기는 열릴 때와 닫힐 때 모두 그 타일을 뒤집는다(v3 W1/W3).
+  const [peekAnim, setPeekAnim] = useState<{ idx: number; nonce: number } | null>(null);
+  const prevPeekIdx = useRef<number | null>(null);
+  useEffect(() => {
+    const cur = peek?.idx ?? null;
+    const prev = prevPeekIdx.current;
+    if (cur === prev) return;
+    prevPeekIdx.current = cur;
+    const target = cur ?? prev;
+    if (target !== null) setPeekAnim({ idx: target, nonce: Date.now() });
+  }, [peek]);
+
   const oneShotKey = fx
     .filter((f) => ['invalid', 'shuffle', 'flash', 'reveal', 'unlock'].includes(f.type))
     .map((f) => f.id)
@@ -232,24 +246,28 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
     }
 
     // 벽·자물쇠는 선택 자체가 안 된다 — 흔들림 + 짧은 안내만.
-    if (value === WALL || value === LOCKED) {
+    if (value === WALL || isLockValue(value)) {
       st.pushFx({ type: 'invalid', boardId: board.id, cells: [idx] });
-      st.setNotice(value === WALL ? '벽은 지울 수 없어요' : '열쇠를 먼저 찾아요');
+      st.setNotice(value === WALL ? '벽은 지울 수 없어요' : '같은 색 열쇠를 먼저 찾아요');
       playGameSound('invalid', { gain: 0.5 });
       return;
     }
 
-    // 물음표는 "선택"이 아니라 공개 요청(콤보와 무관).
-    if (value === MYSTERY) {
+    // 물음표를 **첫 선택**으로 누르면 엿보기(v3 W1). 두 번째 선택이면 아래 pick 경로로 간다.
+    if (value === MYSTERY && st.selectedIdx === null) {
       try {
-        const ack = await emitWithAck<RevealAck>('game:reveal', { idx });
+        const ack = await emitWithAck<PeekAck>('game:peek', { idx });
         if (ack.ok) {
           playGameSound('reveal');
-          useGameStore.getState().pushFx({ type: 'reveal', boardId: board.id, cells: [idx] });
+          useGameStore.getState().setPeek({ idx, symbol: ack.symbol });
+          useGameStore.getState().setSelected(idx);
+          emitSelect(idx);
         } else {
-          st.setNotice(REASON_NOTICE[ack.reason] ?? '지금은 열 수 없어요');
+          st.setNotice(REASON_NOTICE[ack.reason] ?? '지금은 볼 수 없어요');
         }
-      } catch { /* 연결 문제 — 다음 클릭에서 다시 */ }
+      } catch {
+        st.setNotice('지금은 볼 수 없어요');
+      }
       return;
     }
 
@@ -266,12 +284,36 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
       return;
     }
 
-    // v2 규칙 검사(같은 심볼 + 숫자 순서 + 잠금 + 경로)를 서버와 같은 함수로.
+    // 엿보고 있는 물음표는 그 심볼로 취급해서 판정한다(서버는 진실 심볼로 판정 — v3 W1).
+    const peeked = useGameStore.getState().peek;
+    const resolved = live.cells.slice();
+    if (peeked && resolved[peeked.idx] === MYSTERY) resolved[peeked.idx] = peeked.symbol;
+    const unknown = resolved[sel] === MYSTERY || resolved[idx] === MYSTERY;
+
+    if (unknown) {
+      // 아직 못 본 물음표가 끼어 있으면 예측하지 않고 서버 판정에 맡긴다.
+      st.setSelected(null);
+      st.setPeek(null);
+      emitSelect(null);
+      try {
+        const ack = await emitWithAck<PickAck>('game:pick', { a: sel, b: idx });
+        if (!ack.ok) {
+          useGameStore.getState().pushFx({ type: 'invalid', boardId: board.id, cells: [sel, idx] });
+          useGameStore.getState().setNotice(REASON_NOTICE[ack.reason] ?? '지울 수 없어요');
+          playGameSound('invalid');
+        }
+      } catch {
+        void syncGame();
+      }
+      return;
+    }
+
+    // v2/v3 규칙 검사(같은 심볼 + 숫자 순서 + 잠금 + 경로)를 서버와 같은 함수로.
     const view = {
-      cells: live.cells, cols: live.cols, rows: live.rows,
+      cells: resolved, cols: live.cols, rows: live.rows,
       nextNumber: live.nextNumber, keysLeft: live.keysLeft,
     };
-    const reason = canPick(view, sel, idx) as PickReason | null;
+    const reason = canPick(view, sel, idx);
     if (reason) {
       st.pushFx({ type: 'invalid', boardId: board.id, cells: [sel, idx] });
       st.setNotice(
@@ -280,6 +322,7 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
           : REASON_NOTICE[reason] ?? '이어지지 않아요',
       );
       st.setSelected(idx);
+      st.setPeek(null);
       emitSelect(idx);
       playGameSound('invalid');
       return;
@@ -287,7 +330,7 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
 
     // --- 클라 예측: 즉시 제거하고 서버 응답을 기다린다 ---
     // canPick이 통과했으니 경로는 반드시 있다(서버 ack의 path와 같은 꼭짓점).
-    const path = findPath(live.cells, live.cols, live.rows, sel, idx) ?? [];
+    const path = findPath(resolved, live.cols, live.rows, sel, idx) ?? [];
     st.predictPick(board.id, sel, idx, path, myColor);
     emitSelect(null);
     playGameSound('match', { combo: predictedCombo(st.me()) });
@@ -331,12 +374,32 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
     return () => { if (activePickHandler === handleTile) activePickHandler = null; };
   }, [interactive, handleTile]);
 
+  /**
+   * 보드 컨테이너에서도 좌표로 타일을 찍어 준다(폴백).
+   * 타일 버튼이 어떤 이유로든(disabled·pointer-events·오버레이·4px 간격) 클릭을 못 받아도
+   * 컨테이너가 같은 `handleTile`을 호출하므로 `?` 엿보기가 막히지 않는다.
+   */
+  const handleBoardClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!interactive) return;
+    const el = e.target as HTMLElement | null;
+    if (el?.closest?.('[data-idx]')) return;   // 타일이 이미 처리했다
+    const rect = e.currentTarget.getBoundingClientRect();
+    const c = box.c0 + Math.floor((e.clientX - rect.left) / step);
+    const r = box.r0 + Math.floor((e.clientY - rect.top) / step);
+    if (r < box.r0 || r > box.r1 || c < box.c0 || c > box.c1) return;
+    const idx = r * board.cols + c;
+    if (idx < 0 || idx >= board.cells.length || board.cells[idx] === EMPTY) return;
+    void handleTile(idx);
+  }, [interactive, box, step, board, handleTile]);
+
   // 렌더되는 타일 수 = 0이 아닌 셀 수 여야 한다(크롭·필터 버그 감시용). E2E 봇도 이 값을 읽는다.
   const tileCount = board.cells.reduce((n, v) => (v === EMPTY ? n : n + 1), 0);
 
   return (
     <div
       data-ghc-tiles={tileCount}
+      data-ghc-interactive={interactive ? '1' : '0'}
+      onClick={handleBoardClick}
       className="relative shrink-0 rounded-xl"
       // perspective는 회전하는 타일의 **부모**에 있어야 호버 틸트가 입체로 보인다.
       style={{
@@ -344,11 +407,13 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
         boxShadow: comboGlow ? `0 0 24px ${comboGlow}55` : undefined,
       }}
     >
-      {board.cells.map((value, idx) => {
-        if (value === EMPTY) return null;
+      {board.cells.map((raw, idx) => {
+        if (raw === EMPTY) return null;
+        // 엿보는 동안에는 그 타일만 진짜 심볼로 보인다(선택이 풀리면 즉시 `?`로 되돌아간다).
+        const value = peek && peek.idx === idx && raw === MYSTERY ? peek.symbol : raw;
         const r = Math.floor(idx / board.cols);
         const c = idx % board.cols;
-        const flip = flips[idx];
+        const flip = peekAnim?.idx === idx ? { key: peekAnim.nonce, delay: 0 } : flips[idx];
         return (
           <ShisenTile
             key={idx}
@@ -371,6 +436,7 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
             flipKey={flip?.key}
             flipDelay={flip?.delay}
             reduced={reduced}
+            boardId={board.id}
             /* 얼어 있어도 클릭은 받는다 — handleTile이 흔들림 피드백을 준다 */
             interactive={interactive}
             onClick={handleTile}
