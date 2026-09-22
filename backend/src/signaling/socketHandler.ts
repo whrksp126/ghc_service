@@ -3,6 +3,8 @@ import { verifyToken, JwtPayload } from '../middleware/auth';
 import { generateTurnCredentials } from '../config/turn';
 import { createJoinToken, deleteLivekitRoom } from '../services/livekitService';
 import { Device, Room, RoomMember } from '../models';
+import { gameManager } from '../games/gameManager';
+import { initGameBroadcast, registerGameHandlers } from '../games/gameSocket';
 
 // Media (tracks/transports) now lives entirely in LiveKit. This handler keeps the
 // app-level concerns: device presence, cross-device remote control, P2P preview
@@ -49,6 +51,10 @@ function performParticipantLeave(roomId: string, userId: string, deviceId: strin
     participants.delete(key);
   }
 
+  // 방 안 미니게임: 같은 유저의 다른 기기가 아직 방에 있으면 플레이어는 그대로 유지된다.
+  const stillInRoom = participants ? [...participants.values()].some((p) => p.userId === userId) : false;
+  gameManager.onParticipantLeft(roomId, userId, stillInRoom);
+
   ioRef?.to(roomId).emit('room:participantLeft', { userId, deviceId });
   ioRef?.to(`user:${userId}`).emit('camera:statusUpdate', { deviceId, isInRoom: false, roomSlug: null });
 
@@ -63,6 +69,7 @@ function performParticipantLeave(roomId: string, userId: string, deviceId: strin
  */
 export async function forceCloseRoom(roomSlug: string) {
   if (ioRef) ioRef.to(roomSlug).emit('room:closed', { roomSlug });
+  gameManager.destroy(roomSlug);
   await deleteLivekitRoom(roomSlug);
   roomParticipants.delete(roomSlug);
   if (ioRef) ioRef.in(roomSlug).socketsLeave(roomSlug);
@@ -70,6 +77,7 @@ export async function forceCloseRoom(roomSlug: string) {
 
 export function setupSocketHandlers(io: Server) {
   ioRef = io;
+  initGameBroadcast(io);
 
   io.use(async (socket, next) => {
     try {
@@ -397,6 +405,9 @@ export function setupSocketHandlers(io: Server) {
           deviceId: p.deviceId,
           deviceLabel: p.deviceLabel,
         }));
+
+        // 방 안 미니게임 핸들러(소켓당 1회 바인딩). 재접속이면 끊겼던 플레이어가 복구된다.
+        registerGameHandlers(io, socket, { getRoomSlug: () => currentRoomId, user });
 
         const token = await createJoinToken({
           roomName: roomSlug,

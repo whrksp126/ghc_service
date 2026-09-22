@@ -22,6 +22,9 @@ import { GridLayout } from '../components/room/GridLayout';
 import { SpotlightLayout } from '../components/room/SpotlightLayout';
 import { DocumentPipPortal } from '../components/room/DocumentPipPortal';
 import { useFloatingWindowStore } from '../stores/floatingWindowStore';
+import { useGameSocket } from '../hooks/useGameSocket';
+import { useGameStore } from '../stores/gameStore';
+import { GamePanel } from '../components/game/GamePanel';
 import { TopBar } from '../components/layout/TopBar';
 import { BottomBar } from '../components/layout/BottomBar';
 import { ReconnectingOverlay } from '../components/connection/ReconnectingOverlay';
@@ -213,6 +216,13 @@ export function RoomPage() {
 
   const [phase, setPhase] = useState<RoomPhase>('lobby');
   const [isOwner, setIsOwner] = useState(false);
+  // 방 안 미니게임(사천성): 소켓 구독은 인룸일 때만. 패널 열림 여부로 본문 레이아웃이 갈린다.
+  const isGamePanelOpen = useGameStore((s) => s.isPanelOpen);
+  const toggleGamePanel = useGameStore((s) => s.togglePanel);
+  const gamePhase = useGameStore((s) => s.snapshot?.phase);
+  const gameBadge: 'none' | 'lobby' | 'playing' =
+    !gamePhase ? 'none' : gamePhase === 'playing' || gamePhase === 'countdown' ? 'playing' : 'lobby';
+  useGameSocket(phase === 'inRoom');
   const [obsOpen, setObsOpen] = useState(false);
   const openObs = useCallback(() => setObsOpen(true), []);
   const closeObs = useCallback(() => setObsOpen(false), []);
@@ -1059,30 +1069,49 @@ export function RoomPage() {
         <RemoteAudio key={c.consumerId} track={c.track!} voiceKey={`${c.userId}:${c.deviceId}`} />
       ))}
 
-      <div className="flex-1 min-h-0 relative">
-        {allFeeds.length > 0 ? (
-          <LayoutGroup>
-            {layoutMode === 'grid' && (
-              <GridLayout feeds={allFeeds} onFeedClick={focusFeed} onPip={togglePip} />
-            )}
-            {layoutMode === 'spotlight' && (
-              <SpotlightLayout
-                feeds={allFeeds}
-                spotlightId={spotlightProducerId}
-                onFeedClick={setSpotlightProducer}
-                onExit={exitSpotlight}
-                onPip={togglePip}
-              />
-            )}
-          </LayoutGroup>
-        ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center text-white/30 gap-2 px-6 text-center">
-            <Users size={40} strokeWidth={1.5} />
-            <p className="text-sm">카메라를 켜면 여기에 표시됩니다</p>
-            <p className="text-xs text-white/20">타일을 한 번 누르면 설정, 두 번 누르면 크게 보기</p>
+      <div className={`flex-1 min-h-0 relative ${isGamePanelOpen ? 'flex flex-col md:flex-row' : ''}`}>
+        {/* 게임 패널이 열리면 비디오는 좁은 컬럼(데스크탑)/상단 필름스트립(모바일)으로 밀리고,
+            본문은 GamePanel이 차지한다. 스포트라이트 모드는 게임 중엔 무시(그리드로 고정). */}
+        <div
+          className={
+            isGamePanelOpen
+              ? 'order-1 shrink-0 h-20 w-full overflow-x-auto overflow-y-hidden md:order-2 md:h-auto md:w-[280px] md:overflow-hidden border-b border-white/5 md:border-b-0 md:border-l'
+              : 'w-full h-full'
+          }
+        >
+          {allFeeds.length > 0 ? (
+            <LayoutGroup>
+              {(layoutMode === 'grid' || isGamePanelOpen) && (
+                <GridLayout feeds={allFeeds} onFeedClick={focusFeed} onPip={togglePip} />
+              )}
+              {layoutMode === 'spotlight' && !isGamePanelOpen && (
+                <SpotlightLayout
+                  feeds={allFeeds}
+                  spotlightId={spotlightProducerId}
+                  onFeedClick={setSpotlightProducer}
+                  onExit={exitSpotlight}
+                  onPip={togglePip}
+                />
+              )}
+            </LayoutGroup>
+          ) : (
+            <div className="w-full h-full flex flex-col items-center justify-center text-white/30 gap-2 px-6 text-center">
+              <Users size={40} strokeWidth={1.5} />
+              {!isGamePanelOpen && (
+                <>
+                  <p className="text-sm">카메라를 켜면 여기에 표시됩니다</p>
+                  <p className="text-xs text-white/20">타일을 한 번 누르면 설정, 두 번 누르면 크게 보기</p>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        {isGamePanelOpen && (
+          <div className="order-2 min-h-0 min-w-0 flex-1 p-2 md:order-1">
+            <GamePanel />
           </div>
         )}
-
       </div>
 
       <BottomBar
@@ -1090,6 +1119,8 @@ export function RoomPage() {
         onToggleScreen={handleToggleScreen}
         onLeave={handleLeave}
         onCloseRoom={isOwner ? handleCloseRoom : undefined}
+        onToggleGame={toggleGamePanel}
+        gameBadge={gameBadge}
         onObsLive={isOwner && !isNativeShell() ? openObs : undefined}
         onBrowserLive={isOwner && isNativeShell() && !browserOpening ? openBrowser : undefined}
       />

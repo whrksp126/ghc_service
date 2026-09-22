@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Mic, MicOff, MonitorUp, MonitorOff,
-  PhoneOff, MoreHorizontal, Trash2, SlidersHorizontal, Radio, Globe,
+  PhoneOff, MoreHorizontal, Trash2, SlidersHorizontal, Radio, Globe, Gamepad2,
 } from 'lucide-react';
 import { useDeviceStore } from '../../stores/deviceStore';
 import { playSound } from '../../lib/sounds';
@@ -18,6 +18,10 @@ interface BottomBarProps {
   onObsLive?: () => void;
   /** Owner only (desktop shell only) — opens the browser-source live setup. */
   onBrowserLive?: () => void;
+  /** Opens/closes the in-room mini game panel (사천성). */
+  onToggleGame?: () => void;
+  /** Dot on the game button: lobby = secondary pulse, playing = primary. */
+  gameBadge?: 'none' | 'lobby' | 'playing';
 }
 
 /**
@@ -27,6 +31,7 @@ interface BottomBarProps {
  */
 export function BottomBar({
   onToggleMic, onToggleScreen, onLeave, onCloseRoom, onObsLive, onBrowserLive,
+  onToggleGame, gameBadge = 'none',
 }: BottomBarProps) {
   const { isMicOn, isScreenSharing } = useDeviceStore();
   const [moreOpen, setMoreOpen] = useState(false);
@@ -61,6 +66,24 @@ export function BottomBar({
         >
           {isMicOn ? <Mic size={20} /> : <MicOff size={20} />}
         </motion.button>
+
+        {onToggleGame && (
+          <motion.button
+            whileTap={{ scale: 0.85 }}
+            onClick={onToggleGame}
+            className="btn-icon relative bg-dark-600 hover:bg-dark-500"
+            title="게임"
+          >
+            <Gamepad2 size={20} />
+            {gameBadge !== 'none' && (
+              <span
+                className={`absolute right-1 top-1 h-2.5 w-2.5 rounded-full ${
+                  gameBadge === 'lobby' ? 'bg-secondary animate-pulse' : 'bg-primary'
+                }`}
+              />
+            )}
+          </motion.button>
+        )}
 
         <motion.button
           whileTap={{ scale: 0.85 }}
