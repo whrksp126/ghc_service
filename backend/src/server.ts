@@ -1,3 +1,8 @@
+// Log instead of crashing the whole SFU signaling process on a stray rejection.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+
 import http from 'http';
 import { Server } from 'socket.io';
 import app from './app';

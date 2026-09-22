@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
+import { UniqueConstraintError } from 'sequelize';
 import { Room, RoomMember } from '../models';
 import { authMiddleware } from '../middleware/auth';
 import { requireSecret } from '../lib/requireSecret';
@@ -164,12 +165,19 @@ router.post('/rooms/:slug/join', authMiddleware, joinLimiter, async (req, res) =
     }
 
     if (!member) {
-      member = await RoomMember.create({
-        room_id: room.id,
-        user_id: userId,
-        role: 'member',
-        joined_at: new Date(),
-      });
+      try {
+        member = await RoomMember.create({
+          room_id: room.id,
+          user_id: userId,
+          role: 'member',
+          joined_at: new Date(),
+        });
+      } catch (createErr) {
+        // Concurrent join from the same user (double click / two devices): row already exists.
+        if (!(createErr instanceof UniqueConstraintError)) throw createErr;
+        member = await RoomMember.findOne({ where: { room_id: room.id, user_id: userId } });
+        if (!member) throw createErr;
+      }
     }
 
     res.json({
