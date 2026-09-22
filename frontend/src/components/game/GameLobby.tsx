@@ -1,22 +1,21 @@
 import { useState } from 'react';
-import { Crown, Eye, Play, UserPlus, Volume2, VolumeX, X } from 'lucide-react';
+import { Crown, Eye, LogOut, Play, UserPlus, Volume2, VolumeX, X } from 'lucide-react';
 import { emitWithAck } from '../../lib/socket';
 import { showToast } from '../common/Toast';
 import { Button } from '../common/Button';
 import { useAuthStore } from '../../stores/authStore';
 import { useUIStore } from '../../stores/uiStore';
 import { Scoreboard } from './Scoreboard';
-import { BOARD_DIMS, MAX_PLAYERS, type BoardSize, type GameMode, type GameSnapshot } from '../../games/types';
+import { ShisenSettings } from './ShisenSettings';
+import { MAX_PLAYERS, type GameMode, type GameOptions, type GameSnapshot } from '../../games/types';
 
-const MODE_LABEL: Record<GameMode, string> = { race: '레이스', coop: '협동' };
-const MODE_DESC: Record<GameMode, string> = {
-  race: '같은 판을 각자 지워서 누가 먼저 끝내는지',
-  coop: '한 판을 다 같이 지우고 팀 기록을 남겨요',
-};
-const SIZE_LABEL: Record<BoardSize, string> = { s: '작게', m: '기본', l: '크게' };
-const TIME_CHOICES = [0, 180, 300, 600];
+/** 게임 선택 카드 (v2 §V1-1). 테트리스는 자리만 잡아 둔다. */
+const GAMES: Array<{ id: string; name: string; desc: string; ready: boolean }> = [
+  { id: 'shisen', name: '사천성', desc: '같은 그림 두 개를 이어서 지우기', ready: true },
+  { id: 'tetris', name: '테트리스', desc: '준비 중', ready: false },
+];
 
-/** 모드·옵션·슬롯·관전자·시작. 호스트만 옵션을 바꿀 수 있고 나머지는 읽기 전용. */
+/** 로비: 게임 선택 → 상세 설정 → 플레이어 슬롯 → 시작/나가기 → 전적. */
 export function GameLobby({ snapshot }: { snapshot: GameSnapshot }) {
   const myUserId = useAuthStore((s) => s.userId);
   const soundOn = useUIStore((s) => s.gameSoundOn);
@@ -26,7 +25,6 @@ export function GameLobby({ snapshot }: { snapshot: GameSnapshot }) {
   const isHost = snapshot.hostUserId === myUserId;
   const amPlayer = snapshot.players.some((p) => p.userId === myUserId);
   const full = snapshot.players.length >= MAX_PLAYERS;
-  const dims = BOARD_DIMS[snapshot.options.boardSize];
 
   const call = async (event: string, payload: unknown = {}) => {
     setBusy(true);
@@ -39,31 +37,29 @@ export function GameLobby({ snapshot }: { snapshot: GameSnapshot }) {
     }
   };
 
-  const setOptions = (patch: Partial<GameSnapshot['options']>) =>
-    call('game:updateOptions', { options: { ...snapshot.options, ...patch } });
-
-  const chip = (active: boolean, disabled: boolean) =>
-    `rounded-full px-3 py-1 text-xs transition-colors ${
-      active ? 'bg-primary text-white' : 'bg-dark-700 text-white/60 hover:bg-dark-600'
-    } ${disabled ? 'pointer-events-none opacity-50' : ''}`;
+  // options는 서버에서 부분 병합된다(v2 §V2).
+  const patchOptions = (patch: Partial<GameOptions>) => call('game:updateOptions', { options: patch });
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-3">
-      {/* 모드 */}
+      {/* 1. 게임 선택 */}
       <div className="flex items-center gap-2">
-        {(['race', 'coop'] as GameMode[]).map((m) => (
-          <button
-            key={m}
-            disabled={!isHost || busy}
-            onClick={() => call('game:updateOptions', { mode: m })}
-            className={`flex-1 rounded-feed border p-3 text-left transition-colors ${
-              snapshot.mode === m ? 'border-primary bg-primary/10' : 'border-white/10 bg-white/5'
-            } ${!isHost ? 'opacity-70' : 'hover:border-white/20'}`}
-          >
-            <p className="text-sm font-semibold">{MODE_LABEL[m]}</p>
-            <p className="mt-0.5 text-[11px] leading-tight text-white/45">{MODE_DESC[m]}</p>
-          </button>
-        ))}
+        {GAMES.map((g) => {
+          const selected = snapshot.gameId === g.id;
+          return (
+            <button
+              key={g.id}
+              disabled={!g.ready || !isHost || busy}
+              onClick={() => call('game:updateOptions', { gameId: g.id })}
+              className={`flex-1 rounded-feed border p-2.5 text-left transition-colors ${
+                selected ? 'border-primary bg-primary/10' : 'border-white/10 bg-white/5'
+              } ${!g.ready ? 'opacity-40' : isHost ? 'hover:border-white/20' : 'opacity-80'}`}
+            >
+              <p className="text-sm font-semibold">{g.name}</p>
+              <p className="mt-0.5 text-[11px] leading-tight text-white/45">{g.desc}</p>
+            </button>
+          );
+        })}
         <button
           onClick={toggleSound}
           className="btn-icon shrink-0 bg-dark-700 hover:bg-dark-600"
@@ -73,59 +69,18 @@ export function GameLobby({ snapshot }: { snapshot: GameSnapshot }) {
         </button>
       </div>
 
-      {/* 옵션 */}
-      <div className="glass space-y-2 rounded-feed p-3">
-        <div className="flex items-center gap-2">
-          <span className="w-16 shrink-0 text-xs text-white/50">판 크기</span>
-          <div className="flex gap-1.5">
-            {(['s', 'm', 'l'] as BoardSize[]).map((s) => (
-              <button
-                key={s}
-                onClick={() => setOptions({ boardSize: s })}
-                className={chip(snapshot.options.boardSize === s, !isHost || busy)}
-              >
-                {SIZE_LABEL[s]} {BOARD_DIMS[s].cols}×{BOARD_DIMS[s].rows}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="w-16 shrink-0 text-xs text-white/50">제한 시간</span>
-          <div className="flex flex-wrap gap-1.5">
-            {TIME_CHOICES.map((t) => (
-              <button
-                key={t}
-                onClick={() => setOptions({ timeLimitSec: t })}
-                className={chip(snapshot.options.timeLimitSec === t, !isHost || busy)}
-              >
-                {t === 0 ? '무제한' : `${t / 60}분`}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="w-16 shrink-0 text-xs text-white/50">방해 아이템</span>
-          <div className="flex gap-1.5">
-            {[false, true].map((v) => (
-              <button
-                key={String(v)}
-                onClick={() => setOptions({ items: v })}
-                className={chip(snapshot.options.items === v, !isHost || busy || snapshot.mode === 'coop')}
-              >
-                {v ? '켜짐' : '꺼짐'}
-              </button>
-            ))}
-          </div>
-          {snapshot.mode === 'coop' && (
-            <span className="text-[11px] text-white/30">협동에서는 사용 불가</span>
-          )}
-        </div>
-        <p className="text-[11px] text-white/30">
-          타일 {dims.cols * dims.rows}개 · 심볼 {(dims.cols * dims.rows) / 4}종
-        </p>
-      </div>
+      {/* 2. 상세 설정 */}
+      <ShisenSettings
+        mode={snapshot.mode}
+        options={snapshot.options}
+        seed={snapshot.seed}
+        canEdit={isHost}
+        busy={busy}
+        onMode={(mode: GameMode) => call('game:updateOptions', { mode })}
+        onOptions={patchOptions}
+      />
 
-      {/* 플레이어 슬롯 */}
+      {/* 3. 플레이어 슬롯 */}
       <div>
         <p className="mb-1.5 px-1 text-xs text-white/50">플레이어 {snapshot.players.length}/{MAX_PLAYERS}</p>
         <div className="grid grid-cols-2 gap-2">
@@ -154,7 +109,6 @@ export function GameLobby({ snapshot }: { snapshot: GameSnapshot }) {
         </div>
       </div>
 
-      {/* 관전자 */}
       {snapshot.spectators.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 px-1">
           <Eye size={13} className="text-white/40" />
@@ -166,26 +120,26 @@ export function GameLobby({ snapshot }: { snapshot: GameSnapshot }) {
         </div>
       )}
 
-      {/* 액션 */}
+      {/* 4. 액션 */}
       <div className="flex flex-wrap items-center gap-2">
+        {isHost && (
+          <Button size="sm" loading={busy} disabled={snapshot.players.length < 1} onClick={() => call('game:start')}>
+            <Play size={14} /> 시작
+          </Button>
+        )}
         {amPlayer ? (
           <Button size="sm" variant="secondary" loading={busy} onClick={() => call('game:spectate')}>
-            <Eye size={14} /> 관전으로
+            <LogOut size={14} /> 나가기
           </Button>
         ) : (
           <Button size="sm" variant="secondary" loading={busy} disabled={full} onClick={() => call('game:join')}>
-            <UserPlus size={14} /> {full ? '자리가 없어요' : '참가하기'}
+            <UserPlus size={14} /> {full ? '자리가 없어요' : '입장'}
           </Button>
         )}
         {isHost && (
-          <>
-            <Button size="sm" loading={busy} disabled={snapshot.players.length < 1} onClick={() => call('game:start')}>
-              <Play size={14} /> 시작
-            </Button>
-            <Button size="sm" variant="ghost" loading={busy} onClick={() => call('game:close')}>
-              <X size={14} /> 게임 닫기
-            </Button>
-          </>
+          <Button size="sm" variant="ghost" loading={busy} onClick={() => call('game:close')}>
+            <X size={14} /> 방 닫기
+          </Button>
         )}
       </div>
 

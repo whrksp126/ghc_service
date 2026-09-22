@@ -1,6 +1,8 @@
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Lightbulb, WifiOff, Crown } from 'lucide-react';
 import type { Board, PlayerState } from '../../games/types';
+import { isForfeited } from '../../games/events';
 import { ATTACK_ICON } from './AttackFx';
 import { prefersReducedMotion } from '../../games/motion';
 
@@ -33,11 +35,23 @@ export function PlayerHeader({ player, board, compact, isMe, isHost, showMeter }
   const AttackIcon = ATTACK_ICON.freeze;
   const reduced = prefersReducedMotion();
 
+  // 콤보가 끊기면 배지가 툭 떨어진다(v2.1).
+  const [dropped, setDropped] = useState<number | null>(null);
+  const prevCombo = useRef(player.combo);
+  useEffect(() => {
+    const was = prevCombo.current;
+    prevCombo.current = player.combo;
+    if (was <= 1 || player.combo > 1 || reduced) return;
+    setDropped(was);
+    const t = setTimeout(() => setDropped(null), 450);
+    return () => clearTimeout(t);
+  }, [player.combo, reduced]);
+
   return (
     <div
       className={`flex w-full items-center gap-1.5 rounded-lg bg-white/5 px-2 py-1 ${
         compact ? 'text-[11px]' : 'text-xs'
-      } ${player.forfeited ? 'opacity-50' : ''}`}
+      } ${isForfeited(player) ? 'opacity-50' : ''}`}
       style={{ boxShadow: `inset 0 0 0 1px ${player.color}33` }}
     >
       <span
@@ -53,14 +67,14 @@ export function PlayerHeader({ player, board, compact, isMe, isHost, showMeter }
       {isMe && <span className="shrink-0 text-white/35">나</span>}
       {isHost && <Crown size={compact ? 10 : 12} className="shrink-0 text-warning" />}
       {!player.connected && <WifiOff size={compact ? 10 : 12} className="shrink-0 text-danger" />}
-      {player.forfeited ? (
+      {isForfeited(player) ? (
         <span className="shrink-0 rounded-full bg-white/10 px-1.5 py-px text-[10px] text-white/50">기권</span>
       ) : player.finishedAt !== null ? (
         <span className="shrink-0 rounded-full bg-success/20 px-1.5 py-px text-[10px] text-success">완주 ✓</span>
       ) : null}
 
       <span className="ml-auto flex shrink-0 items-center gap-1.5 font-display tabular-nums">
-        {player.combo > 1 && (
+        {player.combo > 1 ? (
           <motion.span
             key={player.combo}
             initial={reduced ? false : { scale: 0.6 }}
@@ -70,7 +84,17 @@ export function PlayerHeader({ player, board, compact, isMe, isHost, showMeter }
           >
             x{player.combo}
           </motion.span>
-        )}
+        ) : dropped ? (
+          <motion.span
+            key={`drop-${dropped}`}
+            initial={{ y: 0, opacity: 1, rotate: 0 }}
+            animate={{ y: 18, opacity: 0, rotate: -22 }}
+            transition={{ duration: 0.45, ease: 'easeIn' }}
+            className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${comboClass(dropped)}`}
+          >
+            x{dropped}
+          </motion.span>
+        ) : null}
         {showMeter && isMe && (
           <span className="flex items-center gap-0.5" title="공격 게이지">
             <AttackIcon size={compact ? 9 : 11} className="text-secondary" />

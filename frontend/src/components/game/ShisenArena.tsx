@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { motion, useAnimationControls } from 'framer-motion';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion, useAnimationControls } from 'framer-motion';
 import { Lightbulb, X } from 'lucide-react';
 import { useGameStore } from '../../stores/gameStore';
 import { useAuthStore } from '../../stores/authStore';
@@ -7,25 +7,33 @@ import { emitWithAck } from '../../lib/socket';
 import { showToast } from '../common/Toast';
 import { playGameSound } from '../../games/sounds';
 import { prefersReducedMotion } from '../../games/motion';
-import { ShisenBoard, BOARD_GAP, pickActiveTile, emitSelect } from './ShisenBoard';
+import { ShisenBoard, BOARD_GAP, boardBox, pickActiveTile, emitSelect } from './ShisenBoard';
+import { ThemeBackdrop, TRAY_CLASS, themeOf } from './ArenaTheme';
+import { ComboFx } from './ComboFx';
+import { LiveScoreboard } from './LiveScoreboard';
+import { countMoves } from '../../games/moves';
 import { PlayerHeader } from './PlayerHeader';
 import { Countdown } from './Countdown';
 import { ResultsOverlay } from './ResultsOverlay';
 import { AttackFxLayer } from './AttackFx';
-import type { Board, GameSnapshot, HintAck, PlayerState } from '../../games/types';
+import type { Board, GameSnapshot, PlayerState } from '../../games/types';
+import type { HintAck } from '../../games/events';
+import { isForfeited } from '../../games/events';
 
 const MODE_TEXT: Record<string, string> = {
-  race: '같은 판이에요 — 누가 먼저?',
-  coop: '한 판을 같이 지워요',
+  race: '각자 독립된 판 — 먼저 다 지우면 승리',
+  coop: '한 판을 나눠 먹기 — 누가 더 많이, 빨리 지우나',
 };
 
 /** 헤더 카드가 차지하는 높이(px) — 보드 크기 계산에서 미리 빼 둔다. */
 const HEADER_H = 30;
+/** 보드를 올려 두는 트레이 여백(px, 좌우·상하 합) */
+const TRAY_PAD = 20;
 
 /** 컨테이너를 실측해 `cellPx`를 구하고, 헤더 카드 + 보드를 보드 폭에 맞춰 세로 중앙 배치한다(§6.2). */
 function FittedBoard({
-  board, player, interactive, minCell = 22, maxCell, compactHeader, isMe, isHost, showMeter, onExpand,
-  alignTop,
+  board, player, interactive, minCell = 14, maxCell, compactHeader, isMe, isHost, showMeter, onExpand,
+  alignTop, tray,
 }: {
   board: Board;
   player?: PlayerState;
@@ -39,19 +47,26 @@ function FittedBoard({
   onExpand?: () => void;
   /** 모바일 세로에서 위쪽 정렬(상대 미니 스트립 아래 빈 공간이 생기지 않도록) */
   alignTop?: boolean;
+  /** 테마 트레이 클래스 */
+  tray?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [cellPx, setCellPx] = useState(minCell);
-  // 작은 판일수록 타일을 크게 — 1280×800 패널에서 8×5 판이 허전하지 않도록.
-  const cap = maxCell ?? (board.cols * board.rows <= 72 ? 80 : 64);
+  // 맵 마스크의 바운딩 박스로 맞춘다 — 빈 가장자리까지 세면 타일만 작아진다(v2).
+  const bbox = boardBox(board);
+  const bCols = bbox.c1 - bbox.c0 + 1;
+  const bRows = bbox.r1 - bbox.r0 + 1;
+  // 타일 수가 적을수록 크게 — 1280×800 패널에서 작은 맵이 허전하지 않도록.
+  const cap = maxCell ?? (bCols * bRows <= 90 ? 80 : 64);
 
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const measure = (w: number, h: number) => {
       if (w <= 0 || h <= 0) return;
-      const usableH = h - (player ? HEADER_H : 0);
-      const raw = Math.floor(Math.min(w / board.cols, usableH / board.rows)) - BOARD_GAP;
+      const usableH = h - (player ? HEADER_H : 0) - TRAY_PAD;
+      const usableW = w - TRAY_PAD;
+      const raw = Math.floor(Math.min(usableW / bCols, usableH / bRows)) - BOARD_GAP;
       setCellPx(Math.max(minCell, Math.min(cap, raw)));
     };
     measure(el.clientWidth, el.clientHeight);
@@ -62,14 +77,16 @@ function FittedBoard({
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [board.cols, board.rows, minCell, cap, player]);
+  }, [bCols, bRows, minCell, cap, player]);
 
-  const boardWidth = board.cols * (cellPx + BOARD_GAP) - BOARD_GAP;
+  const boardWidth = bCols * (cellPx + BOARD_GAP) - BOARD_GAP + TRAY_PAD;
 
   return (
     <div
       ref={ref}
-      className={`flex h-full min-h-0 w-full min-w-0 justify-center overflow-hidden ${
+      // overflow-hidden이면 자리가 모자랄 때 바깥 줄이 **소리 없이 잘려** 타일이 사라진 것처럼 보인다.
+      // 스크롤로 바꿔 두면 최악의 경우에도 전부 접근 가능하다.
+      className={`flex h-full min-h-0 w-full min-w-0 justify-center overflow-auto scrollbar-none ${
         alignTop ? 'items-start md:items-center' : 'items-center'
       }`}
     >
@@ -88,7 +105,7 @@ function FittedBoard({
         )}
         <div
           data-ghc-board={board.id}
-          className={onExpand ? 'cursor-zoom-in' : undefined}
+          className={`flex items-center justify-center p-[10px] ${tray ?? ''} ${onExpand ? 'cursor-zoom-in' : ''}`}
           title={onExpand ? '크게 보기' : undefined}
           onClick={onExpand}
         >
@@ -104,7 +121,7 @@ function fmtClock(ms: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
-/** 경기 시간 — race+제한시간은 카운트다운, 그 외(협동·무제한)는 카운트업. */
+/** 경기 시간 — race+제한시간은 카운트다운, 그 외(쟁탈전·무제한)는 카운트업. */
 function ArenaClock({ snapshot }: { snapshot: GameSnapshot }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -138,14 +155,27 @@ export function ShisenArena({ snapshot }: { snapshot: GameSnapshot }) {
   const reduced = prefersReducedMotion();
 
   const me = snapshot.players.find((p) => p.userId === myUserId);
+  const theme = themeOf(snapshot.seed);
+  const tray = TRAY_CLASS[theme];
+  const notice = useGameStore((s) => s.notice);
+  const banner = useGameStore((s) => s.banner);
   // 기권하면 내 판도 관전 취급 — 조작 불가 + 관전자 레이아웃.
-  const meActive = !!me && !me.forfeited;
+  const meActive = !!me && !isForfeited(me);
   const isCoop = snapshot.mode === 'coop';
   const playing = snapshot.phase === 'playing';
   const others = snapshot.players.filter((p) => p.userId !== myUserId);
   const myBoard = me ? snapshot.boards[me.boardId] : undefined;
   const sharedBoard = snapshot.boards['shared'] ?? Object.values(snapshot.boards)[0];
   const interactiveBoardId = meActive ? (isCoop ? sharedBoard?.id : myBoard?.id) : undefined;
+  const myPlayBoard = interactiveBoardId ? snapshot.boards[interactiveBoardId] : undefined;
+  // 연결 가능 쌍 수: 서버 진실값(movesLeft, A3에서 추가)이 있으면 그걸, 없으면 보이는 판에서 계산.
+  const visibleMoves = useMemo(
+    () => (myPlayBoard ? countMoves(myPlayBoard) : 0),
+    [myPlayBoard],
+  );
+  const serverMoves = (myPlayBoard as { movesLeft?: number } | undefined)?.movesLeft;
+  const movesLeft = serverMoves ?? visibleMoves;
+  const hiddenHint = visibleMoves === 0 && (serverMoves ?? 0) > 0;
 
   const boardOf = (p: PlayerState) => snapshot.boards[p.boardId];
 
@@ -161,6 +191,18 @@ export function ShisenArena({ snapshot }: { snapshot: GameSnapshot }) {
     shookRef.current = hot.id;
     void shakeControls.start({ x: [0, -2, 2, -2, 0], transition: { duration: 0.12 } });
   }, [fxQueue, interactiveBoardId, myUserId, reduced, shakeControls]);
+
+  // 짧은 안내는 1.2초, 배너는 2.5초 뒤 사라진다.
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => useGameStore.getState().setNotice(null), 1200);
+    return () => clearTimeout(t);
+  }, [notice]);
+  useEffect(() => {
+    if (!banner) return;
+    const t = setTimeout(() => useGameStore.getState().setBanner(null), 2500);
+    return () => clearTimeout(t);
+  }, [banner]);
 
   const requestHint = useCallback(async () => {
     setHintBusy(true);
@@ -239,11 +281,45 @@ export function ShisenArena({ snapshot }: { snapshot: GameSnapshot }) {
     <motion.div
       ref={arenaRef}
       animate={shakeControls}
-      className="relative flex h-full min-h-0 flex-col gap-2 p-2"
+      // isolate: 배경(-z-10)이 게임 패널 밖으로 빠지지 않도록 스태킹 컨텍스트를 만든다.
+      className="relative isolate flex h-full min-h-0 flex-col gap-2 p-2"
     >
+      <ThemeBackdrop theme={theme} seed={snapshot.seed} />
+
       {/* HUD */}
-      <div className="flex shrink-0 items-center gap-2 px-1">
+      <div className="relative flex shrink-0 items-center gap-2 px-1">
         <span className="text-xs text-white/40">{MODE_TEXT[snapshot.mode]}</span>
+        {myPlayBoard && (
+          <span
+            className={`rounded-full px-2 py-0.5 text-[11px] ${
+              movesLeft === 0 ? 'bg-primary/20 text-primary' : 'bg-black/40 text-white/70'
+            }`}
+            title="지금 이을 수 있는 쌍"
+          >
+            {hiddenHint ? '물음표를 열어보세요' : `연결 가능 ${movesLeft}쌍`}
+          </span>
+        )}
+        {myPlayBoard && myPlayBoard.nextNumber > 0 && (
+          <span className="rounded-full bg-black/40 px-2 py-0.5 text-[11px] text-warning">
+            다음 숫자 {myPlayBoard.nextNumber}
+          </span>
+        )}
+        {myPlayBoard && myPlayBoard.keysLeft > 0 && (
+          <span className="rounded-full bg-black/40 px-2 py-0.5 text-[11px] text-success">🔑 열쇠 찾는 중</span>
+        )}
+        <AnimatePresence>
+          {notice && (
+            <motion.span
+              key={notice.at}
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="rounded-full bg-black/60 px-2 py-0.5 text-[11px] text-white/80"
+            >
+              {notice.text}
+            </motion.span>
+          )}
+        </AnimatePresence>
         <span className="ml-auto flex items-center gap-2">
           <ArenaClock snapshot={snapshot} />
           {me && playing && meActive && (
@@ -271,23 +347,9 @@ export function ShisenArena({ snapshot }: { snapshot: GameSnapshot }) {
       {/* 코옵: 보드 하나 + 플레이어 칩 */}
       {isCoop && sharedBoard ? (
         <div className="flex min-h-0 flex-1 flex-col gap-2">
-          <div className="flex shrink-0 flex-wrap gap-1.5 px-1">
-            {snapshot.players.map((p) => (
-              <span
-                key={p.userId}
-                data-ghc-player={p.userId}
-                className="flex items-center gap-1.5 rounded-full bg-white/5 px-2 py-0.5 text-[11px]"
-                style={{ boxShadow: `inset 0 0 0 1px ${p.color}55` }}
-              >
-                <span className="h-2 w-2 rounded-full" style={{ background: p.color }} />
-                <span className="max-w-[80px] truncate">{p.nickname}</span>
-                <span className="font-display tabular-nums text-white/50">{p.pairsCleared}쌍</span>
-                {p.combo > 1 && <span className="font-display text-secondary">x{p.combo}</span>}
-              </span>
-            ))}
-          </div>
+          <LiveScoreboard players={snapshot.players} myUserId={myUserId} />
           <div className="min-h-0 flex-1">
-            <FittedBoard board={sharedBoard} interactive={playing && meActive} alignTop />
+            <FittedBoard board={sharedBoard} interactive={playing && meActive} alignTop tray={tray} />
           </div>
         </div>
       ) : me && myBoard && meActive ? (
@@ -296,8 +358,7 @@ export function ShisenArena({ snapshot }: { snapshot: GameSnapshot }) {
           {others.length > 0 && (
             <div
               className={`order-1 flex shrink-0 gap-2 overflow-x-auto overflow-y-hidden scrollbar-none
-                h-24 md:order-2 md:h-auto md:flex-col md:overflow-x-hidden md:overflow-y-auto
-                ${others.length === 1 ? 'md:w-1/2' : 'md:w-[34%]'}`}
+                h-24 md:order-2 md:h-auto md:flex-col md:overflow-x-hidden md:overflow-y-auto md:w-[34%]`}
             >
               {others.map((p) => {
                 const b = boardOf(p);
@@ -309,11 +370,11 @@ export function ShisenArena({ snapshot }: { snapshot: GameSnapshot }) {
                       player={p}
                       interactive={false}
                       minCell={10}
-                      maxCell={others.length === 1 ? 80 : 34}
+                      maxCell={38}
+                      tray={tray}
                       compactHeader
                       isHost={p.userId === snapshot.hostUserId}
                       showMeter={snapshot.options.items}
-                      onExpand={() => setFocusBoard(b.id)}
                     />
                   </div>
                 );
@@ -326,6 +387,7 @@ export function ShisenArena({ snapshot }: { snapshot: GameSnapshot }) {
               player={me}
               interactive={playing}
               alignTop
+              tray={tray}
               isMe
               isHost={me.userId === snapshot.hostUserId}
               showMeter={snapshot.options.items}
@@ -351,6 +413,7 @@ export function ShisenArena({ snapshot }: { snapshot: GameSnapshot }) {
                   player={p}
                   interactive={false}
                   minCell={10}
+                  tray={tray}
                   compactHeader
                   isMe={p.userId === myUserId}
                   isHost={p.userId === snapshot.hostUserId}
@@ -376,12 +439,27 @@ export function ShisenArena({ snapshot }: { snapshot: GameSnapshot }) {
               </button>
             </div>
             <div className="h-[calc(100%-3rem)]">
-              <FittedBoard board={focusBoard} player={focusPlayer} interactive={false} />
+              <FittedBoard board={focusBoard} player={focusPlayer} interactive={false} tray={tray} />
             </div>
           </div>
         </div>
       )}
 
+      <AnimatePresence>
+        {banner && (
+          <motion.div
+            key={banner.at}
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            className="pointer-events-none absolute left-1/2 top-12 z-30 -translate-x-1/2 rounded-full bg-black/75 px-4 py-1.5 text-xs text-white/90 shadow-lg"
+          >
+            {banner.text}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <ComboFx boardId={interactiveBoardId} myUserId={myUserId} />
       <AttackFxLayer myBoardId={interactiveBoardId} arenaRef={arenaRef} />
 
       {snapshot.phase === 'countdown' && snapshot.startAt && (

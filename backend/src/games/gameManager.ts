@@ -7,9 +7,12 @@ import {
   AttackType,
   BOARD_DIMS,
   Board,
+  BoardPatch,
+  BoardSize,
   COMBO_WINDOW_MS,
   COUNTDOWN_MS,
   DEFAULT_OPTIONS,
+  EMPTY,
   Effect,
   GameId,
   GameMode,
@@ -17,20 +20,32 @@ import {
   GamePhase,
   GameSnapshot,
   HintAck,
+  KEY_SYMBOL,
   MAX_PLAYERS,
+  MapShape,
+  NUMBER_BASE,
   PLAYER_COLORS,
   PickAck,
   PlayerState,
   ResultRow,
+  RevealAck,
   ScoreboardRow,
+  SpecialToggles,
 } from './types';
 import {
+  PickView,
+  Shape,
+  buildMask,
+  canPick,
   countRemaining,
-  findAnyPair,
+  findAllMoves,
+  findAnyMove,
   findPath,
-  generateBoard,
+  generateBoardV2,
+  maskForClient,
   mulberry32,
-  shuffleRemaining,
+  pickShape,
+  shuffleNormals,
 } from './shisen/engine';
 
 export type Broadcast = (roomSlug: string, event: string, payload: unknown) => void;
@@ -53,12 +68,32 @@ const FOG_RATIO = 0.4;
 const SHUFFLE_FX_MS = 250;
 const MAX_COMBO = 10;
 const SHARED_BOARD_ID = 'shared';
+/** 숫자 순서 타일 쌍 수 (v2 §V3) */
+const NUMBERS_PER_SIZE: Record<BoardSize, number> = { s: 3, m: 4, l: 5 };
+const SYSTEM_USER = 'system';
 
 interface InternalPlayer extends PlayerState {
   /** playing 중 기권(게임에는 남아 결과 최하위 그룹으로 집계) */
   forfeited: boolean;
   /** 힌트를 쓴 직후 한 번은 콤보를 끊는다 (§1.5) */
   hintBreak: boolean;
+}
+
+/** 서버가 들고 있는 진실 판. 클라로 나갈 때는 항상 maskForClient를 거친다. */
+interface ServerBoard {
+  id: string;
+  cols: number;
+  rows: number;
+  cells: number[];         // 진실(물음표/자물쇠 마스킹 없음)
+  hidden: Set<number>;     // 물음표로 가려진 칸
+  locked: Set<number>;     // 자물쇠로 가려진 칸
+  remaining: number;       // 벽 제외 남은 타일 수
+  effects: Effect[];
+  shape: Shape;
+  nextNumber: number;      // 다음에 지워야 할 숫자(없으면 0)
+  maxNumber: number;
+  keysLeft: number;
+  movesLeft: number;       // v2.1: 지금 연결 가능한 쌍 수(stuckView 기준)
 }
 
 interface RoomGame {
@@ -72,7 +107,7 @@ interface RoomGame {
   startAt: number | null;
   endedAt: number | null;
   players: Map<string, InternalPlayer>; // 삽입 순서 = 참가 순서
-  boards: Map<string, Board>;
+  boards: Map<string, ServerBoard>;
   spectators: Map<string, { userId: string; nickname: string }>;
   results: ResultRow[] | null;
   seq: number;
@@ -156,16 +191,7 @@ function toPublicPlayer(p: InternalPlayer): PlayerState {
 function snapshot(game: RoomGame): GameSnapshot {
   purgeEffects(game, Date.now());
   const boards: Record<string, Board> = {};
-  for (const [id, b] of game.boards) {
-    boards[id] = {
-      id: b.id,
-      cols: b.cols,
-      rows: b.rows,
-      cells: b.cells.slice(),
-      remaining: b.remaining,
-      effects: b.effects.map((e) => ({ ...e })),
-    };
-  }
+  for (const [id, b] of game.boards) boards[id] = toPublicBoard(b);
   return {
     gameId: game.gameId,
     phase: game.phase,
@@ -220,8 +246,67 @@ function isPlayable(game: RoomGame, p: InternalPlayer, now: number): boolean {
   );
 }
 
-function boardOf(game: RoomGame, p: InternalPlayer): Board | undefined {
+function boardOf(game: RoomGame, p: InternalPlayer): ServerBoard | undefined {
   return game.boards.get(p.boardId);
+}
+
+/** 클라가 보는 판(물음표·자물쇠 마스킹). pick 검증도 이 뷰로 한다 — 그래야 locked/hidden 사유가 나온다. */
+function clientView(board: ServerBoard): PickView {
+  return {
+    cells: maskForClient(board.cells, board.hidden, board.locked),
+    cols: board.cols,
+    rows: board.rows,
+    nextNumber: board.nextNumber,
+    keysLeft: board.keysLeft,
+  };
+}
+
+/** 막힘 검사용 뷰: 물음표는 "심볼을 아는 상태"로 보고, 자물쇠만 장애물로 본다 (v2 §V3). */
+function stuckView(board: ServerBoard): PickView {
+  return {
+    cells: maskForClient(board.cells, [], board.locked),
+    cols: board.cols,
+    rows: board.rows,
+    nextNumber: board.nextNumber,
+    keysLeft: board.keysLeft,
+  };
+}
+
+function toPublicBoard(b: ServerBoard): Board {
+  return {
+    id: b.id,
+    cols: b.cols,
+    rows: b.rows,
+    cells: maskForClient(b.cells, b.hidden, b.locked),
+    remaining: b.remaining,
+    effects: b.effects.map((e) => ({ ...e })),
+    shape: b.shape,
+    nextNumber: b.nextNumber,
+    keysLeft: b.keysLeft,
+    movesLeft: b.movesLeft,
+  };
+}
+
+/** 델타에 같이 싣는 보드 요약. 부수효과가 전부 끝난 뒤 값으로 찍는다(v2.1 A5). */
+function boardPatch(b: ServerBoard): BoardPatch {
+  return { remaining: b.remaining, nextNumber: b.nextNumber, keysLeft: b.keysLeft, movesLeft: b.movesLeft };
+}
+
+/** v2.1: 연결 가능 쌍 수를 다시 센다. 판이 바뀔 때마다 호출. */
+function recomputeMoves(board: ServerBoard): number {
+  board.movesLeft = board.remaining > 0 ? findAllMoves(stuckView(board)).length : 0;
+  return board.movesLeft;
+}
+
+function orthNeighbors(idx: number, cols: number, rows: number): number[] {
+  const r = (idx / cols) | 0;
+  const c = idx % cols;
+  const out: number[] = [];
+  if (r > 0) out.push(idx - cols);
+  if (r < rows - 1) out.push(idx + cols);
+  if (c > 0) out.push(idx - 1);
+  if (c < cols - 1) out.push(idx + 1);
+  return out;
 }
 
 interface ShuffledPayload {
@@ -229,16 +314,23 @@ interface ShuffledPayload {
   boardId: string;
   cells: number[];
   cause: 'stuck' | 'attack';
+  movesLeft: number;
+  board: BoardPatch;
 }
 
-/** 판을 섞고 seq를 올린 페이로드만 만든다(브로드캐스트는 호출자가 순서를 맞춰서). */
-function shuffleBoard(game: RoomGame, board: Board, cause: 'stuck' | 'attack'): ShuffledPayload {
-  board.cells = shuffleRemaining(board.cells, board.cols, board.rows, game.rng);
-  if (!findAnyPair(board.cells, board.cols, board.rows)) {
-    console.warn(`[game] board ${board.id} has no move even after shuffle (remaining=${board.remaining})`);
-  }
+/** 일반 심볼만 섞고 seq를 올린 페이로드를 만든다(브로드캐스트는 호출자가 순서를 맞춰서). */
+function shuffleBoard(game: RoomGame, board: ServerBoard, cause: 'stuck' | 'attack'): ShuffledPayload {
+  board.cells = shuffleNormals({ ...stuckView(board), cells: board.cells }, board.hidden, board.locked, game.rng);
+  recomputeMoves(board);
   game.seq++;
-  return { seq: game.seq, boardId: board.id, cells: board.cells.slice(), cause };
+  return {
+    seq: game.seq,
+    boardId: board.id,
+    cells: maskForClient(board.cells, board.hidden, board.locked),
+    cause,
+    movesLeft: board.movesLeft,
+    board: boardPatch(board),
+  };
 }
 
 // --- 공격 (§1.7) -----------------------------------------------------------
@@ -288,7 +380,7 @@ function fireAttack(game: RoomGame, attacker: InternalPlayer, now: number): Fire
   } else if (type === 'fog') {
     until = now + FOG_MS;
     const tiles: number[] = [];
-    for (let i = 0; i < board.cells.length; i++) if (board.cells[i] !== 0) tiles.push(i);
+    for (let i = 0; i < board.cells.length; i++) if (board.cells[i] > 0) tiles.push(i);
     for (let i = tiles.length - 1; i > 0; i--) {
       const j = Math.floor(game.rng() * (i + 1));
       const tmp = tiles[i];
@@ -449,6 +541,201 @@ function deleteGame(game: RoomGame, notify: boolean): void {
   if (notify) broadcast(game.slug, 'game:state', { state: null });
 }
 
+// --- 옵션 병합 (v2 §V2: 전부 optional, 부분 병합) ----------------------------
+
+export interface OptionsPatch {
+  boardSize?: BoardSize;
+  mapShape?: MapShape;
+  specials?: Partial<SpecialToggles>;
+  items?: boolean;
+  timeLimitSec?: number;
+}
+
+function mergeOptions(base: GameOptions, patch: OptionsPatch | undefined, mode: GameMode): GameOptions {
+  const next: GameOptions = { ...base, specials: { ...base.specials } };
+  if (patch) {
+    if (patch.boardSize) next.boardSize = patch.boardSize;
+    if (patch.mapShape) next.mapShape = patch.mapShape;
+    if (typeof patch.items === 'boolean') next.items = patch.items;
+    if (typeof patch.timeLimitSec === 'number') next.timeLimitSec = patch.timeLimitSec;
+    if (patch.specials) next.specials = { ...next.specials, ...patch.specials };
+  }
+  if (mode === 'coop') next.items = false; // 협동에는 방해 아이템 없음
+  return next;
+}
+
+// --- 제거 부수효과 (v2 §V3) -------------------------------------------------
+
+interface TilesPayload {
+  seq: number;
+  boardId: string;
+  tiles: { idx: number; symbol: number }[];
+  movesLeft: number;
+  board: BoardPatch;
+}
+
+interface RemovalEffects {
+  revealed: TilesPayload | null;
+  unlocked: TilesPayload | null;
+}
+
+/**
+ * 두 칸을 실제로 지우고 규칙 상태를 갱신한다.
+ * - 인접한 물음표 자동 공개 → game:revealed
+ * - 열쇠 쌍이었으면 자물쇠 전부 해제 → game:unlocked
+ * - 숫자 쌍이었으면 nextNumber 진행
+ * seq는 방출 순서(matched → revealed → unlocked)에 맞춰 여기서 올린다.
+ */
+function applyRemoval(game: RoomGame, board: ServerBoard, a: number, b: number): RemovalEffects {
+  const value = board.cells[a];
+  const wasKey = value === KEY_SYMBOL;
+  const wasNumber = value > NUMBER_BASE;
+
+  board.cells[a] = EMPTY;
+  board.cells[b] = EMPTY;
+  for (const idx of [a, b]) {
+    board.hidden.delete(idx);
+    board.locked.delete(idx);
+  }
+  board.remaining -= 2;
+
+  const revealedTiles: { idx: number; symbol: number }[] = [];
+  for (const idx of [a, b]) {
+    for (const nb of orthNeighbors(idx, board.cols, board.rows)) {
+      if (!board.hidden.has(nb)) continue;
+      board.hidden.delete(nb);
+      revealedTiles.push({ idx: nb, symbol: board.cells[nb] });
+    }
+  }
+  recomputeMoves(board);
+  const revealed = revealedTiles.length
+    ? { seq: ++game.seq, boardId: board.id, tiles: revealedTiles, movesLeft: board.movesLeft, board: boardPatch(board) }
+    : null;
+
+  let unlocked: TilesPayload | null = null;
+  if (wasKey) {
+    board.keysLeft = 0;
+    if (board.locked.size > 0) {
+      const tiles = [...board.locked].sort((x, y) => x - y).map((idx) => ({ idx, symbol: board.cells[idx] }));
+      board.locked.clear();
+      recomputeMoves(board); // 자물쇠가 풀리면 연결 가능 쌍이 늘어난다
+      unlocked = { seq: ++game.seq, boardId: board.id, tiles, movesLeft: board.movesLeft, board: boardPatch(board) };
+    }
+  }
+  if (wasNumber) {
+    board.nextNumber = board.nextNumber < board.maxNumber ? board.nextNumber + 1 : 0;
+  }
+  recomputeMoves(board);
+  return { revealed, unlocked };
+}
+
+interface StuckResolution {
+  shuffled: ShuffledPayload | null;
+  systemMatch: { seq: number; a: number; b: number; effects: RemovalEffects } | null;
+}
+
+/**
+ * 막힘 처리 (v2 §V3): 일반 심볼 셔플로 먼저 풀고, 그래도 수가 없으면 규칙 장애물(열쇠 → 숫자 → 아무 쌍)
+ * 한 쌍을 서버가 직접 치운다. 이 마지막 수단은 selfcheck에서 1% 미만이어야 한다.
+ */
+function resolveStuck(game: RoomGame, board: ServerBoard): StuckResolution {
+  if (board.remaining <= 0) return { shuffled: null, systemMatch: null };
+  if (board.movesLeft > 0) return { shuffled: null, systemMatch: null };
+
+  const shuffled = shuffleBoard(game, board, 'stuck');
+  if (board.movesLeft > 0) return { shuffled, systemMatch: null };
+
+  const pair = findBlockerPair(board);
+  if (!pair) {
+    console.warn(`[game] board ${board.id} stuck with no removable pair (remaining=${board.remaining})`);
+    return { shuffled, systemMatch: null };
+  }
+  console.log(`[game] ${game.slug} board ${board.id} unstuck by system removal`);
+  const seq = ++game.seq;
+  const effects = applyRemoval(game, board, pair[0], pair[1]);
+  return { shuffled, systemMatch: { seq, a: pair[0], b: pair[1], effects } };
+}
+
+/** 방출 대기 중인 델타. board는 마지막에 최종 patch를 찍기 위한 참조. */
+interface PendingDelta {
+  event: string;
+  payload: Record<string, unknown>;
+  board: ServerBoard;
+}
+
+/** 막힘 처리 결과를 순서대로 모은다(브로드캐스트는 호출자가 마지막에 한다). */
+function collectStuckResolution(game: RoomGame, board: ServerBoard): PendingDelta[] {
+  const out: PendingDelta[] = [];
+  for (let round = 0; round < 3; round++) {
+    const res = resolveStuck(game, board);
+    if (res.shuffled) out.push({ event: 'game:shuffled', payload: { ...res.shuffled }, board });
+    if (!res.systemMatch) return out;
+    const { seq, a, b, effects } = res.systemMatch;
+    out.push({
+      event: 'game:matched',
+      payload: {
+        seq,
+        userId: SYSTEM_USER,
+        boardId: board.id,
+        a,
+        b,
+        path: [],
+        combo: 0,
+        score: 0,
+        remaining: board.remaining,
+        movesLeft: board.movesLeft,
+      },
+      board,
+    });
+    if (effects.revealed) out.push({ event: 'game:revealed', payload: { ...effects.revealed }, board });
+    if (effects.unlocked) out.push({ event: 'game:unlocked', payload: { ...effects.unlocked }, board });
+    if (board.remaining === 0) return out;
+  }
+  return out;
+}
+
+/**
+ * 모은 델타를 순서대로 방출한다. board patch는 **판 변화가 전부 끝난 지금** 값으로 다시 찍는다 —
+ * 그래야 클라가 마지막 델타만 적용해도 nextNumber/keysLeft/movesLeft가 서버와 일치한다.
+ */
+const BOARD_DELTA_EVENTS = new Set(['game:matched', 'game:revealed', 'game:unlocked', 'game:shuffled']);
+
+function flushDeltas(game: RoomGame, deltas: PendingDelta[]): void {
+  for (const d of deltas) {
+    if (BOARD_DELTA_EVENTS.has(d.event)) d.payload.board = boardPatch(d.board);
+    broadcast(game.slug, d.event, d.payload);
+  }
+}
+
+/** 막힘 해소용: 열쇠 쌍 → nextNumber 쌍 → 아무 같은 값 쌍(경로 무시) 순으로 한 쌍 고른다. */
+function findBlockerPair(board: ServerBoard): [number, number] | null {
+  const pick = (test: (v: number) => boolean): [number, number] | null => {
+    const found: number[] = [];
+    for (let i = 0; i < board.cells.length; i++) {
+      if (board.cells[i] > 0 && test(board.cells[i])) found.push(i);
+      if (found.length === 2) return [found[0], found[1]];
+    }
+    return null;
+  };
+  if (board.keysLeft > 0) {
+    const keyPair = pick((v) => v === KEY_SYMBOL);
+    if (keyPair) return keyPair;
+  }
+  if (board.nextNumber > 0) {
+    const numberPair = pick((v) => v === NUMBER_BASE + board.nextNumber);
+    if (numberPair) return numberPair;
+  }
+  const byValue = new Map<number, number>();
+  for (let i = 0; i < board.cells.length; i++) {
+    const v = board.cells[i];
+    if (v <= 0 || v > NUMBER_BASE) continue;
+    const first = byValue.get(v);
+    if (first !== undefined) return [first, i];
+    byValue.set(v, i);
+  }
+  return null;
+}
+
 // --- 공개 API --------------------------------------------------------------
 
 export const gameManager = {
@@ -462,16 +749,15 @@ export const gameManager = {
   create(
     slug: string,
     actor: GameActor,
-    input: { gameId: GameId; mode: GameMode; options?: Partial<GameOptions> }
+    input: { gameId?: GameId; mode?: GameMode; options?: OptionsPatch }
   ): StateResult {
     if (games.has(slug)) return { error: '이미 게임이 열려 있어요' };
-    const mode = input.mode;
-    const options: GameOptions = { ...DEFAULT_OPTIONS[mode], ...(input.options ?? {}) };
-    if (mode === 'coop') options.items = false; // 협동에는 아이템 없음 (§1.7)
+    const mode: GameMode = input.mode ?? 'race';
+    const options = mergeOptions(DEFAULT_OPTIONS[mode], input.options, mode);
 
     const game: RoomGame = {
       slug,
-      gameId: input.gameId,
+      gameId: input.gameId ?? 'shisen',
       phase: 'lobby',
       hostUserId: actor.userId,
       mode,
@@ -542,20 +828,28 @@ export const gameManager = {
   updateOptions(
     slug: string,
     actor: GameActor,
-    input: { mode?: GameMode; options?: Partial<GameOptions> }
+    input: { gameId?: GameId; mode?: GameMode; options?: OptionsPatch }
   ): StateResult {
     const game = games.get(slug);
     if (!game) return { error: '게임이 없어요' };
     if (game.hostUserId !== actor.userId) return { error: '게임 개설자만 바꿀 수 있어요' };
     if (game.phase !== 'lobby') return { error: '로비에서만 바꿀 수 있어요' };
 
+    if (input.gameId) game.gameId = input.gameId;
+    // 대전 방식이 바뀌어도 맵 모양·특수 타일은 그대로 두고, 판 크기/제한 시간만 새 모드 기본값으로
+    // 되돌린다(coop은 mergeOptions에서 items=false 강제). — A6
+    let base = game.options;
     if (input.mode && input.mode !== game.mode) {
       game.mode = input.mode;
-      game.options = { ...DEFAULT_OPTIONS[input.mode] };
+      const defaults = DEFAULT_OPTIONS[input.mode];
+      base = {
+        ...game.options,
+        boardSize: defaults.boardSize,
+        timeLimitSec: defaults.timeLimitSec,
+      };
       for (const p of game.players.values()) p.boardId = boardIdFor(game.mode, p.userId);
     }
-    if (input.options) game.options = { ...game.options, ...input.options };
-    if (game.mode === 'coop') game.options.items = false;
+    game.options = mergeOptions(base, input.options, game.mode);
     return { state: emitState(game) };
   },
 
@@ -568,35 +862,45 @@ export const gameManager = {
     if (players.length === 0) return { error: '플레이어가 최소 1명 필요해요' };
 
     const { cols, rows } = BOARD_DIMS[game.options.boardSize];
+    const specials = game.options.specials;
     game.seed = newSeed();
     game.rng = mulberry32(game.seed);
     game.boards.clear();
 
     const t0 = Date.now();
+    const shape: Shape = game.options.mapShape === 'random' ? pickShape(game.rng) : game.options.mapShape;
+    const numbers = specials.numbers ? NUMBERS_PER_SIZE[game.options.boardSize] : 0;
+    const mask = buildMask(shape, cols, rows, game.rng, specials.keys ? 2 : 0);
+    const generated = generateBoardV2(
+      { cols, rows, mask, walls: specials.walls, numbers, keys: specials.keys, mystery: specials.mystery },
+      game.rng
+    );
+    const makeBoard = (id: string): ServerBoard => ({
+      id,
+      cols,
+      rows,
+      cells: generated.cells.slice(),
+      hidden: new Set(generated.hidden),
+      locked: new Set(generated.locked),
+      remaining: countRemaining(generated.cells),
+      effects: [],
+      shape,
+      nextNumber: numbers > 0 ? 1 : 0,
+      maxNumber: numbers,
+      keysLeft: specials.keys ? 1 : 0,
+      movesLeft: 0,
+    });
     if (game.mode === 'coop') {
-      const cells = generateBoard(cols, rows, game.rng);
-      game.boards.set(SHARED_BOARD_ID, {
-        id: SHARED_BOARD_ID,
-        cols,
-        rows,
-        cells,
-        remaining: countRemaining(cells),
-        effects: [],
-      });
+      game.boards.set(SHARED_BOARD_ID, makeBoard(SHARED_BOARD_ID));
     } else {
-      const cells = generateBoard(cols, rows, game.rng); // 레이스는 전원 동일한 판
-      for (const p of players) {
-        game.boards.set(p.userId, {
-          id: p.userId,
-          cols,
-          rows,
-          cells: cells.slice(),
-          remaining: countRemaining(cells),
-          effects: [],
-        });
-      }
+      for (const p of players) game.boards.set(p.userId, makeBoard(p.userId)); // 레이스는 전원 동일한 판
     }
-    console.log(`[game] ${slug} board ${cols}x${rows} generated in ${Date.now() - t0}ms (seed ${game.seed})`);
+    for (const b of game.boards.values()) recomputeMoves(b);
+    console.log(
+      `[game] ${slug} board ${shape} ${cols}x${rows} tiles=${countRemaining(generated.cells)} ` +
+        `walls=${specials.walls} numbers=${numbers} keys=${specials.keys} mystery=${specials.mystery} ` +
+        `in ${Date.now() - t0}ms (seed ${game.seed})`
+    );
 
     game.sharedHintsLeft = COOP_HINTS;
     for (const p of players) {
@@ -647,20 +951,18 @@ export const gameManager = {
     if (board.effects.some((e) => e.type === 'freeze' && e.until > now)) {
       return { ok: false, reason: 'frozen' };
     }
-    if (a === b) return { ok: false, reason: 'same' };
-    if (a < 0 || b < 0 || a >= board.cells.length || b >= board.cells.length) {
-      return { ok: false, reason: 'gone' };
-    }
-    if (board.cells[a] === 0 || board.cells[b] === 0) return { ok: false, reason: 'gone' };
-    if (board.cells[a] !== board.cells[b]) return { ok: false, reason: 'symbol' };
-
-    const path = findPath(board.cells, board.cols, board.rows, a, b);
-    if (!path) return { ok: false, reason: 'nopath' };
+    // 규칙 판정은 "클라가 보는 판"으로 — 그래야 locked/hidden 사유가 그대로 나온다.
+    // (점유 상태는 진실 판과 동일하므로 경로 계산 결과도 같다.)
+    const view = clientView(board);
+    const reason = canPick(view, a, b);
+    if (reason) return { ok: false, reason };
+    const path = findPath(view.cells, board.cols, board.rows, a, b)!;
 
     // --- 제거 확정 ---
-    board.cells[a] = 0;
-    board.cells[b] = 0;
-    board.remaining -= 2;
+    // seq는 실제 방출 순서대로 올라가야 한다(클라가 seq로 늦은 델타를 버리므로):
+    // matched → revealed → unlocked → attack → shuffled.
+    const matchedSeq = ++game.seq;
+    const effects = applyRemoval(game, board, a, b);
 
     if (player.hintBreak) {
       player.combo = 1;
@@ -675,34 +977,46 @@ export const gameManager = {
     player.pairsCleared += 1;
     player.score += 10 + 5 * (player.combo - 1);
 
-    // seq는 실제 방출 순서대로 올라가야 한다(클라가 seq로 늦은 델타를 버리므로).
-    const matchedSeq = ++game.seq;
     let attack: FiredAttack | null = null;
     if (game.mode === 'race' && game.options.items && ATTACK_COMBO_STEPS.includes(player.combo)) {
       attack = fireAttack(game, player, now);
     }
 
-    broadcast(game.slug, 'game:matched', {
-      seq: matchedSeq,
-      userId: player.userId,
-      boardId: board.id,
-      a,
-      b,
-      path,
-      combo: player.combo,
-      score: player.score,
-      remaining: board.remaining,
-      ...(attack ? { attack: attack.event } : {}),
-    });
+    const deltas: PendingDelta[] = [
+      {
+        event: 'game:matched',
+        payload: {
+          seq: matchedSeq,
+          userId: player.userId,
+          boardId: board.id,
+          a,
+          b,
+          path,
+          combo: player.combo,
+          score: player.score,
+          remaining: board.remaining,
+          movesLeft: board.movesLeft,
+          ...(attack ? { attack: attack.event } : {}),
+        },
+        board,
+      },
+    ];
+    if (effects.revealed) deltas.push({ event: 'game:revealed', payload: { ...effects.revealed }, board });
+    if (effects.unlocked) deltas.push({ event: 'game:unlocked', payload: { ...effects.unlocked }, board });
+
+    const targetBoard = attack ? game.boards.get(attack.event.boardId) ?? board : board;
     if (attack) {
-      broadcast(game.slug, 'game:attack', attack.event);
-      if (attack.shuffled) broadcast(game.slug, 'game:shuffled', attack.shuffled);
+      deltas.push({ event: 'game:attack', payload: { ...attack.event }, board: targetBoard });
+      if (attack.shuffled) {
+        deltas.push({ event: 'game:shuffled', payload: { ...attack.shuffled }, board: targetBoard });
+      }
+      // 공격 맞은 판도 막히면 바로 재배치 (v2.1)
+      if (targetBoard !== board) deltas.push(...collectStuckResolution(game, targetBoard));
     }
 
-    // 막힘 검사 (§1.4)
-    if (board.remaining > 0 && !findAnyPair(board.cells, board.cols, board.rows)) {
-      broadcast(game.slug, 'game:shuffled', shuffleBoard(game, board, 'stuck'));
-    }
+    // 막힘 검사 (§1.4 + v2 §V3)
+    deltas.push(...collectStuckResolution(game, board));
+    flushDeltas(game, deltas);
 
     if (board.remaining === 0) {
       if (game.mode === 'race') {
@@ -714,6 +1028,38 @@ export const gameManager = {
     }
 
     return { ok: true, path };
+  },
+
+  /** 물음표 타일 공개 (v2 §V3). 선택으로 치지 않으므로 콤보/점수와 무관하다. */
+  reveal(slug: string, actor: GameActor, idx: number): RevealAck {
+    const game = games.get(slug);
+    if (!game) return { ok: false, reason: 'phase' };
+    const player = game.players.get(actor.userId);
+    if (!player) return { ok: false, reason: 'phase' };
+    const now = Date.now();
+    if (!isPlayable(game, player, now)) return { ok: false, reason: 'phase' };
+    const board = boardOf(game, player);
+    if (!board) return { ok: false, reason: 'phase' };
+    if (board.effects.some((e) => e.type === 'freeze' && e.until > now)) {
+      return { ok: false, reason: 'frozen' };
+    }
+    if (!board.hidden.has(idx) || board.cells[idx] <= 0) return { ok: false, reason: 'gone' };
+
+    board.hidden.delete(idx);
+    const symbol = board.cells[idx];
+    recomputeMoves(board);
+    const payload: TilesPayload = {
+      seq: ++game.seq,
+      boardId: board.id,
+      tiles: [{ idx, symbol }],
+      movesLeft: board.movesLeft,
+      board: boardPatch(board),
+    };
+    // v2.1: 연결 가능 쌍이 0이면 예외 없이 재배치. patch는 그 뒤 값으로 찍힌다.
+    const deltas: PendingDelta[] = [{ event: 'game:revealed', payload: { ...payload }, board }];
+    deltas.push(...collectStuckResolution(game, board));
+    flushDeltas(game, deltas);
+    return { ok: true, symbol };
   },
 
   hint(slug: string, actor: GameActor): HintAck {
@@ -728,7 +1074,8 @@ export const gameManager = {
     const available = game.mode === 'coop' ? game.sharedHintsLeft : player.hintsLeft;
     if (available <= 0) return { ok: false, reason: 'none' };
 
-    const pair = findAnyPair(board.cells, board.cols, board.rows);
+    // 바로 누를 수 있는(물음표가 아닌) 쌍을 먼저 찾고, 없으면 숨김까지 포함해서 찾는다.
+    const pair = findAnyMove(clientView(board)) ?? findAnyMove(stuckView(board));
     if (!pair) return { ok: false, reason: 'none' };
 
     if (game.mode === 'coop') {

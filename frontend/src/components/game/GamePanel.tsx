@@ -1,43 +1,86 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Gamepad2, Users, X, Zap } from 'lucide-react';
+import { Eye, Gamepad2, UserPlus, X } from 'lucide-react';
 import { emitWithAck } from '../../lib/socket';
 import { showToast } from '../common/Toast';
 import { Button } from '../common/Button';
 import { useGameStore } from '../../stores/gameStore';
+import { useAuthStore } from '../../stores/authStore';
 import { initGameAudio } from '../../games/sounds';
 import { GameLobby } from './GameLobby';
 import { ShisenArena } from './ShisenArena';
-import { DEFAULT_OPTIONS, type GameMode, type GameSnapshot } from '../../games/types';
+import { MAX_PLAYERS, type GameSnapshot } from '../../games/types';
 
-/** 게임이 없을 때 — 모드를 고르고 방을 연다. */
-function GameIdle() {
+/** 게임 방이 없을 때 — 버튼 하나로 만든다(만든 사람이 방장). */
+function GameIdle({ snapshot }: { snapshot: GameSnapshot | null }) {
+  const myUserId = useAuthStore((s) => s.userId);
   const [busy, setBusy] = useState(false);
-  const create = async (mode: GameMode) => {
+
+  const call = async (event: string) => {
     setBusy(true);
     initGameAudio();
     try {
-      await emitWithAck('game:create', { gameId: 'shisen', mode, options: DEFAULT_OPTIONS[mode] });
+      await emitWithAck(event, {});
     } catch (err) {
-      showToast(err instanceof Error ? err.message : '게임을 열지 못했어요', 'error');
+      showToast(err instanceof Error ? err.message : '요청에 실패했어요', 'error');
     } finally {
       setBusy(false);
     }
   };
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
-      <Gamepad2 size={40} strokeWidth={1.5} className="text-white/25" />
-      <div>
-        <p className="font-display text-lg font-bold">사천성</p>
-        <p className="mt-1 text-xs text-white/40">카메라는 켠 채로, 방에 남은 사람들과 한 판</p>
+
+  if (!snapshot) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
+        <Gamepad2 size={40} strokeWidth={1.5} className="text-white/25" />
+        <div>
+          <p className="font-display text-lg font-bold">게임 방</p>
+          <p className="mt-1 text-xs text-white/40">카메라는 켠 채로, 방에 남은 사람들과 한 판</p>
+        </div>
+        <Button className="w-full max-w-xs" loading={busy} onClick={() => call('game:create')}>
+          <Gamepad2 size={16} /> 게임 방 만들기
+        </Button>
       </div>
-      <div className="flex w-full max-w-xs flex-col gap-2">
-        <Button loading={busy} onClick={() => create('race')}>
-          <Zap size={16} /> 레이스로 열기
-        </Button>
-        <Button variant="secondary" loading={busy} onClick={() => create('coop')}>
-          <Users size={16} /> 협동으로 열기
-        </Button>
+    );
+  }
+
+  // 이미 게임 방이 있는데 내가 참여하지 않은 상태 — 입장/관전 카드.
+  const host = snapshot.players.find((p) => p.userId === snapshot.hostUserId);
+  const inLobby = snapshot.phase === 'lobby';
+  const full = snapshot.players.length >= MAX_PLAYERS;
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-4 p-6">
+      <div className="glass w-full max-w-sm rounded-feed p-4">
+        <p className="font-display text-base font-bold">
+          {host?.nickname ?? '누군가'}님의 게임 방
+        </p>
+        <p className="mt-1 text-xs text-white/45">
+          사천성 · 플레이어 {snapshot.players.length}/{MAX_PLAYERS} · {inLobby ? '대기 중' : '진행 중'}
+        </p>
+        <div className="mt-3 flex gap-2">
+          {inLobby && (
+            <Button
+              size="sm"
+              className="flex-1"
+              loading={busy}
+              disabled={full}
+              onClick={() => call('game:join')}
+            >
+              <UserPlus size={14} /> {full ? '자리가 없어요' : '입장'}
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="secondary"
+            className="flex-1"
+            loading={busy}
+            onClick={() => call('game:spectate')}
+          >
+            <Eye size={14} /> 관전
+          </Button>
+        </div>
+        {myUserId === snapshot.hostUserId && (
+          <p className="mt-2 text-[11px] text-white/30">내가 만든 방이에요</p>
+        )}
       </div>
     </div>
   );
@@ -58,6 +101,12 @@ export function GamePanel() {
 
   // 패널을 여는 동작 자체가 유저 제스처 → 여기서 AudioContext를 깨운다.
   useEffect(() => { initGameAudio(); }, []);
+  // 아직 입장/관전을 고르지 않았으면 Idle 카드를 보여 준다(스냅샷 구독으로 자동 갱신).
+  const myUserId = useAuthStore((s) => s.userId);
+  const joined = !!snapshot && (
+    snapshot.players.some((p) => p.userId === myUserId)
+    || snapshot.spectators.some((p) => p.userId === myUserId)
+  );
 
   return (
     <motion.div
@@ -81,8 +130,8 @@ export function GamePanel() {
       </div>
 
       <div className="min-h-0 flex-1">
-        {!snapshot ? (
-          <GameIdle />
+        {!snapshot || !joined ? (
+          <GameIdle snapshot={snapshot} />
         ) : snapshot.phase === 'lobby' ? (
           <GameLobby snapshot={snapshot} />
         ) : (

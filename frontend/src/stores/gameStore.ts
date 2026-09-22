@@ -1,7 +1,11 @@
 import { create } from 'zustand';
+import { COMBO_WINDOW_MS, type Board, type GameSnapshot, type PlayerState, type Point } from '../games/types';
 import type {
-  AttackEvent, Board, GameSnapshot, MatchedEvent, PeerSelectEvent, PlayerState, Point, ShuffledEvent,
-} from '../games/types';
+  AttackEvent, BoardPatch, MatchedEvent, PeerSelectEvent, ShuffledEvent, TilesEvent,
+} from '../games/events';
+import { patchOf } from '../games/events';
+import { KEY_SYMBOL, NUMBER_BASE } from '../games/types';
+import { countMoves } from '../games/moves';
 import { useAuthStore } from './authStore';
 import * as engine from '../games/shisen/engine';
 
@@ -10,7 +14,7 @@ export interface FxEvent {
   id: number;
   boardId: string;
   at: number;
-  type: 'path' | 'pop' | 'invalid' | 'shuffle' | 'attack' | 'flash';
+  type: 'path' | 'pop' | 'invalid' | 'shuffle' | 'attack' | 'flash' | 'reveal' | 'unlock';
   /** path: 네온 경로 꼭짓점 */
   path?: Point[];
   /** pop / invalid: 대상 타일 인덱스 */
@@ -23,6 +27,8 @@ export interface FxEvent {
   attack?: AttackEvent;
   /** pop: 이 제거의 콤보 — 5 이상이면 아레나가 살짝 흔들린다 */
   combo?: number;
+  /** pop: 이번 제거로 얻은 점수(+N 플로팅 텍스트) */
+  points?: number;
   /** attack/pop: 발신자 userId (투사체 출발 지점) */
   fromUserId?: string;
 }
@@ -64,6 +70,15 @@ interface GameStore {
   applyShuffled: (e: ShuffledEvent) => boolean;
   applyAttack: (e: AttackEvent) => boolean;
   applyPeerSelect: (e: PeerSelectEvent) => void;
+  /** 물음표 공개 / 자물쇠 해제 — 둘 다 타일 값을 채워 넣고 뒤집기 연출을 남긴다 */
+  applyTiles: (e: TilesEvent, kind: 'reveal' | 'unlock') => boolean;
+
+  /** HUD 옆에 1.2초 떴다 사라지는 짧은 안내("1번부터 지워야 해요") */
+  notice: { text: string; at: number } | null;
+  setNotice: (text: string | null) => void;
+  /** 아레나 상단 배너(재배치 안내 등) — 2.5초 */
+  banner: { text: string; at: number } | null;
+  setBanner: (text: string | null) => void;
 
   setSelected: (idx: number | null) => void;
   setHintPair: (pair: [number, number] | null) => void;
@@ -89,6 +104,12 @@ interface GameStore {
 
 let nextFxId = 1;
 
+/** 다음 제거의 콤보 예측(콤보 창 2초). 예측 연출·사운드가 서버와 같은 값을 쓰도록. */
+export function predictedCombo(p: PlayerState | undefined): number {
+  if (!p) return 1;
+  return Date.now() - p.lastMatchAt <= COMBO_WINDOW_MS ? p.combo + 1 : 1;
+}
+
 /** 불변 갱신 헬퍼 — 보드 하나만 갈아끼운다. */
 function withBoard(s: GameSnapshot, boardId: string, fn: (b: Board) => Board): GameSnapshot {
   const board = s.boards[boardId];
@@ -108,6 +129,38 @@ function pruneEffects(boards: Record<string, Board>): Record<string, Board> {
   return out;
 }
 
+
+/**
+ * 보드 메타(nextNumber / keysLeft / movesLeft) 갱신.
+ * 서버 패치(A5의 `event.board`)가 있으면 그게 진실이고, 없으면 **로컬로 유도**한다 —
+ * 그래야 내 예측 제거 직후에도 `canPick`이 "1번부터 지워야 해요"로 막히지 않는다.
+ * `removed`는 이번에 사라진 타일의 원래 값(숫자/열쇠 판단용).
+ */
+function withMeta(b: Board, opts: { removed?: number; unlocked?: boolean; patch?: BoardPatch }): Board {
+  let nextNumber = b.nextNumber;
+  let keysLeft = b.keysLeft;
+
+  const removed = opts.removed;
+  if (removed !== undefined && removed >= NUMBER_BASE) {
+    const n = removed - NUMBER_BASE;
+    if (nextNumber === n) nextNumber = b.cells.includes(NUMBER_BASE + n + 1) ? n + 1 : 0;
+  }
+  if (removed === KEY_SYMBOL || opts.unlocked) keysLeft = 0;
+
+  const next: Board = { ...b, nextNumber, keysLeft };
+  next.movesLeft = countMoves(next);
+
+  // 서버 값이 함께 왔으면 덮어쓴다(권위).
+  const p = opts.patch;
+  if (p) {
+    if (typeof p.remaining === 'number') next.remaining = p.remaining;
+    if (typeof p.nextNumber === 'number') next.nextNumber = p.nextNumber;
+    if (typeof p.keysLeft === 'number') next.keysLeft = p.keysLeft;
+    if (typeof p.movesLeft === 'number') next.movesLeft = p.movesLeft;
+  }
+  return next;
+}
+
 function myUserId(): string | null {
   return useAuthStore.getState().userId;
 }
@@ -121,6 +174,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   peerSelect: {},
   focusBoardId: null,
   cursorIdx: null,
+  notice: null,
+  banner: null,
   fxQueue: [],
 
   openPanel: () => set({ isPanelOpen: true }),
@@ -147,10 +202,15 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     if (e.seq > s.seq + 1) return false;        // seq 구멍 → 재동기화
     // 내 것이고 예측이 걸려 있으면 "확정"(연출은 이미 돌았다). 예측이 없으면(같은 유저의 다른
     // 기기에서 지웠거나 예측이 스냅샷으로 날아간 경우) 서버 값을 그대로 적용하고 연출도 돌린다.
-    const predicted = e.userId === myUserId() && get().takePending(e.a, e.b) !== null;
+    const pending = e.userId === myUserId() ? get().takePending(e.a, e.b) : null;
+    const predicted = pending !== null;
+    // 예측으로 이미 비워졌으면 pendingPick이 원래 값을 들고 있다.
+    const removedValue = get().snapshot?.boards[e.boardId]?.cells[e.a] || pending?.sym;
     // 협동: 같은 칸을 노린 내 예측이 남아 있으면 "이미 지워진 것"으로 표시해 둔다.
     // (그래야 뒤늦게 오는 `ok:false, reason:'gone'` 응답이 타일을 되살리지 않는다 — 데이터 오염 방지)
-    const winnerColor = get().snapshot?.players.find((p) => p.userId === e.userId)?.color;
+    const before = get().snapshot?.players.find((p) => p.userId === e.userId);
+    const gained = Math.max(0, e.score - (before?.score ?? 0));
+    const winnerColor = before?.color;
     const clashed = get().pendingPicks.some(
       (p) => p.boardId === e.boardId && (p.a === e.a || p.a === e.b || p.b === e.a || p.b === e.b),
     );
@@ -169,7 +229,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         const cells = b.cells.slice();
         cells[e.a] = 0;
         cells[e.b] = 0;
-        return { ...b, cells, remaining: e.remaining };
+        return withMeta(
+          { ...b, cells, remaining: e.remaining },
+          { removed: removedValue, patch: patchOf(e) ?? { movesLeft: e.movesLeft } },
+        );
       });
       next = {
         ...next,
@@ -194,7 +257,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       get().pushFx({ type: 'path', boardId: e.boardId, path: e.path, color: player?.color });
       get().pushFx({
         type: 'pop', boardId: e.boardId, cells: [e.a, e.b], color: player?.color,
-        combo: e.combo, fromUserId: e.userId,
+        combo: e.combo, points: gained, fromUserId: e.userId,
       });
       // 상대가 내 첫 선택 표시를 지우지 못한 채 지웠을 수 있다.
       if (get().peerSelect[e.userId] === e.a || get().peerSelect[e.userId] === e.b) {
@@ -211,7 +274,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     if (e.seq > s.seq + 1) return false;
     set((prev) => {
       if (!prev.snapshot) return prev;
-      const next = withBoard(prev.snapshot, e.boardId, (b) => ({ ...b, cells: e.cells.slice() }));
+      const next = withBoard(prev.snapshot, e.boardId, (b) =>
+        withMeta({ ...b, cells: e.cells.slice() }, { patch: patchOf(e) ?? { movesLeft: e.movesLeft } }));
       return { snapshot: { ...next, seq: e.seq }, selectedIdx: null, hintPair: null, pendingPicks: [] };
     });
     get().pushFx({ type: 'shuffle', boardId: e.boardId });
@@ -245,7 +309,31 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     return true;
   },
 
+  applyTiles: (e, kind) => {
+    const s = get().snapshot;
+    if (!s) return false;
+    if (e.seq <= s.seq) return true;
+    if (e.seq > s.seq + 1) return false;
+    set((prev) => {
+      if (!prev.snapshot) return prev;
+      const next = withBoard(prev.snapshot, e.boardId, (b) => {
+        const cells = b.cells.slice();
+        for (const t of e.tiles) cells[t.idx] = t.symbol;
+        return withMeta(
+          { ...b, cells },
+          { unlocked: kind === 'unlock', patch: patchOf(e) ?? { movesLeft: e.movesLeft } },
+        );
+      });
+      return { snapshot: { ...next, seq: e.seq } };
+    });
+    get().pushFx({ type: kind, boardId: e.boardId, cells: e.tiles.map((t) => t.idx) });
+    return true;
+  },
+
   applyPeerSelect: (e) => set((prev) => ({ peerSelect: { ...prev.peerSelect, [e.userId]: e.idx } })),
+
+  setNotice: (text) => set({ notice: text ? { text, at: Date.now() } : null }),
+  setBanner: (text) => set({ banner: text ? { text, at: Date.now() } : null }),
 
   setSelected: (idx) => set({ selectedIdx: idx }),
   setHintPair: (pair) => set({ hintPair: pair }),
@@ -262,16 +350,18 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         const cells = bd.cells.slice();
         cells[a] = 0;
         cells[b] = 0;
-        return { ...bd, cells, remaining: Math.max(0, bd.remaining - 2) };
+        // 숫자/열쇠 진행도를 즉시 반영해야 다음 쌍을 바로 고를 수 있다.
+        return withMeta({ ...bd, cells, remaining: Math.max(0, bd.remaining - 2) }, { removed: sym });
       }),
       selectedIdx: null,
       hintPair: null,
       pendingPicks: [...get().pendingPicks, { a, b, sym, boardId }],
     });
     get().pushFx({ type: 'path', boardId, path, color });
+    const combo = predictedCombo(get().me());
     get().pushFx({
       type: 'pop', boardId, cells: [a, b], symbol: sym, color,
-      combo: (get().me()?.combo ?? 0) + 1, fromUserId: myUserId() ?? undefined,
+      combo, points: 10 + 5 * Math.min(9, combo - 1), fromUserId: myUserId() ?? undefined,
     });
   },
 
@@ -298,8 +388,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         if (cells[pick.a] === 0) cells[pick.a] = pick.sym;
         if (cells[pick.b] === 0) cells[pick.b] = pick.sym;
         let remaining = 0;
-        for (const v of cells) if (v !== 0) remaining++;
-        return { ...bd, cells, remaining };
+        for (const v of cells) if (v > 0) remaining++;
+        return withMeta({ ...bd, cells, remaining }, {});
       }),
       pendingPicks: get().pendingPicks.filter((p) => !(p.a === pick.a && p.b === pick.b)),
     });
@@ -351,6 +441,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       peerSelect: {},
       focusBoardId: null,
       cursorIdx: null,
+      notice: null,
+      banner: null,
       fxQueue: [],
     }),
 }));

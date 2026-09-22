@@ -169,7 +169,7 @@ export const PLAYER_COLORS = ['#FE2C55', '#25F4EE', '#FACC15', '#A78BFA'];
 ### 3.2 서버 → 클라이언트 (방 전체 브로드캐스트)
 | 이벤트 | payload | 언제 |
 |---|---|---|
-| `game:state` | `{ state: GameSnapshot \| null }` | 로비 변화, 옵션 변경(모드 전환 시 옵션은 `DEFAULT_OPTIONS`로 리셋, coop은 항상 items=false), 카운트다운 시작, playing 진입(판 배부), 힌트 사용, 재접속(`connected`), 리매치, 종료(`results` 포함), 삭제(null), 참가자 이탈 |
+| `game:state` | `{ state: GameSnapshot \| null }` | 로비 변화, 옵션 변경(모드 전환 시 `boardSize`·`timeLimitSec`만 새 모드 `DEFAULT_OPTIONS` 값으로 되돌리고 `mapShape`·`specials`는 유지, coop은 항상 items=false), 카운트다운 시작, playing 진입(판 배부), 힌트 사용, 재접속(`connected`), 리매치, 종료(`results` 포함), 삭제(null), 참가자 이탈 |
 | `game:matched` | `{ seq, userId, boardId, a, b, path, combo, score, remaining, attack?: AttackEvent }` | 제거 성공마다. 발신자 **포함**(클라는 자기 것은 예측 확정으로만 씀) |
 | `game:peerSelect` | `{ userId, idx }` | 발신자 제외 |
 | `game:shuffled` | `{ seq, boardId, cells, cause: 'stuck' \| 'attack' }` | 자동 셔플·셔플 공격 |
@@ -329,3 +329,121 @@ A와 B1은 병렬(계약=이 문서). B2는 B1 후 같은 에이전트가 이어
 
 ## 9. 다음 게임(테트리스) 확장 메모
 - `GameSnapshot.gameId` 분기, `boards`의 `cells` 의미만 다름(테트리스: 10×20 + 현재 조각·다음 조각·가비지 큐). 서버 권위는 동일(입력 이벤트 `game:input {op}` + 주기 틱은 클라 로컬 시뮬 + 서버 검증 해시). 로비·전적판·아레나 레이아웃(좌우/미니보드)·공격 투사체·결과 오버레이는 그대로 재사용.
+
+---
+
+# v2 — 게임 방 흐름 개편 + 랜덤 맵·특수 타일 + 손맛/배경 (2026-09-23 밤, 구현 계약)
+
+사용자 피드백: "게임 방을 만들고 → 그 안에서 어떤 게임을 할지 고르고 → 게임별 상세 설정으로 진행. 레이스/협동을 두 번 고르게 하지 말 것. 만든 사람이 방장, 나머지는 입장. 맵은 다양한 모양이 랜덤으로. ?타일·숫자 순서 타일 같은 걸 설정으로 켜고 끌 수 있게. 인터랙션 손맛과 배경을 더 게임답게."
+
+## V1. 흐름 (프론트)
+- **Idle**(게임 방 없음): 큰 버튼 하나 **"게임 방 만들기"**. 누르면 `game:create {}`(gameId·mode 없이) → 만든 사람이 방장(host).
+- **Idle**(게임 방 있음, 내가 미참여): 카드 "**{방장}님의 게임 방** · 사천성 · 플레이어 n/4 · (대기 중|진행 중)" + 버튼 **입장**(`game:join`) / **관전**(`game:spectate`). 진행 중이면 입장 대신 관전만.
+- **로비**: 위→아래로
+  1. **게임 선택** 가로 카드: **사천성**(선택), **테트리스**(`준비 중` 비활성). 방장만 변경(`game:updateOptions {gameId}`; v2는 shisen만 허용, 다른 값은 `error`).
+  2. **상세 설정**(게임별 컴포넌트, 사천성은 `ShisenSettings`): 방장만 편집, 나머지는 읽기 전용(칩이 비활성·현재값 강조).
+     - 대전 방식: `레이스` / `협동` (칩. 상단 큰 카드 **삭제**)
+     - 판 크기: 작게 / 보통 / 크게
+     - 맵 모양: 랜덤 / 직사각형 / 다이아몬드 / 액자 / 쌍둥이 탑 / 피라미드 / 십자 / 얼룩
+     - 특수 타일(다중 토글): 물음표 / 숫자 순서 / 열쇠·자물쇠 / 벽
+     - 제한 시간, 방해 아이템(협동이면 비활성)
+     - 미리보기: 현재 설정으로 만든 **맵 실루엣 썸네일**(클라에서 `previewMask(options, seed)`로 그림. 랜덤이면 "🎲 매 판 랜덤")
+  3. 플레이어 슬롯 4 + 관전자 + 방장 왕관, **시작**(방장) / **나가기**(비방장→관전) / **방 닫기**(방장)
+  4. 오늘 밤 전적
+- 게임 종료 결과 오버레이의 "로비로"는 같은 설정으로 로비 복귀, "다시 하기"는 즉시 재시작(동일).
+
+## V2. 타입 변경 (`games/types.ts` 양쪽 동일)
+```ts
+export type MapShape = 'random' | 'rect' | 'diamond' | 'frame' | 'towers' | 'pyramid' | 'cross' | 'blob';
+export const MAP_SHAPES: MapShape[] = ['random','rect','diamond','frame','towers','pyramid','cross','blob'];
+export interface SpecialToggles { mystery: boolean; numbers: boolean; keys: boolean; walls: boolean; }
+export interface GameOptions {
+  boardSize: BoardSize; mapShape: MapShape; specials: SpecialToggles; items: boolean; timeLimitSec: number;
+}
+export const DEFAULT_OPTIONS: Record<GameMode, GameOptions> = {
+  race: { boardSize: 'm', mapShape: 'random', specials: { mystery: false, numbers: false, keys: false, walls: false }, items: false, timeLimitSec: 300 },
+  coop: { boardSize: 'l', mapShape: 'random', specials: { mystery: false, numbers: false, keys: false, walls: false }, items: false, timeLimitSec: 0 },
+};
+// 격자(모양은 이 안에서 마스크) — 타일 수는 마스크가 정함(대략 s≈40, m≈72~80, l≈112~120)
+export const BOARD_DIMS: Record<BoardSize, { cols: number; rows: number }> = {
+  s: { cols: 10, rows: 6 }, m: { cols: 14, rows: 8 }, l: { cols: 18, rows: 10 },
+};
+// cells 인코딩
+export const EMPTY = 0;
+export const WALL = -1;          // 벽: 영구 점유. 선택 불가, 경로 차단, 셔플 대상 아님
+export const LOCKED = 98;        // 자물쇠(플레이스홀더): 실제 심볼은 서버만 앎. 열쇠 쌍 제거 시 game:unlocked 로 공개
+export const MYSTERY = 99;       // 물음표(플레이스홀더): game:reveal 또는 인접 제거로 공개
+export const KEY_SYMBOL = 100;   // 열쇠 타일(정확히 1쌍)
+export const NUMBER_BASE = 200;  // 숫자 타일: NUMBER_BASE + n (n=1..K, 각 n 1쌍). n 순서대로만 제거 가능
+export const isNormalSymbol = (v: number) => v >= 1 && v <= 28;
+
+export interface Board {
+  id: string; cols: number; rows: number;
+  cells: number[];            // 위 인코딩. 물음표/자물쇠는 플레이스홀더로 마스킹된 상태로 전송
+  remaining: number;          // 벽 제외 남은 타일 수
+  effects: Effect[];
+  shape: Exclude<MapShape, 'random'>;   // 실제 결정된 모양(랜덤이면 서버가 고른 값)
+  nextNumber: number;         // 숫자 순서 타일이 있으면 다음에 지워야 할 n, 없거나 끝났으면 0
+  keysLeft: number;           // 열쇠 쌍 남았으면 1, 아니면 0
+}
+```
+`GameOptions.mode`는 두지 않는다 — `GameSnapshot.mode` 그대로. `game:updateOptions { gameId?, mode?, options? }`(options는 **부분 병합** 허용). `game:create { gameId?, mode?, options? }` 전부 optional(기본 shisen/race/DEFAULT_OPTIONS.race).
+
+## V3. 규칙 추가
+- **맵 마스크**: 격자 위 타일 배치 집합. 프리셋(`rect`=꽉 채움, `diamond`, `frame`=테두리 두 겹+중앙 작은 덩어리, `towers`=좌우 탑+중앙 몸통(참고 이미지 1), `pyramid`, `cross`, `blob`=좌우대칭 랜덤 얼룩). `random`=매 판 프리셋 중 하나를 시드로 선택(`blob` 포함). 마스크 타일 수는 `4k`(열쇠 켜면 `4k+2`)가 되도록 대칭 유지하며 셀을 더하거나 뺀다. 마스크 밖 = `EMPTY`(처음부터 빈칸 → 경로 통과 가능).
+- **벽**(`walls`): 마스크 안쪽 셀의 4~8%를 좌우대칭으로 `WALL`. 생성 시 미리 점유된 채로 역재생.
+- **숫자 순서**(`numbers`): 역재생이 만든 제거 순서 R(정방향)에서 균등 간격으로 K쌍(작게 3, 보통 4, 크게 5) 골라 R 순서대로 1..K 부여 → 순서 규칙을 지켜도 반드시 풀림. 숫자 타일은 아이콘 없이 숫자만 보임. `nextNumber`가 아닌 숫자 선택 → `reason:'order'`.
+- **열쇠·자물쇠**(`keys`): R의 **첫 쌍**을 열쇠(`KEY_SYMBOL`)로 치환(따라서 초기 판에서 반드시 연결 가능). 나머지 쌍 중 25%(쌍 단위)를 자물쇠로: 클라에는 `LOCKED`로 마스킹, 선택 시 `reason:'locked'`. 열쇠 쌍 제거 시 `game:unlocked {seq, boardId, tiles:[{idx,symbol}]}` 브로드캐스트(+ 스냅샷 반영).
+- **물음표**(`mystery`): 일반 타일 중 20%(쌍 단위 아님, 개별)를 `MYSTERY`로 마스킹. 공개 조건 두 가지: (a) 플레이어가 그 타일을 클릭 → `game:reveal {idx}` → ack `{ok:true, symbol}` + 브로드캐스트 `game:revealed {seq, boardId, tiles:[{idx,symbol}]}` (선택으로 치지 않음, 콤보 무관); (b) 제거된 칸의 상하좌우 인접 물음표는 자동 공개(같은 `game:revealed`, `matched` 뒤에 emit). 공개된 뒤엔 일반 타일.
+- **막힘 검사**는 규칙(순서·잠금·숨김은 "심볼은 아는 상태"로 취급)을 반영해 `findAnyMove(board)`. 없으면 일반 심볼(1..28, 공개/미공개 포함, 자물쇠 안 심볼 포함)만 셔플(벽·열쇠·숫자는 자리 고정). 20회 후에도 없으면 **막힘 해소 자동 제거**: 가장 낮은 규칙 장애(열쇠 남았으면 열쇠 쌍, 아니면 nextNumber 쌍)를 서버가 제거하고 `game:matched`(userId=`'system'`, path 빈 배열) + 토스트 "막혀서 한 쌍 정리했어요". selfcheck에서 이 경로가 1%도 안 타야 함.
+- **셔플 공격**은 같은 셔플 함수(마스킹 유지: 자물쇠는 자물쇠 자리 그대로, 안의 심볼만 섞임).
+- 클라 예측: 두 타일 모두 **일반 공개 심볼/숫자/열쇠**이고 규칙 통과(`canPick` = 같은 심볼 + 숫자면 nextNumber + 잠금 아님 + findPath)일 때만. `MYSTERY` 클릭은 `game:reveal`(뒤집기 애니 후 심볼 표시), `LOCKED`/`WALL` 클릭은 로컬에서 흔들림만.
+- pick reason 추가: `'locked' | 'order' | 'hidden' | 'wall'`.
+
+## V4. 엔진 API (백엔드 원본, 프론트 복제)
+```ts
+buildMask(shape: Exclude<MapShape,'random'>, cols, rows, rng, wantMod4Plus: 0|2): boolean[]   // 대칭 보정 포함
+pickShape(rng): Exclude<MapShape,'random'>
+generateBoardV2(opts: { cols, rows, mask, walls: boolean, numbers: 0|K, keys: boolean, mystery: boolean }, rng)
+  → { cells: number[]  /* 서버 진실: 숨김 없음 */, hidden: number[], locked: number[], order: [number,number][] }
+maskForClient(cells, hidden, locked): number[]   // MYSTERY/LOCKED 플레이스홀더 적용
+canPick(view: { cells, nextNumber, keysLeft, cols, rows }, a, b): PickReason | null   // null = OK. 클라·서버 공용
+findAnyMove(view): [number, number] | null
+shuffleNormals(cells, hiddenSet, lockedSet, rng): number[]
+previewMask(options, seed, sizeOverride?): boolean[]   // 로비 썸네일용(클라에서 호출)
+```
+서버 `RoomGame` 보드는 진실 `cells` + `hidden:Set` + `locked:Set` 을 들고, 스냅샷/델타로 나갈 때 `maskForClient`. `game:matched`의 `a,b`는 공개된 심볼로 제거되는 것이므로 클라는 그냥 0 처리.
+
+## V5. 비주얼 v2 (프론트)
+- **타일 = 상아색 마작 타일**(참고 이미지): 밝은 면(`#F5EFE4`→`#E7DFCF` 그라디언트) + 아래·오른쪽 2px 어두운 베벨 + 얇은 하이라이트 + 바닥 그림자. 아이콘은 채도 높은 색(기존 팔레트), 크기 58%. 다크 UI 위에 "게임 세계"로 떠 보이게.
+  - 숫자 타일: 회색 석판(`#8A8F98`→`#6B7079`) + 굵은 숫자(font-display), `nextNumber`인 쌍은 은은한 노란 테두리 펄스.
+  - 자물쇠: 어두운 석판 + 열쇠구멍 아이콘(lucide `Lock`); 열쇠 타일: 연두 배경 + `Key` 아이콘. 해제 시 자물쇠 전부 순차 flip(rotateY) 공개 + 잠금 해제 사운드.
+  - 물음표: 황토색 타일 + 큰 `?`; 클릭/인접 공개 시 flip 150ms.
+  - 벽: 나무 상자/돌(X 무늬) 타일, 살짝 낮게(그림자 약함), 클릭 시 꿈쩍 안 하는 미세 흔들림.
+- **손맛**: pointerdown 즉시 `scale .93`(스프링), 선택 시 `translateY(-4px)` + **연두 글로우 링**(참고 이미지의 초록 선택), 두 번째 클릭 성공 시 두 타일이 서로를 향해 8px 튕긴 뒤 팝. 경로선은 굵기 5px + 흰 코어 + 색 글로우, 끝에 스파클 3개. 콤보 4+에서 팝 파티클 수 12. 실패 흔들림 + 짧은 붉은 링. 호버 시 3° 틸트(perspective).
+- **배경/아레나**: 게임 패널 배경을 판마다 랜덤 테마 1개(시드로 결정, 스냅샷 `seed` 사용): `night`(짙은 남색 그라디언트 + 별 점묘 + 은은한 네온 오브), `wood`(따뜻한 원목 그라디언트 + `repeating-linear-gradient` 결), `stone`(회청 석판 + 노이즈). 보드는 `rounded-2xl` 트레이(반투명 어두운 판 + 안쪽 그림자) 위에 놓임. 헤더/HUD는 유리 스타일 유지. 전부 CSS/SVG로(이미지 자산 없음).
+- 로비 맵 미리보기 썸네일: 마스크를 작은 사각형 점으로(벽은 어두운 점).
+
+## V6. 작업 분할
+- **A2 backend**: types v2, 엔진 v2(마스크·특수·canPick·findAnyMove·셔플), gameManager(옵션 병합·생성·pick 규칙·reveal·unlock·인접 공개·막힘 해소), gameSocket(`game:reveal`, create/updateOptions 완화, gameId 검증), selfcheck 확장(모양 8×크기 3×특수 조합 대표 12개 × 50판 규칙 준수 재생 풀이, 막힘 해소 경로 0%).
+- **B4 frontend**: types/engine 복제, 로비 개편(V1), ShisenSettings + 미리보기, 타일 v2(V5), reveal/unlock/특수 클릭 처리·예측 조건, 아레나 테마 배경, 손맛, 결과/전적 유지.
+- **C2 Fable**: E2E(2인 레이스 특수 4개 ON 랜덤 맵, 협동, 3인 아이템) + 스크린샷 검증 → 웹 배포 + 데스크탑 0.1.26.
+
+## v2.1 — 사용자 피드백 2차 (2026-09-23 밤)
+- **모드 명칭**: `race` = **"레이스"**(각자 독립된 판, 먼저 다 지우기), `coop` = **"쟁탈전"**(하나의 판을 나눠 먹으며 누가 더 많이·빨리 지우나). "협동"이라는 표현은 UI에서 제거. 쟁탈전 결과 순위 = 지운 쌍 수 내림차순 → 점수. 쟁탈전 중에는 상단에 **실시간 점수판**(플레이어별 지운 쌍·점수·콤보, 1위 배지)이 크게 보인다.
+- **연결 가능 쌍 수**: `Board.movesLeft: number` — 서버 진실 판 기준(숨김·자물쇠 안 심볼 포함, 규칙 반영)으로 계산. 스냅샷과 `matched`/`revealed`/`unlocked`/`shuffled` 델타에 해당 보드의 `movesLeft` 포함. HUD에 "연결 가능 N쌍" 상시 표시(0이면 곧 재배치 안내, 보이는 판에서 못 찾겠는데 N>0이면 "물음표를 열어보세요" 힌트). 클라는 예측 제거 직후 로컬 `findAllMoves(view)`로 즉시 갱신하고 서버 값이 오면 덮어쓴다.
+- **자동 재배치**: 타일이 남았는데 `movesLeft === 0`이면 서버가 즉시 셔플(기존 §1.4) — 예외 없이 항상. 클라는 "연결할 수 있는 타일이 없어 재배치했어요" 배너 + 텀블 애니.
+- **레이스 레이아웃**: 플레이어 시점에서는 **항상 내 판이 메인(가장 크게)**, 상대 판은 옆/아래 미니(2인이어도 좌우 반반 금지). 상대 미니보드 클릭 확대 **제거**(플레이어). 관전자는 기존 균등 그리드+클릭 확대 유지.
+- **콤보 연출**: 콤보 2 이상부터 아레나 중앙 상단에 큰 숫자 "×N COMBO" 팝(스케일 1.8→1 스프링 + 색 티어 + 살짝 회전, 400ms 후 페이드), 제거된 타일 자리에 "+점수" 플로팅 텍스트(위로 40px 떠오르며 페이드), 콤보 5 이상 화면 가장자리 색 플래시, 콤보 8 이상 "PERFECT!!" 급 문구 + 파티클 배증. 콤보가 끊기면 배지가 툭 떨어지는 애니.
+- **효과음 v2**: 상큼·경쾌. 매치는 마림바/벨 계열 짧은 2음(콤보에 따라 스케일 위로 올라감, 4+에서 3화음), 선택은 밝은 "틱", 공개(?)는 반짝임, 잠금 해제는 상승 아르페지오, 셔플은 빠른 글리산도, 실패는 부드러운 "붑"(거슬리지 않게), 카운트다운 틱은 우드블록, GO는 밝은 팡파레, 승리 아르페지오, 콤보 티어 상승 시 추가 "샤랑". 각 소리는 2~3개 변형을 랜덤 재생해 지루하지 않게. 어택/디케이를 짧게(클릭 노이즈 없이).
+
+## v2 검증 결과 (2026-09-23, Playwright 3계정: 방장 PC·입장 PC·모바일 관전)
+- [x] 게임 방 만들기 → 방장 설정(작게·랜덤 맵·특수 4종 ON) → 입장/관전 카드 → 읽기 전용 로비
+- [x] 랜덤 맵(cross/blob/frame/diamond 확인), 벽·물음표·자물쇠·열쇠·숫자 타일 렌더 = 스토어 셀 수 일치
+- [x] 규칙: 숫자 순서(1→2→3), 열쇠 → 자물쇠 해제, 물음표 클릭 공개, 잘못된 순서/잠금 클릭 거부
+- [x] matched 델타의 BoardPatch로 nextNumber/keysLeft/movesLeft 즉시 갱신(초기엔 stale로 막힘 → 수정)
+- [x] 레이스: 내 판 메인 + 상대 미니(확대 불가), 헤더 카드(콤보 배지 포함), 완주·결과·전적
+- [x] 쟁탈전: 실시간 점수판(왕관 이동), 모드 전환 시 맵/특수 설정 유지
+- [x] 테마 배경(night/wood/stone), 상아색 타일, 콤보 팝/플로팅 점수(연출은 스크린샷 정지 프레임으로 부분 확인)
+- [ ] 사운드 v2 실청취, 4인 동시, 모바일에서 `크게` 판은 타일이 작음(폭 맞춤) — 작게/보통 권장
+- 부수 수정: 보드 크롭 캐시가 다음 판을 잘라내던 버그, 테마 배경이 헤더를 덮던 z-index, 경로 스파클 circle 초기 cx 미지정

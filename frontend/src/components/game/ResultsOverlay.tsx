@@ -7,6 +7,7 @@ import { Button } from '../common/Button';
 import { useGameStore } from '../../stores/gameStore';
 import { useAuthStore } from '../../stores/authStore';
 import { formatMs } from './Scoreboard';
+import { isForfeited } from '../../games/events';
 import { Confetti } from './Confetti';
 import { playGameSound } from '../../games/sounds';
 import { prefersReducedMotion } from '../../games/motion';
@@ -21,8 +22,11 @@ export function ResultsOverlay({ snapshot }: { snapshot: GameSnapshot }) {
   const closePanel = useGameStore((s) => s.closePanel);
   const [busy, setBusy] = useState(false);
   const isHost = snapshot.hostUserId === myUserId;
-  const results = snapshot.results ?? [];
   const isCoop = snapshot.mode === 'coop';
+  // 쟁탈전 순위 = 지운 쌍 → 점수 (v2.1). 서버 rank가 같은 규칙이어도 표시를 확정적으로 맞춘다.
+  const results = isCoop
+    ? [...(snapshot.results ?? [])].sort((a, b) => b.pairsCleared - a.pairsCleared || b.score - a.score)
+    : (snapshot.results ?? []);
   const teamMs = snapshot.startAt && snapshot.endedAt ? snapshot.endedAt - snapshot.startAt : null;
 
   const run = async (event: string, label: string, after?: () => void) => {
@@ -64,9 +68,9 @@ export function ResultsOverlay({ snapshot }: { snapshot: GameSnapshot }) {
       >
         {isCoop ? (
           <div className="mb-4 text-center">
-            <p className="text-xs text-white/50">팀 클리어</p>
-            <p className="font-display text-4xl font-black tabular-nums text-secondary">
-              {formatMs(teamMs)}
+            <h3 className="font-display text-xl font-bold">쟁탈전 결과</h3>
+            <p className="mt-0.5 text-xs text-white/45">
+              판 클리어 <span className="font-display tabular-nums text-secondary">{formatMs(teamMs)}</span>
             </p>
           </div>
         ) : (
@@ -82,26 +86,35 @@ export function ResultsOverlay({ snapshot }: { snapshot: GameSnapshot }) {
               // 4위 → 1위 순서로 등장
               transition={{ delay: reduced ? 0 : (results.length - 1 - i) * 0.2, duration: 0.25 }}
               className={`flex items-center gap-3 rounded-btn px-3 py-2 ${
-                r.rank === 1 && !isCoop ? 'bg-white/10' : 'bg-white/5'
+                (isCoop ? i === 0 : r.rank === 1) ? 'bg-white/10' : 'bg-white/5'
               } ${r.userId === myUserId ? 'ring-1 ring-white/30' : ''}`}
             >
-              {!isCoop && (
-                <span className="w-6 shrink-0 text-center font-display font-bold tabular-nums">
-                  {r.rank === 1 ? <Crown size={16} className="mx-auto text-warning" /> : r.rank}
-                </span>
-              )}
+              <span className="w-6 shrink-0 text-center font-display font-bold tabular-nums">
+                {(isCoop ? i === 0 : r.rank === 1)
+                  ? <Crown size={16} className="mx-auto text-warning" />
+                  : isCoop ? i + 1 : r.rank}
+              </span>
               <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: r.color }} />
               <span className="min-w-0 flex-1 truncate text-sm">{r.nickname}</span>
-              <span className="shrink-0 font-display text-xs tabular-nums text-white/60">
-                {isCoop
-                  ? `${r.pairsCleared}쌍 · ${r.score}점`
-                  : r.timeMs !== null
-                    ? formatMs(r.timeMs)
-                    : snapshot.players.find((p) => p.userId === r.userId)?.forfeited
-                      ? '기권'
-                      : `${r.remaining}개 남음`}
-              </span>
-              {!isCoop && <span className="shrink-0 font-display text-xs tabular-nums text-white/40">{r.score}점</span>}
+              {isCoop ? (
+                <span className="flex shrink-0 items-baseline gap-2">
+                  <span className="font-display text-lg font-black tabular-nums text-white">
+                    {r.pairsCleared}<span className="ml-0.5 text-[10px] font-medium text-white/40">쌍</span>
+                  </span>
+                  <span className="font-display text-sm tabular-nums text-white/60">{r.score}점</span>
+                </span>
+              ) : (
+                <>
+                  <span className="shrink-0 font-display text-xs tabular-nums text-white/60">
+                    {r.timeMs !== null
+                      ? formatMs(r.timeMs)
+                      : isForfeited(snapshot.players.find((p) => p.userId === r.userId))
+                        ? '기권'
+                        : `${r.remaining}개 남음`}
+                  </span>
+                  <span className="shrink-0 font-display text-xs tabular-nums text-white/40">{r.score}점</span>
+                </>
+              )}
             </motion.div>
           ))}
           {isCoop && results.map((r) => (

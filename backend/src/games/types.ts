@@ -1,5 +1,5 @@
 // KEEP IN SYNC with ghc_service/frontend/src/games/types.ts
-// 방 안 미니게임 공유 계약 (docs/games/shisen-design.md §2). 내용을 바꾸려면 설계서를 먼저 고친다.
+// 방 안 미니게임 공유 계약 (docs/games/shisen-design.md §2 + v2 §V2). 내용을 바꾸려면 설계서를 먼저 고친다.
 
 export type GameId = 'shisen';                      // 추후 'tetris'
 export type GameMode = 'race' | 'coop';
@@ -7,14 +7,31 @@ export type BoardSize = 's' | 'm' | 'l';
 export type GamePhase = 'lobby' | 'countdown' | 'playing' | 'finished';
 export type AttackType = 'freeze' | 'fog' | 'shuffle';
 
-export interface GameOptions { boardSize: BoardSize; items: boolean; timeLimitSec: number; }
+// --- v2: 맵 모양 / 특수 타일 ---
+export type MapShape = 'random' | 'rect' | 'diamond' | 'frame' | 'towers' | 'pyramid' | 'cross' | 'blob';
+export const MAP_SHAPES: MapShape[] = ['random', 'rect', 'diamond', 'frame', 'towers', 'pyramid', 'cross', 'blob'];
+export interface SpecialToggles { mystery: boolean; numbers: boolean; keys: boolean; walls: boolean; }
+
+export interface GameOptions {
+  boardSize: BoardSize; mapShape: MapShape; specials: SpecialToggles; items: boolean; timeLimitSec: number;
+}
 export const DEFAULT_OPTIONS: Record<GameMode, GameOptions> = {
-  race: { boardSize: 'm', items: false, timeLimitSec: 300 },
-  coop: { boardSize: 'l', items: false, timeLimitSec: 0 },
+  race: { boardSize: 'm', mapShape: 'random', specials: { mystery: false, numbers: false, keys: false, walls: false }, items: false, timeLimitSec: 300 },
+  coop: { boardSize: 'l', mapShape: 'random', specials: { mystery: false, numbers: false, keys: false, walls: false }, items: false, timeLimitSec: 0 },
 };
+// 격자(모양은 이 안에서 마스크) — 타일 수는 마스크가 정함(대략 s≈40, m≈72~80, l≈112~120)
 export const BOARD_DIMS: Record<BoardSize, { cols: number; rows: number }> = {
-  s: { cols: 8, rows: 5 }, m: { cols: 12, rows: 6 }, l: { cols: 14, rows: 8 },
+  s: { cols: 10, rows: 6 }, m: { cols: 14, rows: 8 }, l: { cols: 18, rows: 10 },
 };
+// cells 인코딩
+export const EMPTY = 0;
+export const WALL = -1;          // 벽: 영구 점유. 선택 불가, 경로 차단, 셔플 대상 아님
+export const LOCKED = 98;        // 자물쇠(플레이스홀더): 실제 심볼은 서버만 앎. 열쇠 쌍 제거 시 game:unlocked 로 공개
+export const MYSTERY = 99;       // 물음표(플레이스홀더): game:reveal 또는 인접 제거로 공개
+export const KEY_SYMBOL = 100;   // 열쇠 타일(정확히 1쌍)
+export const NUMBER_BASE = 200;  // 숫자 타일: NUMBER_BASE + n (n=1..K, 각 n 1쌍). n 순서대로만 제거 가능
+export const isNormalSymbol = (v: number) => v >= 1 && v <= 28;
+
 export const MAX_PLAYERS = 4;
 export const COMBO_WINDOW_MS = 2000;
 export const COUNTDOWN_MS = 3000;
@@ -25,9 +42,13 @@ export interface Effect { type: AttackType; until: number; hidden?: number[]; }
 export interface Board {
   id: string;            // race: userId, coop: 'shared'
   cols: number; rows: number;
-  cells: number[];       // 0 = empty
-  remaining: number;     // 남은 타일 수
+  cells: number[];       // 위 인코딩. 물음표/자물쇠는 플레이스홀더로 마스킹된 상태로 전송
+  remaining: number;     // 벽 제외 남은 타일 수
   effects: Effect[];
+  shape: Exclude<MapShape, 'random'>;   // 실제 결정된 모양(랜덤이면 서버가 고른 값)
+  nextNumber: number;    // 숫자 순서 타일이 있으면 다음에 지워야 할 n, 없거나 끝났으면 0
+  keysLeft: number;      // 열쇠 쌍 남았으면 1, 아니면 0
+  movesLeft: number;     // v2.1: 지금 연결 가능한 쌍 수(서버 진실 기준, 물음표는 심볼을 아는 것으로 계산)
 }
 
 export interface PlayerState {
@@ -40,7 +61,7 @@ export interface PlayerState {
   hintsLeft: number;
   finishedAt: number | null;   // race 완주 시각
   connected: boolean;    // 소켓 끊김(10s 유예 중) 표시용
-  forfeited: boolean;    // playing 중 기권(관전 전환). players[]에는 남음
+  forfeited: boolean;    // playing 중 기권(보드는 남지만 순위는 최하위 그룹)
 }
 
 export interface ResultRow {
@@ -69,21 +90,45 @@ export interface GameSnapshot {
 
 export const PLAYER_COLORS = ['#FE2C55', '#25F4EE', '#FACC15', '#A78BFA'];
 
-// --- 소켓 델타 이벤트 페이로드 (§3.2) ---
+// --- 소켓 델타 이벤트 페이로드 (§3.2 + v2 §V3) ---
+/**
+ * 델타를 받은 클라가 보드 규칙 상태를 바로 맞출 수 있게 같이 보내는 요약.
+ * 부수효과(인접 공개·자물쇠 해제·막힘 재배치)까지 **전부 끝난 뒤**의 값이다.
+ */
+export interface BoardPatch {
+  remaining: number; nextNumber: number; keysLeft: number; movesLeft: number;
+}
 export interface AttackEvent {
   seq: number; from: string; to: string; boardId: string;
   type: AttackType; until: number; hidden?: number[];
 }
 export interface MatchedEvent {
-  seq: number; userId: string; boardId: string;
+  seq: number;
+  userId: string;       // 'system' = 막힘 해소 자동 제거(v2 §V3)
+  boardId: string;
   a: number; b: number; path: Point[];
-  combo: number; score: number; remaining: number;
+  combo: number; score: number; remaining: number; movesLeft: number;
+  board: BoardPatch;
   attack?: AttackEvent;
 }
 export interface ShuffledEvent {
-  seq: number; boardId: string; cells: number[]; cause: 'stuck' | 'attack';
+  seq: number; boardId: string; cells: number[]; cause: 'stuck' | 'attack'; movesLeft: number;
+  board: BoardPatch;
 }
 export interface PeerSelectEvent { userId: string; idx: number | null; }
-export type PickReason = 'same' | 'symbol' | 'gone' | 'nopath' | 'frozen' | 'phase';
+/** game:revealed — 물음표 공개(클릭 또는 인접 제거) */
+export interface RevealedEvent {
+  seq: number; boardId: string; tiles: { idx: number; symbol: number }[]; movesLeft: number;
+  board: BoardPatch;
+}
+/** game:unlocked — 열쇠 쌍 제거로 자물쇠 전부 해제 */
+export interface UnlockedEvent {
+  seq: number; boardId: string; tiles: { idx: number; symbol: number }[]; movesLeft: number;
+  board: BoardPatch;
+}
+export type PickReason =
+  | 'same' | 'symbol' | 'gone' | 'nopath' | 'frozen' | 'phase'
+  | 'locked' | 'order' | 'hidden' | 'wall';
 export type PickAck = { ok: true; path: Point[] } | { ok: false; reason: PickReason };
 export type HintAck = { ok: true; pair: [number, number] } | { ok: false; reason: 'none' };
+export type RevealAck = { ok: true; symbol: number } | { ok: false; reason: PickReason };

@@ -4,9 +4,10 @@ import { useGameStore } from '../stores/gameStore';
 import { useAuthStore } from '../stores/authStore';
 import { showToast } from '../components/common/Toast';
 import { playGameSound } from '../games/sounds';
+import type { GameSnapshot } from '../games/types';
 import type {
-  AttackEvent, GameSnapshot, MatchedEvent, PeerSelectEvent, ShuffledEvent,
-} from '../games/types';
+  AttackEvent, MatchedEvent, PeerSelectEvent, ShuffledEvent, TilesEvent,
+} from '../games/events';
 
 /**
  * 스냅샷 적용 + 패널 자동 오픈 규칙.
@@ -76,13 +77,28 @@ export function useGameSocket(active: boolean) {
 
     const onMatched = (e: MatchedEvent) => {
       if (!store.getState().applyMatched(e)) void syncGame();
+      // 서버가 막힘을 풀려고 한 쌍 정리한 경우(v2 §V3)
+      if (e.userId === 'system' && store.getState().myBoard()?.id === e.boardId) {
+        showToast('막혀서 한 쌍 정리했어요', 'info');
+      }
+    };
+    const onRevealed = (e: TilesEvent) => {
+      if (!store.getState().applyTiles(e, 'reveal')) void syncGame();
+      if (store.getState().myBoard()?.id === e.boardId) playGameSound('reveal');
+    };
+    const onUnlocked = (e: TilesEvent) => {
+      if (!store.getState().applyTiles(e, 'unlock')) void syncGame();
+      if (store.getState().myBoard()?.id === e.boardId) {
+        playGameSound('unlock');
+        store.getState().setBanner('자물쇠가 열렸어요');
+      }
     };
     const onShuffled = (e: ShuffledEvent) => {
       if (!store.getState().applyShuffled(e)) void syncGame();
       const mine = store.getState().myBoard()?.id === e.boardId;
       if (mine) playGameSound('shuffle');
-      // 공격으로 섞인 건 피격 연출이 따로 있으므로 토스트는 '막힘'일 때만.
-      if (e.cause === 'stuck' && mine) showToast('막혀서 섞었어요', 'info');
+      // 공격으로 섞인 건 피격 연출이 따로 있으므로 배너는 '막힘'일 때만(v2.1).
+      if (e.cause === 'stuck' && mine) store.getState().setBanner('연결할 수 있는 타일이 없어 재배치했어요');
     };
     const onAttack = (e: AttackEvent) => {
       if (!store.getState().applyAttack(e)) void syncGame();
@@ -94,6 +110,8 @@ export function useGameSocket(active: boolean) {
     socket.off('game:shuffled').on('game:shuffled', onShuffled);
     socket.off('game:attack').on('game:attack', onAttack);
     socket.off('game:peerSelect').on('game:peerSelect', onPeerSelect);
+    socket.off('game:revealed').on('game:revealed', onRevealed);
+    socket.off('game:unlocked').on('game:unlocked', onUnlocked);
 
     void syncGame();
 
@@ -108,6 +126,8 @@ export function useGameSocket(active: boolean) {
       socket.off('game:shuffled', onShuffled);
       socket.off('game:attack', onAttack);
       socket.off('game:peerSelect', onPeerSelect);
+      socket.off('game:revealed', onRevealed);
+      socket.off('game:unlocked', onUnlocked);
       socket.io.off('reconnect', onReconnect);
     };
   }, [active]);

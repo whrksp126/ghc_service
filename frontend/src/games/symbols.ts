@@ -47,3 +47,19 @@ export const SYMBOLS: GameSymbol[] = [
 export function symbolOf(id: number): GameSymbol {
   return SYMBOLS[(id - 1 + SYMBOLS.length) % SYMBOLS.length] ?? SYMBOLS[0];
 }
+
+/**
+ * v2 타일은 상아색이라 팔레트의 밝은 색(#FDE68A 등)이 그대로면 아이콘이 안 보인다.
+ * 밝기가 높은 색만 어둡게 눌러서 "잉크 색"을 만든다(글로우·파티클은 원색 그대로 쓴다).
+ */
+export function inkOf(id: number): string {
+  const hex = symbolOf(id).color;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  if (lum <= 0.55) return hex;
+  const k = 0.52 / lum;           // 목표 밝기까지 눌러준다
+  const to = (v: number) => Math.max(0, Math.min(255, Math.round(v * k)));
+  return `#${[to(r), to(g), to(b)].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+}

@@ -13,24 +13,40 @@ export interface GameHandlerContext {
   user: JwtPayload;
 }
 
+const specialsSchema = z
+  .object({
+    mystery: z.boolean(),
+    numbers: z.boolean(),
+    keys: z.boolean(),
+    walls: z.boolean(),
+  })
+  .partial();
+
 const optionsSchema = z
   .object({
     boardSize: z.enum(['s', 'm', 'l']),
+    mapShape: z.enum(['random', 'rect', 'diamond', 'frame', 'towers', 'pyramid', 'cross', 'blob']),
+    specials: specialsSchema,
     items: z.boolean(),
     timeLimitSec: z.number().int().min(0).max(3600),
   })
   .partial();
 
+// v2: gameId·mode·options 전부 optional(기본 shisen/race/DEFAULT_OPTIONS.race).
+// gameId는 문자열로 받아서 따로 검사한다 — 'tetris'는 "준비 중"이라고 답해야 하므로.
 const createSchema = z.object({
-  gameId: z.literal('shisen'),
-  mode: z.enum(['race', 'coop']),
+  gameId: z.string().optional(),
+  mode: z.enum(['race', 'coop']).optional(),
   options: optionsSchema.optional(),
 });
 
 const updateOptionsSchema = z.object({
+  gameId: z.string().optional(),
   mode: z.enum(['race', 'coop']).optional(),
   options: optionsSchema.optional(),
 });
+
+const revealSchema = z.object({ idx: z.number().int().min(0).max(4095) });
 
 const pickSchema = z.object({
   a: z.number().int().min(0).max(4095),
@@ -43,6 +59,7 @@ const selectSchema = z.object({
 
 const NOT_IN_ROOM = '방에 먼저 입장하세요';
 const BAD_PAYLOAD = '잘못된 요청입니다';
+const NOT_READY_GAME = '아직 준비 중인 게임이에요';
 
 type Ack = ((res: unknown) => void) | undefined;
 
@@ -93,9 +110,11 @@ export function registerGameHandlers(io: Server, socket: Socket, ctx: GameHandle
 
   socket.on('game:create', (payload: unknown, callback: Ack) => {
     withRoom((slug) => {
-      const parsed = createSchema.safeParse(payload);
+      const parsed = createSchema.safeParse(payload ?? {});
       if (!parsed.success) return callback?.({ error: BAD_PAYLOAD });
-      ackState(callback)(gameManager.create(slug, actor, parsed.data));
+      const { gameId, ...rest } = parsed.data;
+      if (gameId && gameId !== 'shisen') return callback?.({ error: NOT_READY_GAME });
+      ackState(callback)(gameManager.create(slug, actor, { ...rest, gameId: 'shisen' }));
     }, callback);
   });
 
@@ -111,7 +130,11 @@ export function registerGameHandlers(io: Server, socket: Socket, ctx: GameHandle
     withRoom((slug) => {
       const parsed = updateOptionsSchema.safeParse(payload ?? {});
       if (!parsed.success) return callback?.({ error: BAD_PAYLOAD });
-      ackState(callback)(gameManager.updateOptions(slug, actor, parsed.data));
+      const { gameId, ...rest } = parsed.data;
+      if (gameId && gameId !== 'shisen') return callback?.({ error: NOT_READY_GAME });
+      ackState(callback)(
+        gameManager.updateOptions(slug, actor, { ...rest, ...(gameId ? { gameId: 'shisen' as const } : {}) })
+      );
     }, callback);
   });
 
@@ -138,6 +161,19 @@ export function registerGameHandlers(io: Server, socket: Socket, ctx: GameHandle
     const parsed = selectSchema.safeParse(payload);
     if (!parsed.success) return;
     socket.to(slug).emit('game:peerSelect', { userId: user.userId, idx: parsed.data.idx });
+  });
+
+  // 물음표 타일 공개(선택으로 치지 않음)
+  socket.on('game:reveal', (payload: unknown, callback: Ack) => {
+    withRoom(
+      (slug) => {
+        const parsed = revealSchema.safeParse(payload);
+        if (!parsed.success) return callback?.({ ok: false, reason: 'gone' });
+        callback?.(gameManager.reveal(slug, actor, parsed.data.idx));
+      },
+      callback,
+      { ok: false, reason: 'phase' }
+    );
   });
 
   socket.on('game:hint', (_payload: unknown, callback: Ack) => {

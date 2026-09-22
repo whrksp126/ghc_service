@@ -1,36 +1,93 @@
 import { useCallback, useEffect, useMemo, useReducer } from 'react';
 import { motion } from 'framer-motion';
-import { useGameStore, type FxEvent } from '../../stores/gameStore';
+import { useGameStore, predictedCombo, type FxEvent } from '../../stores/gameStore';
 import { useAuthStore } from '../../stores/authStore';
-import { findPath } from '../../games/shisen/engine';
+import { canPick, findPath } from '../../games/shisen/engine';
 import { playGameSound } from '../../games/sounds';
 import { prefersReducedMotion } from '../../games/motion';
 import { emitWithAck, getSocket } from '../../lib/socket';
 import { syncGame } from '../../hooks/useGameSocket';
 import { showToast } from '../common/Toast';
-import { ShisenTile } from './ShisenTile';
+import { ShisenTile, kindOf } from './ShisenTile';
 import { BoardEffectOverlay } from './AttackFx';
 import { symbolOf } from '../../games/symbols';
-import type { Board, Effect, PickAck, PickReason, PlayerState, Point } from '../../games/types';
+import {
+  EMPTY, LOCKED, MYSTERY, NUMBER_BASE, WALL,
+  type Board, type Effect, type PlayerState, type Point,
+} from '../../games/types';
+import type { PickAck, PickReason, RevealAck } from '../../games/events';
 
 export const BOARD_GAP = 4;
 
 interface ShisenBoardProps {
   board: Board;
-  /** 이 보드의 주인(협동은 undefined). 헤더는 PlayerHeader가 따로 그린다. */
+  /** 이 보드의 주인(쟁탈전은 undefined). 헤더는 PlayerHeader가 따로 그린다. */
   player?: PlayerState;
   /** 내가 클릭할 수 있는 판인지 */
   interactive: boolean;
   cellPx: number;
 }
 
-/** 예상 밖의 거절만 토스트로 알린다. `gone`은 협동에서 흔해서 토스트를 띄우지 않는다. */
-const PICK_REASON_TEXT: Partial<Record<PickReason, string>> = {
-  same: '같은 타일이에요',
+/** 규칙 위반은 토스트 대신 HUD 옆 짧은 안내로 (v2 §V5) */
+const REASON_NOTICE: Partial<Record<PickReason, string>> = {
   symbol: '다른 그림이에요',
   nopath: '이어지지 않아요',
+  locked: '열쇠를 먼저 찾아요',
+  hidden: '먼저 뒤집어 보세요',
+  wall: '벽은 지울 수 없어요',
   phase: '아직 시작 전이에요',
 };
+
+/** 마스크(맵 모양)의 바운딩 박스 — 빈 가장자리 때문에 타일이 작아지지 않게. */
+export interface BoardBox { r0: number; c0: number; r1: number; c1: number }
+const boxCache = new Map<string, { box: BoardBox; remaining: number }>();
+
+/** 지금 cells에 실제로 타일이 있는 영역(빈칸 제외). */
+function footprint(board: Board): BoardBox {
+  let r0 = board.rows; let c0 = board.cols; let r1 = -1; let c1 = -1;
+  for (let i = 0; i < board.cells.length; i++) {
+    if (board.cells[i] === EMPTY) continue;      // EMPTY(0)만 빈칸. WALL(-1)·98·99·100·200+ 는 모두 타일.
+    const r = Math.floor(i / board.cols); const c = i % board.cols;
+    if (r < r0) r0 = r;
+    if (c < c0) c0 = c;
+    if (r > r1) r1 = r;
+    if (c > c1) c1 = c;
+  }
+  return r1 < 0 ? { r0: 0, c0: 0, r1: board.rows - 1, c1: board.cols - 1 } : { r0, c0, r1, c1 };
+}
+
+/**
+ * 판에 실제로 타일이 놓이는 영역. 진행 중에는 타일이 줄기만 하므로 **처음 잡은 박스를 유지**한다
+ * (줄어드는 대로 다시 잡으면 판이 점점 커지며 출렁인다).
+ *
+ * 다만 캐시된 박스를 그대로 쓰면 **다음 판(같은 boardId)의 마스크가 더 넓을 때 바깥 타일이
+ * 잘려 보이지 않는다** — 그래서 항상 현재 footprint와 **합집합**을 취한다.
+ * 이 불변식 덕분에 어떤 셀도 박스 밖으로 나갈 수 없다(= 크롭으로 타일이 사라지지 않는다).
+ */
+export function boardBox(board: Board): BoardBox {
+  const key = `${board.id}:${board.cols}x${board.rows}`;
+  const cur = footprint(board);
+  const hit = boxCache.get(key);
+  if (hit && board.remaining <= hit.remaining) {
+    const merged: BoardBox = {
+      r0: Math.min(hit.box.r0, cur.r0),
+      c0: Math.min(hit.box.c0, cur.c0),
+      r1: Math.max(hit.box.r1, cur.r1),
+      c1: Math.max(hit.box.c1, cur.c1),
+    };
+    boxCache.set(key, { box: merged, remaining: hit.remaining });
+    return merged;
+  }
+  boxCache.set(key, { box: cur, remaining: board.remaining });
+  return cur;
+}
+
+/**
+ * 현재 "내가 조작 가능한" 보드의 클릭 핸들러. 키보드 입력(Space/Enter)이 마우스 클릭과
+ * **똑같은 경로**(예측·롤백 포함)를 타도록 아레나가 이걸 통해 타일을 누른다.
+ */
+let activePickHandler: ((idx: number) => void) | null = null;
+export function pickActiveTile(idx: number) { activePickHandler?.(idx); }
 
 // game:select 스로틀(50ms) — 상대에게 내 첫 선택만 알려주면 되므로 유실돼도 무방하다.
 let lastSelectAt = 0;
@@ -46,13 +103,6 @@ export function emitSelect(idx: number | null) {
   else selectTimer = setTimeout(send, wait);
 }
 
-/**
- * 현재 "내가 조작 가능한" 보드의 클릭 핸들러. 키보드 입력(Space/Enter)이 마우스 클릭과
- * **똑같은 경로**(예측·롤백 포함)를 타도록 아레나가 이걸 통해 타일을 누른다.
- */
-let activePickHandler: ((idx: number) => void) | null = null;
-export function pickActiveTile(idx: number) { activePickHandler?.(idx); }
-
 /** freeze 한 번당 토스트도 한 번만 (연타하면 5개씩 쌓였다). */
 let lastFrozenToastUntil = 0;
 function toastFrozenOnce(until: number) {
@@ -62,10 +112,8 @@ function toastFrozenOnce(until: number) {
 }
 
 /**
- * 효과(freeze/fog) 표시용 시계.
- * 반환값은 **렌더 시점의 진짜 `Date.now()`** 다 — state에 담아 두면 타이머가 멈춘 사이
- * (효과가 잠깐 비었다가 다시 들어오는 등) 낡은 값으로 "1.9s"가 굳어버린다.
- * state는 "다시 그려라" 신호로만 쓰고, 마지막 효과가 끝나는 순간에도 한 번 더 강제로 그린다.
+ * 효과(freeze/fog) 표시용 시계. 반환값은 **렌더 시점의 진짜 `Date.now()`** 다 —
+ * state에 담아 두면 타이머가 멈춘 사이 낡은 값으로 "1.9s"가 굳어버린다.
  */
 function useEffectClock(effects: Effect[]): number {
   const [, force] = useReducer((n: number) => n + 1, 0);
@@ -74,7 +122,6 @@ function useEffectClock(effects: Effect[]): number {
     const left = maxUntil - Date.now();
     if (left <= 0) return;
     const tick = setInterval(force, 100);
-    // 만료 직후 1회 — 스토어 갱신이 없어도 서리/안개가 반드시 걷힌다.
     const end = setTimeout(force, left + 60);
     return () => { clearInterval(tick); clearTimeout(end); };
   }, [maxUntil]);
@@ -82,8 +129,8 @@ function useEffectClock(effects: Effect[]): number {
 }
 
 /**
- * 보드 1개. 타일 그리드 + 경로 SVG 오버레이 + 파티클 + 효과 오버레이.
- * 좌표는 전부 `cellPx`/`BOARD_GAP` 픽셀 계산이라 SVG와 타일이 정확히 겹친다.
+ * 보드 1개. 마작 타일 그리드 + 경로 SVG 오버레이 + 파티클 + 효과 오버레이.
+ * 좌표는 마스크 바운딩 박스 기준 픽셀이라 SVG와 타일이 정확히 겹친다.
  */
 export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
   const snapshot = useGameStore((s) => s.snapshot);
@@ -96,9 +143,14 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
   const reduced = prefersReducedMotion();
 
   const glowId = `shisen-glow-${board.id}`;
+  const box = boardBox(board);
+  const cols = box.c1 - box.c0 + 1;
+  const rows = box.r1 - box.r0 + 1;
   const step = cellPx + BOARD_GAP;
-  const width = board.cols * step - BOARD_GAP;
-  const height = board.rows * step - BOARD_GAP;
+  const width = cols * step - BOARD_GAP;
+  const height = rows * step - BOARD_GAP;
+  const xOf = (c: number) => (c - box.c0) * step;
+  const yOf = (r: number) => (r - box.r0) * step;
 
   const now = useEffectClock(board.effects);
   const fog = board.effects.find((e) => e.type === 'fog' && e.until > now);
@@ -106,7 +158,6 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
 
   const myPlayer = snapshot?.players.find((p) => p.userId === myUserId);
   const myColor = myPlayer?.color ?? '#FE2C55';
-  // 콤보 4 이상이면 판 테두리가 은은하게 빛난다(§6.3).
   const comboGlow = interactive && (myPlayer?.combo ?? 0) >= 4 ? myColor : null;
 
   // 이 판에 표시할 상대 선택: race=보드 주인, coop=나를 뺀 모든 플레이어.
@@ -135,13 +186,20 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
     fx.filter((f) => f.type === 'flash').forEach((f) => f.cells?.forEach((c) => { out[c] = f.color ?? '#FFFFFF'; }));
     return out;
   }, [fx]);
+  // 공개/해제 뒤집기: 자물쇠 해제는 순차(60ms 간격)로 넘어간다.
+  const flips = useMemo(() => {
+    const out: Record<number, { key: number; delay: number }> = {};
+    fx.filter((f) => f.type === 'reveal' || f.type === 'unlock').forEach((f) => {
+      (f.cells ?? []).forEach((c, i) => {
+        out[c] = { key: f.id, delay: f.type === 'unlock' ? i * 60 : 0 };
+      });
+    });
+    return out;
+  }, [fx]);
   const tumbling = fx.some((f) => f.type === 'shuffle');
 
-  // 일회성 연출(흔들림·번쩍임·셔플)은 시간이 지나면 스스로 큐에서 빠진다.
-  // deps는 배열 대신 **id 문자열** — 매 렌더(효과 시계·아레나 타이머)마다 타이머가 리셋되면
-  // 연출이 영영 안 걷힌다.
   const oneShotKey = fx
-    .filter((f) => f.type === 'invalid' || f.type === 'shuffle' || f.type === 'flash')
+    .filter((f) => ['invalid', 'shuffle', 'flash', 'reveal', 'unlock'].includes(f.type))
     .map((f) => f.id)
     .join(',');
   useEffect(() => {
@@ -150,7 +208,7 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
     const t = setTimeout(() => {
       const consume = useGameStore.getState().consumeFx;
       ids.forEach(consume);
-    }, 320);
+    }, 400);
     return () => clearTimeout(t);
   }, [oneShotKey]);
 
@@ -160,7 +218,9 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
     const snap = st.snapshot;
     if (!snap || snap.phase !== 'playing') return;
     const live = snap.boards[board.id];
-    if (!live || live.cells[idx] === 0) return;
+    if (!live) return;
+    const value = live.cells[idx];
+    if (value === EMPTY) return;
     st.setCursor(idx);
 
     const frozen = live.effects.find((e) => e.type === 'freeze' && e.until > Date.now());
@@ -171,8 +231,30 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
       return;
     }
 
+    // 벽·자물쇠는 선택 자체가 안 된다 — 흔들림 + 짧은 안내만.
+    if (value === WALL || value === LOCKED) {
+      st.pushFx({ type: 'invalid', boardId: board.id, cells: [idx] });
+      st.setNotice(value === WALL ? '벽은 지울 수 없어요' : '열쇠를 먼저 찾아요');
+      playGameSound('invalid', { gain: 0.5 });
+      return;
+    }
+
+    // 물음표는 "선택"이 아니라 공개 요청(콤보와 무관).
+    if (value === MYSTERY) {
+      try {
+        const ack = await emitWithAck<RevealAck>('game:reveal', { idx });
+        if (ack.ok) {
+          playGameSound('reveal');
+          useGameStore.getState().pushFx({ type: 'reveal', boardId: board.id, cells: [idx] });
+        } else {
+          st.setNotice(REASON_NOTICE[ack.reason] ?? '지금은 열 수 없어요');
+        }
+      } catch { /* 연결 문제 — 다음 클릭에서 다시 */ }
+      return;
+    }
+
     const sel = st.selectedIdx;
-    if (sel === null || live.cells[sel] === 0) {
+    if (sel === null || live.cells[sel] === EMPTY) {
       st.setSelected(idx);
       emitSelect(idx);
       playGameSound('select');
@@ -183,11 +265,20 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
       emitSelect(null);
       return;
     }
-    // 다른 그림이거나 길이 없으면 — 흔들고 방금 누른 타일을 새 첫 선택으로(사천성 관례).
-    const sameSymbol = live.cells[sel] === live.cells[idx];
-    const path = sameSymbol ? findPath(live.cells, live.cols, live.rows, sel, idx) : null;
-    if (!path) {
+
+    // v2 규칙 검사(같은 심볼 + 숫자 순서 + 잠금 + 경로)를 서버와 같은 함수로.
+    const view = {
+      cells: live.cells, cols: live.cols, rows: live.rows,
+      nextNumber: live.nextNumber, keysLeft: live.keysLeft,
+    };
+    const reason = canPick(view, sel, idx) as PickReason | null;
+    if (reason) {
       st.pushFx({ type: 'invalid', boardId: board.id, cells: [sel, idx] });
+      st.setNotice(
+        reason === 'order'
+          ? `${live.nextNumber}번부터 지워야 해요`
+          : REASON_NOTICE[reason] ?? '이어지지 않아요',
+      );
       st.setSelected(idx);
       emitSelect(idx);
       playGameSound('invalid');
@@ -195,9 +286,11 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
     }
 
     // --- 클라 예측: 즉시 제거하고 서버 응답을 기다린다 ---
+    // canPick이 통과했으니 경로는 반드시 있다(서버 ack의 path와 같은 꼭짓점).
+    const path = findPath(live.cells, live.cols, live.rows, sel, idx) ?? [];
     st.predictPick(board.id, sel, idx, path, myColor);
     emitSelect(null);
-    playGameSound('match', { combo: (st.me()?.combo ?? 0) + 1 });
+    playGameSound('match', { combo: predictedCombo(st.me()) });
     if (!reduced) navigator.vibrate?.(10);
 
     try {
@@ -207,7 +300,6 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
       const pick = store.takePending(sel, idx);
       if (!pick) return;   // 이미 `game:matched`로 확정된 픽
       if (ack.reason === 'gone' || pick.superseded) {
-        // 협동에서 흔한 충돌 — 타일은 정말로 사라진 게 맞으니 **되살리지 않는다**.
         store.dropPending(pick);
         playGameSound('invalid', { gain: 0.35 });
         return;
@@ -220,10 +312,8 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
         toastFrozenOnce(until);
       } else {
         playGameSound('invalid');
-        const msg = PICK_REASON_TEXT[ack.reason];
-        if (msg) showToast(msg, 'error');
+        store.setNotice(REASON_NOTICE[ack.reason] ?? '지울 수 없어요');
       }
-      // 되살린 뒤에는 서버 상태로 한 번 맞춰 둔다(어긋남 방지).
       void syncGame();
     } catch (err) {
       const store = useGameStore.getState();
@@ -241,39 +331,47 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
     return () => { if (activePickHandler === handleTile) activePickHandler = null; };
   }, [interactive, handleTile]);
 
+  // 렌더되는 타일 수 = 0이 아닌 셀 수 여야 한다(크롭·필터 버그 감시용). E2E 봇도 이 값을 읽는다.
+  const tileCount = board.cells.reduce((n, v) => (v === EMPTY ? n : n + 1), 0);
+
   return (
     <div
+      data-ghc-tiles={tileCount}
       className="relative shrink-0 rounded-xl"
+      // perspective는 회전하는 타일의 **부모**에 있어야 호버 틸트가 입체로 보인다.
       style={{
-        width,
-        height,
+        width, height, perspective: 900,
         boxShadow: comboGlow ? `0 0 24px ${comboGlow}55` : undefined,
       }}
     >
-      {board.cells.map((sym, idx) => {
-        if (sym === 0) return null;
+      {board.cells.map((value, idx) => {
+        if (value === EMPTY) return null;
         const r = Math.floor(idx / board.cols);
         const c = idx % board.cols;
+        const flip = flips[idx];
         return (
           <ShisenTile
             key={idx}
             idx={idx}
-            symbol={sym}
-            x={c * step}
-            y={r * step}
+            value={value}
+            x={xOf(c)}
+            y={yOf(r)}
             size={cellPx}
             selected={interactive && selectedIdx === idx}
-            selectColor={myColor}
             peerColor={peerMarks[idx]}
             hint={interactive && !!hintPair && (hintPair[0] === idx || hintPair[1] === idx)}
             masked={masked.has(idx)}
+            isNext={kindOf(value) === 'number' && board.nextNumber > 0
+              && value - NUMBER_BASE === board.nextNumber}
             shake={shakeCells.has(idx)}
             flashColor={flashCells[idx]}
             focused={interactive && cursorIdx === idx && selectedIdx !== idx}
             tumble={tumbling}
             tumbleDelay={tumbling ? (idx * 37) % 200 : 0}
+            flipKey={flip?.key}
+            flipDelay={flip?.delay}
             reduced={reduced}
-            /* 얼어 있어도 클릭은 받는다 — handleTile이 흔들림 피드백을 준다(§6.3) */
+            /* 얼어 있어도 클릭은 받는다 — handleTile이 흔들림 피드백을 준다 */
             interactive={interactive}
             onClick={handleTile}
           />
@@ -282,7 +380,7 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
 
       {/* 제거 고스트 + 파티클 */}
       {fx.filter((f) => f.type === 'pop').map((f) => (
-        <PopGhosts key={f.id} fx={f} cols={board.cols} step={step} size={cellPx} reduced={reduced} />
+        <PopGhosts key={f.id} fx={f} cols={board.cols} box={box} step={step} size={cellPx} reduced={reduced} />
       ))}
 
       {/* 네온 경로 */}
@@ -301,8 +399,10 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
             </feMerge>
           </filter>
         </defs>
-        {fx.filter((f) => f.type === 'path' && f.path).map((f) => (
-          <PathLine key={f.id} fx={f} step={step} size={cellPx} reduced={reduced} glowId={glowId} />
+        {fx.filter((f) => f.type === 'path' && (f.path?.length ?? 0) >= 2).map((f) => (
+          <PathLine
+            key={f.id} fx={f} box={box} step={step} size={cellPx} reduced={reduced} glowId={glowId}
+          />
         ))}
       </svg>
 
@@ -311,84 +411,141 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
   );
 }
 
-function pointToXY(p: Point, step: number, size: number) {
-  return { x: p.c * step + size / 2, y: p.r * step + size / 2 };
+function pointToXY(p: Point, box: BoardBox, step: number, size: number) {
+  return { x: (p.c - box.c0) * step + size / 2, y: (p.r - box.r0) * step + size / 2 };
 }
 
-/** 경로 폴리라인 — 120ms에 걸쳐 그려지고 200ms 페이드 후 스스로 큐에서 빠진다. */
+/** 경로선: 색 글로우 + 흰 코어 5px + 끝 스파클 3개. */
 function PathLine({
-  fx, step, size, reduced, glowId,
-}: { fx: FxEvent; step: number; size: number; reduced: boolean; glowId: string }) {
+  fx, box, step, size, reduced, glowId,
+}: { fx: FxEvent; box: BoardBox; step: number; size: number; reduced: boolean; glowId: string }) {
   const consumeFx = useGameStore((s) => s.consumeFx);
   const total = reduced ? 0.2 : 0.42;
   useEffect(() => {
     const t = setTimeout(() => consumeFx(fx.id), total * 1000);
     return () => clearTimeout(t);
   }, [fx.id, consumeFx, total]);
-  const pts = (fx.path ?? []).map((p) => pointToXY(p, step, size));
+  const pts = (fx.path ?? []).map((p) => pointToXY(p, box, step, size));
   const d = pts.map((p) => `${p.x},${p.y}`).join(' ');
   const color = fx.color ?? '#25F4EE';
+  const end = pts[pts.length - 1];
+  const common = {
+    points: d,
+    fill: 'none' as const,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    initial: { pathLength: 0, opacity: 1 },
+    animate: { pathLength: 1, opacity: [1, 1, 0] },
+    transition: {
+      pathLength: { duration: reduced ? 0.05 : 0.12 },
+      opacity: { duration: total, times: [0, 0.5, 1] },
+    },
+  };
   return (
-    <motion.polyline
-      points={d}
-      fill="none"
-      stroke={color}
-      strokeWidth={4}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      filter={`url(#${glowId})`}
-      initial={{ pathLength: 0, opacity: 1 }}
-      animate={{ pathLength: 1, opacity: [1, 1, 0] }}
-      transition={{
-        pathLength: { duration: reduced ? 0.05 : 0.12 },
-        opacity: { duration: total, times: [0, 0.5, 1] },
-      }}
-    />
+    <>
+      <motion.polyline {...common} stroke={color} strokeWidth={9} filter={`url(#${glowId})`} opacity={0.9} />
+      <motion.polyline {...common} stroke="#FFFFFF" strokeWidth={5} />
+      {!reduced && end && [0, 1, 2].map((i) => (
+        <motion.circle
+          key={i}
+          cx={end.x}
+          cy={end.y}
+          r={2.5}
+          fill="#FFFFFF"
+          initial={{ opacity: 0, scale: 0.4, cx: end.x, cy: end.y }}
+          animate={{
+            opacity: [0, 1, 0],
+            cx: end.x + Math.cos((i / 3) * Math.PI * 2) * size * 0.5,
+            cy: end.y + Math.sin((i / 3) * Math.PI * 2) * size * 0.5,
+          }}
+          transition={{ duration: 0.34, delay: 0.1 + i * 0.03 }}
+        />
+      ))}
+    </>
   );
 }
 
-/** 결정적 의사난수 — 파티클이 매 렌더 튀지 않도록 인덱스로 각도를 만든다. */
-const PARTICLES = 8;
-
-/** 제거된 두 타일의 잔상(scale 1.15 → 0) + 8방향 색 파티클. */
+/** 제거된 두 타일: 서로를 향해 8px 튕긴 뒤 팝 + 파티클(콤보 4+면 12개). */
 function PopGhosts({
-  fx, cols, step, size, reduced,
-}: { fx: FxEvent; cols: number; step: number; size: number; reduced: boolean }) {
+  fx, cols, box, step, size, reduced,
+}: { fx: FxEvent; cols: number; box: BoardBox; step: number; size: number; reduced: boolean }) {
   const consumeFx = useGameStore((s) => s.consumeFx);
   useEffect(() => {
-    const t = setTimeout(() => consumeFx(fx.id), reduced ? 140 : 420);
+    const t = setTimeout(() => consumeFx(fx.id), reduced ? 180 : 760);
     return () => clearTimeout(t);
   }, [fx.id, consumeFx, reduced]);
-  const sym = fx.symbol ? symbolOf(fx.symbol) : null;
+
+  const sym = fx.symbol && fx.symbol <= 28 ? symbolOf(fx.symbol) : null;
   const color = fx.color ?? '#25F4EE';
+  const cells = fx.cells ?? [];
+  const combo = fx.combo ?? 0;
+  const count = combo >= 8 ? 24 : combo >= 4 ? 12 : 8;
+
+  // "+점수" 플로팅 텍스트는 두 타일의 중점에서 위로 떠오른다.
+  const mid = cells.length === 2 ? (() => {
+    const p0 = { r: Math.floor(cells[0] / cols), c: cells[0] % cols };
+    const p1 = { r: Math.floor(cells[1] / cols), c: cells[1] % cols };
+    return {
+      x: ((p0.c + p1.c) / 2 - box.c0) * step + size / 2,
+      y: ((p0.r + p1.r) / 2 - box.r0) * step + size / 2,
+    };
+  })() : null;
+
   return (
     <>
-      {(fx.cells ?? []).map((idx) => {
+      {mid && !!fx.points && (
+        <motion.span
+          className="pointer-events-none absolute z-20 font-display text-sm font-black tabular-nums"
+          style={{
+            left: mid.x, top: mid.y, color: color,
+            textShadow: '0 1px 3px rgba(0,0,0,0.8)', transform: 'translate(-50%, -50%)',
+          }}
+          initial={{ opacity: 0, y: 0, scale: 0.8 }}
+          animate={{ opacity: [0, 1, 1, 0], y: reduced ? -12 : -40, scale: 1 }}
+          transition={{ duration: reduced ? 0.25 : 0.7, times: [0, 0.15, 0.7, 1] }}
+        >
+          +{fx.points}
+        </motion.span>
+      )}
+      {cells.map((idx, k) => {
         const r = Math.floor(idx / cols);
         const c = idx % cols;
+        const other = cells[1 - k] ?? idx;
+        const or = Math.floor(other / cols);
+        const oc = other % cols;
+        const len = Math.hypot(oc - c, or - r) || 1;
+        const nudgeX = reduced ? 0 : ((oc - c) / len) * 8;
+        const nudgeY = reduced ? 0 : ((or - r) / len) * 8;
+        const left = (c - box.c0) * step;
+        const top = (r - box.r0) * step;
+        const cx = left + size / 2;
+        const cy = top + size / 2;
         const Icon = sym?.icon;
-        const cx = c * step + size / 2;
-        const cy = r * step + size / 2;
         return (
           <div key={idx}>
             <motion.div
-              className="absolute rounded-[10px] pointer-events-none flex items-center justify-center"
+              className="absolute flex items-center justify-center rounded-[10px] pointer-events-none"
               style={{
-                left: c * step,
-                top: r * step,
+                left,
+                top,
                 width: size,
                 height: size,
                 background: `radial-gradient(circle, ${color}55, transparent 70%)`,
               }}
-              initial={{ scale: 1, opacity: 1 }}
-              animate={{ scale: [1.15, 0], opacity: [1, 0] }}
-              transition={{ duration: reduced ? 0.1 : 0.16 }}
+              initial={{ scale: 1, opacity: 1, x: 0, y: 0 }}
+              animate={{
+                x: [0, nudgeX, nudgeX],
+                y: [0, nudgeY, nudgeY],
+                scale: [1, 1.12, 0],
+                opacity: [1, 1, 0],
+              }}
+              transition={{ duration: reduced ? 0.12 : 0.24, times: [0, 0.35, 1] }}
             >
-              {Icon && <Icon size={Math.round(size * 0.55)} color={sym?.color} />}
+              {Icon && <Icon size={Math.round(size * 0.58)} color={sym?.color} />}
             </motion.div>
 
-            {!reduced && Array.from({ length: PARTICLES }).map((_, i) => {
-              const angle = (i / PARTICLES) * Math.PI * 2;
+            {!reduced && Array.from({ length: count }).map((_, i) => {
+              const angle = (i / count) * Math.PI * 2;
               const dist = size * 0.9;
               return (
                 <motion.span
@@ -408,7 +565,7 @@ function PopGhosts({
                     opacity: 0,
                     scale: 0.4,
                   }}
-                  transition={{ duration: 0.38, ease: 'easeOut' }}
+                  transition={{ duration: 0.38, ease: 'easeOut', delay: 0.08 }}
                 />
               );
             })}
