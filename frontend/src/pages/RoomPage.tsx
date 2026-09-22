@@ -637,8 +637,9 @@ export function RoomPage() {
           handleToggleScreen();
         };
       } catch (err: any) {
-        // NotAllowedError = user dismissed the picker; anything else is a real failure.
-        if (err?.name === 'NotAllowedError') {
+        // User dismissed the picker: NotAllowedError in browsers, AbortError from the Electron
+        // shell's own picker (displayMediaPicker). Anything else is a real failure.
+        if (err?.name === 'NotAllowedError' || err?.name === 'AbortError') {
           showToast('화면 공유가 취소되었습니다', 'info');
         } else {
           showToast('화면 공유를 시작할 수 없습니다', 'error');
