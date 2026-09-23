@@ -17,11 +17,18 @@ export function DeviceVersionCard() {
   const updater = useMemo(() => getUpdater(), []);
   const [current, setCurrent] = useState<string | null>(null);
   const [status, setStatus] = useState<UpdateStatus>({ state: 'idle' });
+  // 다운로드 중/오류 상태 payload 에는 version 이 없다. 그대로 두면 화면이 "최신 버전 —" 로
+  // 떨어져 "버전도 모르는데 뭘 받고 있지?" 로 보인다 → 마지막으로 확인된 값을 붙잡아 둔다.
+  const [knownLatest, setKnownLatest] = useState<string | null>(null);
 
   useEffect(() => {
     if (!updater) return;
     updater.current().then(setCurrent).catch(() => {});
-    updater.onStatus(setStatus);
+    updater.onStatus((next) => {
+      setStatus(next);
+      const v = (next as { version?: string }).version;
+      if (v) setKnownLatest(v);
+    });
     updater.check().catch(() => {});
   }, [updater]);
 
@@ -39,7 +46,9 @@ export function DeviceVersionCard() {
   const errored = status.state === 'error';
 
   const latestVersion =
-    available || downloaded ? status.version : upToDate ? current ?? undefined : undefined;
+    available || downloaded ? status.version
+      : upToDate ? current ?? undefined
+        : knownLatest ?? undefined;
 
   return (
     <div>
@@ -122,8 +131,21 @@ export function DeviceVersionCard() {
         )}
 
         {errored && (
-          <div className="flex items-center gap-1.5 text-xs text-danger">
-            <AlertCircle size={14} /> 업데이트 확인에 실패했어요. 잠시 후 다시 시도해 주세요.
+          <div className="space-y-2">
+            <div className="flex items-start gap-1.5 text-xs text-danger">
+              <AlertCircle size={14} className="shrink-0 mt-px" />
+              <span>{status.message || '업데이트에 실패했어요. 잠시 후 다시 시도해 주세요.'}</span>
+            </div>
+            {/* 다운로드가 끊긴 경우가 대부분이라 '확인'이 아니라 '다시 받기'가 필요하다 */}
+            <button
+              onClick={() => {
+                setStatus({ state: 'downloading', percent: 0 });
+                updater.download().catch(() => {});
+              }}
+              className="w-full inline-flex items-center justify-center gap-1.5 rounded-btn bg-white/10 hover:bg-white/15 text-white text-sm font-semibold px-4 py-2 transition active:scale-[0.98]"
+            >
+              <Download size={15} strokeWidth={2.25} /> 다시 받기
+            </button>
           </div>
         )}
       </div>
