@@ -2,8 +2,10 @@ import { useEffect, useRef } from 'react';
 import { setTetrisPainter, type BoardFx } from '../../hooks/useTetrisGame';
 import { COLS, PIECE_COLORS, ROWS } from '../../games/tetris/types';
 import {
-  DANGER_ROW_INDEX, FX_MS, PIECE_SHAPE, colorOfCell, drawGhost, drawTile, isActiveCell, isGhostCell,
+  CLEAR_PHASE, DANGER_ROW_INDEX, FX_MS, PIECE_SHAPE,
+  colorOfCell, drawGhost, drawTile, isActiveCell, isGhostCell,
 } from '../../games/tetris/ui';
+import { clamp01, comboGlow, easeOutCubic, easeOutQuad } from '../../games/tetris/fx';
 
 /**
  * 내 보드 캔버스 (설계서 §T6).
@@ -33,12 +35,8 @@ export function TetrisCanvas({ className = '' }: { className?: string }) {
 
       ctx.save();
       ctx.clearRect(0, 0, w, h);
-
-      // 하드드롭 착지 진동 — 캔버스 전체를 2px 흔든다(레이아웃을 건드리지 않는다).
-      if (fx.shake) {
-        const t = (fx.now - fx.shake.start) / FX_MS.shake;
-        if (t < 1) ctx.translate(0, Math.sin(t * Math.PI * 3) * 2 * (1 - t));
-      }
+      // 화면 흔들림은 **아레나 컨테이너**(HOLD/NEXT/게이지 포함)가 통째로 담당한다.
+      // 캔버스만 흔들면 보드와 주변 UI가 따로 놀아서 싸구려로 보인다.
 
       // 판 바탕
       ctx.fillStyle = 'rgba(5,8,16,0.92)';
@@ -58,11 +56,11 @@ export function TetrisCanvas({ className = '' }: { className?: string }) {
       }
       ctx.stroke();
 
-      // 위험선 — 스택이 이 위로 올라오면 곧 탑아웃이다.
+      // 위험선 — 스택이 이 위로 올라오면 곧 탑아웃이다. 위험할수록 진해진다.
       const dy = oy + DANGER_ROW_INDEX * cell;
       ctx.save();
       ctx.setLineDash([5, 5]);
-      ctx.strokeStyle = 'rgba(254,44,85,0.5)';
+      ctx.strokeStyle = `rgba(254,44,85,${0.35 + 0.45 * fx.danger})`;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(ox, dy + 0.5);
@@ -70,15 +68,32 @@ export function TetrisCanvas({ className = '' }: { className?: string }) {
       ctx.stroke();
       ctx.restore();
 
-      // 쓰레기 줄이 밀고 올라온 직후: 판 전체를 아래에서 위로 밀어 올린다.
+      // --- 줄 지움 타임라인 (번쩍 → 수축 → 낙하) --------------------------------
+      let clearT = -1;
+      let fallT = 1;
+      if (fx.clear) {
+        clearT = clamp01((fx.now - fx.clear.start) / fx.clear.ms);
+        fallT = easeOutCubic(clamp01((clearT - CLEAR_PHASE.shrink) / (1 - CLEAR_PHASE.shrink)));
+      }
+      /** 위 블록은 "접기 전 위치"에서 시작해 제자리로 내려앉는다(음수 = 위쪽). */
+      const rowShift = (row: number) =>
+        fx.clear ? -(fx.clear.shift[row] ?? 0) * cell * (1 - fallT) : 0;
+
+      // --- 보드 내용(판 안에서만 그린다) -----------------------------------------
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(ox, oy, bw, bh);
+      ctx.clip();
+
+      // 쓰레기 줄이 밀고 올라온 직후: 판 내용을 아래에서 위로 밀어 올린다.
       if (fx.rise) {
-        const t = Math.min(1, (fx.now - fx.rise.start) / FX_MS.rise);
+        const t = easeOutQuad(clamp01((fx.now - fx.rise.start) / FX_MS.rise));
         ctx.translate(0, (1 - t) * cell);
       }
 
       // 하드드롭 잔상 — 조각이 지나간 열에 세로 그라디언트
       if (fx.trail) {
-        const t = Math.min(1, (fx.now - fx.trail.start) / FX_MS.trail);
+        const t = clamp01((fx.now - fx.trail.start) / FX_MS.trail);
         const y0 = oy + fx.trail.fromRow * cell;
         const y1 = oy + (fx.trail.toRow + 1) * cell;
         const grad = ctx.createLinearGradient(0, y0, 0, y1);
@@ -91,21 +106,95 @@ export function TetrisCanvas({ className = '' }: { className?: string }) {
         ctx.restore();
       }
 
+      // 락 대기 중이면 조각이 깜빡인다 — 락 딜레이가 눈에 보여야 컨트롤이 는다(§T6.1).
+      const blink = fx.lockDelay > 0
+        ? 0.62 + 0.38 * Math.cos(fx.now * (0.02 + 0.05 * fx.lockDelay))
+        : 1;
+
       // 셀
-      const lockT = fx.lock ? 1 - Math.min(1, (fx.now - fx.lock.start) / FX_MS.lock) : 0;
+      const lockT = fx.lock ? 1 - clamp01((fx.now - fx.lock.start) / FX_MS.lock) : 0;
+      const baseAlpha = fx.alive ? 1 : 0.35;
       for (let i = 0; i < cells.length; i++) {
         const v = cells[i];
         if (!v) continue;
+        const row = (i / COLS) | 0;
         const x = ox + (i % COLS) * cell;
-        const y = oy + Math.floor(i / COLS) * cell;
-        if (isGhostCell(v)) { drawGhost(ctx, x, y, cell); continue; }
+        const ghost = isGhostCell(v);
+        const active = isActiveCell(v);
+        // 현재 조각/그림자는 낙하 연출을 따라가면 안 된다(중력과 싸워 떨려 보인다).
+        const y = oy + row * cell + (active || ghost ? 0 : rowShift(row));
+        if (ghost) { drawGhost(ctx, x, y, cell); continue; }
         const color = colorOfCell(v);
         if (!color) continue;
         drawTile(ctx, x, y, cell, color, {
-          bright: isActiveCell(v),
-          alpha: fx.alive ? 1 : 0.35,
+          bright: active,
+          alpha: active ? baseAlpha * blink : baseAlpha,
         });
       }
+
+      // 줄 파편 + 착지 먼지 (풀 재사용 — 매 프레임 배열을 만들지 않는다)
+      fx.particles.draw(ctx, ox, oy, cell);
+
+      // 줄 지움: ① 흰 번쩍 → ② 가운데로 수축
+      if (fx.clear && clearT < CLEAR_PHASE.shrink) {
+        const sT = easeOutQuad(
+          clamp01((clearT - CLEAR_PHASE.flash) / (CLEAR_PHASE.shrink - CLEAR_PHASE.flash)),
+        );
+        const width = bw * (1 - sT);
+        const left = ox + (bw - width) / 2;
+        for (const r of fx.clear.rows) {
+          const y = oy + r * cell;
+          ctx.fillStyle = `rgba(255,255,255,${0.95 - 0.2 * sT})`;
+          ctx.fillRect(left, y, width, cell);
+          // 지운 조각 색 테두리 — 흰색만이면 어떤 블록이 터졌는지 안 읽힌다.
+          ctx.fillStyle = fx.clear.color;
+          ctx.globalAlpha = 0.55 * (1 - sT);
+          ctx.fillRect(left, y, width, Math.max(1, cell * 0.14));
+          ctx.fillRect(left, y + cell - Math.max(1, cell * 0.14), width, Math.max(1, cell * 0.14));
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      // 4줄 = 판 전체 시안 플래시 + 세로 광선
+      if (fx.beam) {
+        const t = clamp01((fx.now - fx.beam.start) / FX_MS.beam);
+        const a = 1 - t;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = `rgba(37,244,238,${0.2 * a})`;
+        ctx.fillRect(ox, oy, bw, bh);
+        const beam = ctx.createLinearGradient(0, oy, 0, oy + bh);
+        beam.addColorStop(0, `rgba(165,243,252,${0.5 * a})`);
+        beam.addColorStop(0.5, `rgba(37,244,238,${0.32 * a})`);
+        beam.addColorStop(1, 'rgba(37,244,238,0)');
+        ctx.fillStyle = beam;
+        const bwidth = cell * (0.18 + 0.5 * t);
+        for (let c = 0; c < COLS; c++) {
+          ctx.fillRect(ox + c * cell + (cell - bwidth) / 2, oy, bwidth, bh);
+        }
+        ctx.restore();
+      }
+
+      // T-스핀 = 보라 파문(원형 링 2겹이 퍼져 나간다)
+      if (fx.ring) {
+        const t = clamp01((fx.now - fx.ring.start) / FX_MS.ring);
+        const cx = ox + fx.ring.x * cell;
+        const cy = oy + fx.ring.y * cell;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (let k = 0; k < 2; k++) {
+          const tt = clamp01(t - k * 0.2);
+          if (tt <= 0 || tt >= 1) continue;
+          ctx.strokeStyle = `rgba(168,85,247,${0.8 * (1 - tt)})`;
+          ctx.lineWidth = Math.max(1, cell * 0.3 * (1 - tt));
+          ctx.beginPath();
+          ctx.arc(cx, cy, easeOutCubic(tt) * cell * 7.5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      ctx.restore();  // 보드 클립 해제
 
       // 락 직후 1프레임 화이트 플래시 — "붙었다"는 촉감
       if (lockT > 0) {
@@ -113,16 +202,11 @@ export function TetrisCanvas({ className = '' }: { className?: string }) {
         ctx.fillRect(ox, oy, bw, bh);
       }
 
-      // 줄 지움 섬광 → 가로로 수축
-      if (fx.clear) {
-        const t = Math.min(1, (fx.now - fx.clear.start) / FX_MS.clear);
-        for (const r of fx.clear.rows) {
-          if (r < 0 || r >= ROWS) continue;
-          const y = oy + r * cell;
-          const shrink = (bw / 2) * t;
-          ctx.fillStyle = `rgba(255,255,255,${0.95 * (1 - t)})`;
-          ctx.fillRect(ox + shrink, y, bw - shrink * 2, cell);
-        }
+      // 퍼펙트 클리어 — 판 전체가 하얗게 번쩍
+      if (fx.flash) {
+        const t = clamp01((fx.now - fx.flash.start) / FX_MS.flash);
+        ctx.fillStyle = `rgba(255,255,255,${0.75 * (1 - t) * (1 - t)})`;
+        ctx.fillRect(ox, oy, bw, bh);
       }
 
       // 죽었으면 회색 막
@@ -131,10 +215,34 @@ export function TetrisCanvas({ className = '' }: { className?: string }) {
         ctx.fillRect(ox, oy, bw, bh);
       }
 
-      // 테두리
+      // 테두리 — 기본 + 콤보 글로우 + 위험 맥박
       ctx.strokeStyle = 'rgba(255,255,255,0.14)';
       ctx.lineWidth = 2;
       ctx.strokeRect(ox + 1, oy + 1, bw - 2, bh - 2);
+
+      if (fx.combo >= 2 && fx.alive) {
+        // 콤보가 유지되는 동안 테두리에 콤보 색 글로우가 **계속** 걸려 있다.
+        const glow = comboGlow(fx.combo);
+        ctx.save();
+        ctx.shadowColor = glow;
+        ctx.shadowBlur = Math.min(26, 8 + fx.combo * 2.5);
+        ctx.strokeStyle = glow;
+        ctx.lineWidth = 2.5;
+        ctx.strokeRect(ox + 1.5, oy + 1.5, bw - 3, bh - 3);
+        ctx.restore();
+      }
+
+      if (fx.danger >= 0.8 && fx.alive) {
+        const pulse = 0.5 + 0.5 * Math.sin(fx.now / 140);
+        ctx.save();
+        ctx.shadowColor = '#EF4444';
+        ctx.shadowBlur = 10 + 18 * pulse;
+        ctx.strokeStyle = `rgba(239,68,68,${0.45 + 0.45 * pulse})`;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(ox + 1.5, oy + 1.5, bw - 3, bh - 3);
+        ctx.restore();
+      }
+
       ctx.restore();
     };
 

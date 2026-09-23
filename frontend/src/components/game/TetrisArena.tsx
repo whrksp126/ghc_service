@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { AnimatePresence, motion, useAnimationControls } from 'framer-motion';
-import { Eye, Keyboard, LogOut, Volume2, VolumeX } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Crown, Eye, Keyboard, LogOut, Volume2, VolumeX } from 'lucide-react';
 import { emitWithAck } from '../../lib/socket';
 import { showToast } from '../common/Toast';
 import { useAuthStore } from '../../stores/authStore';
@@ -8,7 +8,6 @@ import { useGameStore } from '../../stores/gameStore';
 import { useUIStore } from '../../stores/uiStore';
 import { useTetrisStore } from '../../stores/tetrisStore';
 import { useTetrisGame, useTetrisSpectate } from '../../hooks/useTetrisGame';
-import { prefersReducedMotion } from '../../games/motion';
 import { ThemeBackdrop, themeOf } from './ArenaTheme';
 import { Countdown } from './Countdown';
 import { ResultsOverlay } from './ResultsOverlay';
@@ -18,6 +17,8 @@ import { TetrisCanvas, PiecePreview } from './TetrisCanvas';
 import { TetrisMiniBoard } from './TetrisMiniBoard';
 import { TetrisHud } from './TetrisHud';
 import { ProfileVideo, type GameFeed } from './ProfileVideo';
+import { PROFILE_CARD_CLASS, PROFILE_COL_CLASS, PROFILE_LIST_CLASS, useProfileFit } from './ProfileColumn';
+import { setArenaShaker } from '../../games/tetris/fx';
 import { DEFAULT_TETRIS_OPTIONS, TETRIS_MODE_LABEL, type TetrisOptions } from '../../games/tetris/types';
 import { KEY_GUIDE, TETRIS_MODE_DESC } from '../../games/tetris/ui';
 import type { GameSnapshot, PlayerState } from '../../games/types';
@@ -59,61 +60,99 @@ function Cell({ label, value, tone }: { label: string; value: string | number; t
   );
 }
 
-/** 우측 세로 위험도 게이지 — 위험선(16행)을 넘으면 빨갛게 차오르고 맥박한다. */
+/**
+ * 우측 세로 위험도 게이지 (설계서 §T6).
+ * 예전에는 14px 짜리 실선이라 **거의 보이지 않았다** — 굵은 튜브 + 눈금 + 현재 높이 마커 +
+ * 숫자로 "지금 얼마나 위험한지"가 한눈에 읽히게 한다.
+ */
 function DangerGauge({ value }: { value: number }) {
   const hot = value >= 0.8;
+  const pct = Math.round(value * 100);
   return (
-    <div className="relative hidden w-[18px] shrink-0 lg:block">
-      <div className="absolute inset-y-0 right-0 w-[14px] overflow-hidden rounded-full bg-black/70 ring-1 ring-white/10">
-        {/* 위험선 눈금 */}
-        <span className="absolute inset-x-0 h-px bg-danger/60" style={{ bottom: '80%' }} />
+    <div className="relative hidden w-[46px] shrink-0 flex-col items-center gap-1 lg:flex">
+      <span className={`font-display text-[10px] font-black leading-none tabular-nums ${hot ? 'text-danger' : 'text-white/45'}`}>
+        {pct}%
+      </span>
+      <div className="relative min-h-0 w-[26px] flex-1 overflow-hidden rounded-full bg-black/70 shadow-[inset_0_2px_10px_rgba(0,0,0,0.85)] ring-1 ring-white/15">
+        {/* 눈금 — 25% 마다. 절반/끝은 더 진하게 */}
+        {[25, 50, 75].map((t) => (
+          <span key={t} className={`absolute inset-x-1 h-px ${t === 50 ? 'bg-white/25' : 'bg-white/12'}`} style={{ bottom: `${t}%` }} />
+        ))}
+        {/* 위험선(16행 = 80%) — 이 위로 차오르면 곧 탑아웃 */}
+        <span className="absolute inset-x-0 h-[2px] bg-danger/80" style={{ bottom: '80%' }} />
         <motion.div
           className="absolute inset-x-0 bottom-0 rounded-full"
-          style={{ background: hot ? 'linear-gradient(0deg,#EF4444,#FE2C55)' : 'linear-gradient(0deg,#25F4EE,#4ADE80)' }}
-          animate={{
-            height: `${Math.max(2, value * 100)}%`,
-            opacity: hot ? [1, 0.55, 1] : 1,
+          style={{
+            background: hot
+              ? 'linear-gradient(0deg,#B91C1C,#EF4444 55%,#FE2C55)'
+              : 'linear-gradient(0deg,#0891B2,#25F4EE 55%,#4ADE80)',
           }}
-          transition={{ height: { duration: 0.25 }, opacity: { duration: 0.6, repeat: hot ? Infinity : 0 } }}
+          animate={{
+            height: `${Math.max(3, value * 100)}%`,
+            opacity: hot ? [1, 0.6, 1] : 1,
+          }}
+          transition={{ height: { duration: 0.2 }, opacity: { duration: 0.55, repeat: hot ? Infinity : 0 } }}
+        />
+        {/* 현재 높이 표시 — 게이지 끝에 밝은 선을 얹어 "지금 여기"를 또렷하게 */}
+        <motion.span
+          className="absolute inset-x-0 h-[3px] bg-white/90"
+          animate={{ bottom: `calc(${Math.max(3, value * 100)}% - 2px)` }}
+          transition={{ duration: 0.2 }}
         />
       </div>
+      <span className="text-[9px] leading-none text-white/35">위험</span>
     </div>
   );
 }
 
-/** 좌측 프로필 카드 — 카메라 + 지운 줄 + KO (사천성 v4 ProfileVideo 재사용). */
+/** 사천성 카드에서 카메라를 뺀 나머지(닉네임 줄 + 줄/KO 줄 + 여백)의 대략 높이. */
+const TETRIS_CHROME = 54;
+
+/**
+ * 좌측 프로필 카드 — 카메라 + 닉네임 + 왕관/나 + 지운 줄 + KO (사천성 ProfileVideo 재사용).
+ * 폭은 항상 컬럼을 꽉 채우고, 세로만 인원수에 맞춰 줄어든다(`useProfileFit`).
+ */
 function TetrisProfile({
-  player, feed, isMe, lines, ko, alive, strip,
+  player, feed, isMe, isHost, lines, ko, alive, camH,
 }: {
-  player: PlayerState; feed?: GameFeed; isMe: boolean;
-  lines: number; ko: number; alive: boolean; strip?: boolean;
+  player: PlayerState; feed?: GameFeed; isMe: boolean; isHost: boolean;
+  lines: number; ko: number; alive: boolean; camH: number | null;
 }) {
   return (
     <div
       data-ghc-player={player.userId}
-      className={`${strip ? 'w-[118px] shrink-0 lg:w-auto' : 'w-full'} rounded-xl p-1.5 ${
-        isMe ? 'bg-white/10' : 'bg-white/5'
-      } ${alive ? '' : 'opacity-50'}`}
+      data-ghc-profile={player.userId}
+      className={`${PROFILE_CARD_CLASS} ${isMe ? 'bg-white/10' : 'bg-white/5'} ${alive ? '' : 'opacity-50'}`}
       style={{ boxShadow: `inset 0 0 0 ${isMe ? 2 : 1}px ${isMe ? player.color : `${player.color}44`}` }}
     >
-      <div className="relative aspect-video w-full overflow-hidden rounded-lg bg-black/40">
+      <div
+        className={`relative w-full overflow-hidden rounded-lg bg-black/40 ${camH == null ? 'aspect-video' : ''}`}
+        style={camH == null ? undefined : { height: camH }}
+      >
         <ProfileVideo feed={feed} color={player.color} label={player.nickname} className="h-full w-full" />
         {!alive && (
-          <span className="absolute inset-0 flex items-center justify-center bg-black/55 font-display text-[11px] font-black italic text-white/90">
+          <span className="absolute inset-0 flex items-center justify-center bg-black/55 font-display text-sm font-black italic text-white/90">
             K.O.
+          </span>
+        )}
+        {ko > 0 && (
+          <span className="absolute right-1 top-1 rounded bg-primary/85 px-1 text-[10px] font-bold text-white">
+            K.O. {ko}
           </span>
         )}
       </div>
       <div className="mt-1 flex items-center gap-1 px-0.5">
-        <span className="min-w-0 flex-1 truncate text-[11px] text-white/90">{player.nickname}</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-white/90">{player.nickname}</span>
+        {isHost && <Crown size={12} className="shrink-0 text-warning" />}
         {isMe && <span className="shrink-0 text-[10px] text-white/35">나</span>}
       </div>
       <div className="flex items-end gap-1.5 px-0.5">
-        <span className="text-[9px] leading-none text-white/40">줄</span>
-        <span className="font-display text-base font-black leading-none tabular-nums text-white">{lines}</span>
-        {ko > 0 && (
-          <span className="ml-auto rounded bg-primary/80 px-1 text-[9px] font-bold text-white">K.O. {ko}</span>
-        )}
+        <span className="text-[9px] leading-none text-white/40">지운 줄</span>
+        <span className="font-display text-lg font-black leading-none tabular-nums text-white">{lines}</span>
+        <span className="ml-auto text-[9px] leading-none text-white/40">KO</span>
+        <span className={`font-display text-sm font-black leading-none tabular-nums ${ko > 0 ? 'text-primary' : 'text-white/30'}`}>
+          {ko}
+        </span>
       </div>
     </div>
   );
@@ -134,11 +173,13 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
   const kos = useTetrisStore((s) => s.kos);
   const banner = useTetrisStore((s) => s.banner);
   const helpOpen = useTetrisStore((s) => s.helpOpen);
-  const fxQueue = useTetrisStore((s) => s.fxQueue);
   const setHelpOpen = useTetrisStore((s) => s.setHelpOpen);
   const arenaRef = useRef<HTMLDivElement>(null);
-  const shake = useAnimationControls();
-  const reduced = prefersReducedMotion();
+  /** 흔들리는 영역 — 캔버스뿐 아니라 HOLD/NEXT/미니보드/위험도 게이지까지 함께 움직인다. */
+  const playRef = useRef<HTMLDivElement>(null);
+  const profileRef = useRef<HTMLDivElement>(null);
+
+  const fit = useProfileFit(profileRef, snapshot.players.length, TETRIS_CHROME);
 
   const opts = snapshot.tetris ?? DEFAULT_TETRIS_OPTIONS.versus;
   const theme = themeOf(snapshot.seed);
@@ -162,15 +203,39 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
     return () => clearTimeout(t);
   }, [banner]);
 
-  // 테트리스(4줄)·퍼펙트에서 화면을 크게 흔든다 — 같은 fx 를 두 번 흔들지 않도록 id 로 막는다.
-  const shookRef = useRef(0);
+  /**
+   * 화면 흔들림 — 게임 루프(rAF)가 사건별 세기를 계산해 **DOM transform 으로 직접** 쓴다.
+   * 스토어/framer-motion 을 거치면 흔들릴 때마다 아레나가 통째로 리렌더돼 60fps 가 깨진다.
+   * `data-ghc-shake-power` 는 Playwright 검증용(0 이면 흔들림 없음).
+   */
   useEffect(() => {
-    if (reduced) return;
-    const hot = fxQueue.find((f) => f.type === 'screen' && f.id > shookRef.current);
-    if (!hot) return;
-    shookRef.current = hot.id;
-    void shake.start({ x: [0, -6, 6, -4, 0], y: [0, 3, -3, 2, 0], transition: { duration: 0.22 } });
-  }, [fxQueue, reduced, shake]);
+    const el = playRef.current;
+    if (!el) return;
+    let lastPower = -1;
+    setArenaShaker((o) => {
+      const p = Math.round(o.power * 10) / 10;
+      if (p <= 0) {
+        if (lastPower !== 0) {
+          el.style.transform = '';
+          el.dataset.ghcShakePower = '0';
+          lastPower = 0;
+        }
+        return;
+      }
+      el.style.transform =
+        `translate3d(${o.x.toFixed(2)}px,${o.y.toFixed(2)}px,0) rotate(${o.rot.toFixed(3)}deg)`;
+      // 속성 쓰기는 값이 실제로 바뀔 때만 — 매 프레임 dataset 을 만지면 공짜가 아니다.
+      if (p !== lastPower) {
+        el.dataset.ghcShakePower = String(p);
+        lastPower = p;
+      }
+    });
+    return () => {
+      setArenaShaker(null);
+      el.style.transform = '';
+      el.dataset.ghcShakePower = '0';
+    };
+  }, []);
 
   const linesOf = (p: PlayerState) =>
     p.userId === myUserId ? hud.lines : frames[p.userId]?.lines ?? p.lines ?? 0;
@@ -208,7 +273,6 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
   return (
     <motion.div
       ref={arenaRef}
-      animate={shake}
       className="relative isolate flex h-full min-h-0 flex-col gap-2 p-2"
     >
       <ThemeBackdrop theme={theme} seed={snapshot.seed} />
@@ -254,22 +318,34 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
       {/* DOM 에 같은 카드를 두 벌 그리지 않는다(= `data-ghc-*` 중복 매칭 방지).
           모바일은 가로 스트립, lg 부터 좌측 세로 컬럼으로 **같은 노드**가 재배치된다. */}
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row">
-        {/* 좌(모바일=상단): 프로필 — 카메라 + 지운 줄 + KO */}
-        <div className="flex shrink-0 gap-1.5 overflow-x-auto scrollbar-none lg:w-[140px] lg:flex-col lg:overflow-x-visible lg:overflow-y-auto">
-          {snapshot.players.map((p) => (
-            <TetrisProfile
-              key={p.userId}
-              player={p}
-              feed={feedFor(p.userId)}
-              isMe={p.userId === myUserId}
-              lines={linesOf(p)}
-              ko={koOf(p)}
-              alive={aliveOf(p)}
-              strip
-            />
-          ))}
+        {/* 좌(모바일=상단): 프로필 — 한 줄에 한 사람, 카드가 컬럼 폭을 꽉 채운다.
+            카메라는 컬럼 폭 16:9, 인원이 많으면 세로만 줄어든다(사천성과 같은 규칙). */}
+        <div className={`min-h-0 shrink-0 ${PROFILE_COL_CLASS}`}>
+          <div ref={profileRef} className={PROFILE_LIST_CLASS}>
+            {snapshot.players.map((p) => (
+              <TetrisProfile
+                key={p.userId}
+                player={p}
+                feed={feedFor(p.userId)}
+                isMe={p.userId === myUserId}
+                isHost={p.userId === snapshot.hostUserId}
+                lines={linesOf(p)}
+                ko={koOf(p)}
+                alive={aliveOf(p)}
+                camH={fit.cam}
+              />
+            ))}
+          </div>
         </div>
 
+        {/* 흔들리는 플레이 영역 — 보드만이 아니라 HOLD/NEXT/미니보드/위험도 게이지까지 함께.
+            `will-change: transform` 으로 합성 레이어를 미리 잡아 흔들 때 리페인트를 피한다. */}
+        <div
+          ref={playRef}
+          data-ghc-shake="1"
+          data-ghc-shake-power="0"
+          className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 will-change-transform lg:flex-row"
+        >
         {/* 중앙: HOLD · 내 보드 · NEXT (관전자는 모든 판을 나란히) */}
         <div className="flex min-h-0 min-w-0 flex-1 justify-center gap-2">
           {spectating ? (
@@ -340,11 +416,12 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
         {/* 우(모바일=하단): 상대 미니보드 + 위험도 게이지.
             **클릭해도 확대되지 않는다** — 내 판이 항상 가장 크다(사천성 v2.1 결정 계승). */}
         {!spectating && (
-          <div className="flex shrink-0 items-start gap-1.5 overflow-x-auto scrollbar-none lg:overflow-visible">
+          <div className="flex shrink-0 items-stretch gap-1.5 overflow-x-auto scrollbar-none lg:overflow-visible">
             <div className="flex gap-1.5 lg:flex-col lg:overflow-y-auto">{minis}</div>
             <DangerGauge value={hud.danger} />
           </div>
         )}
+        </div>
       </div>
 
       {/* 모바일: 조작 UI 없이 관전 레이아웃(사용자 결정 사항) */}

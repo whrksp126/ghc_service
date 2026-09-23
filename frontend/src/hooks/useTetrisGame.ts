@@ -7,11 +7,16 @@ import { playGameSound } from '../games/sounds';
 import * as engine from '../games/tetris/engine';
 import type { LockResult, TetrisState } from '../games/tetris/engine';
 import {
-  CELL_ACTIVE_BASE, COLS, DEFAULT_TETRIS_OPTIONS, FIELD_ROWS,
+  CELL_ACTIVE_BASE, COLS, DEFAULT_TETRIS_OPTIONS, FIELD_ROWS, HIDDEN_ROWS, PIECE_COLORS, ROWS,
   type ClearKind, type TetrisDownEvent, type TetrisFinishEvent, type TetrisFramesEvent,
   type TetrisGarbageEvent, type TetrisOptions, type TetrisRiseEvent, type TetrisSentEvent,
 } from '../games/tetris/types';
 import { CLEAR_BADGE, FX_MS, toneOfClear } from '../games/tetris/ui';
+import {
+  ParticleField, comboShakePower, emitShakeFrame, shakeAt, shakeEventOfLines, strongerShake,
+  type ShakeOut, type ShakeState,
+} from '../games/tetris/fx';
+import { prefersReducedMotion } from '../games/motion';
 import type { GameSnapshot } from '../games/types';
 
 /** 설계서 §T5. DAS/ARR 은 브라우저 키 리피트를 쓰지 않고 직접 센다(리피트 지연이 기기마다 다름). */
@@ -22,19 +27,43 @@ const MAX_DT = 100;
 /** 프레임 업로드 8Hz (설계서 §T3, 서버 상한은 15Hz) */
 const FRAME_MS = 125;
 
-/** 캔버스가 이번 프레임에 같이 그려야 할 연출. 전부 시각(ms)만 담는다(타이머 없음). */
+/**
+ * 캔버스가 이번 프레임에 같이 그려야 할 연출. 전부 시각(ms)만 담는다(타이머 없음).
+ * **객체는 루프가 하나만 만들어 계속 재사용한다** — 매 프레임 새로 만들면 GC 가 60fps 를 갉아먹는다.
+ */
 export interface BoardFx {
   now: number;
-  /** 줄 섬광 — 지운 **보이는 행** 인덱스 */
-  clear: { rows: number[]; start: number } | null;
+  /** 직전 프레임과의 간격(ms) — 파티클 적분용 */
+  dt: number;
+  /**
+   * 줄 지움 3단계(번쩍 → 수축 → 낙하).
+   * `shift[r]` = 그 행이 몇 칸 내려앉아야 하는지(= 자기보다 아래에서 지워진 줄 수).
+   * 엔진은 락 즉시 줄을 접어 버리므로, 낙하를 보여주려면 위 블록을 **접기 전 위치**에서
+   * 시작해 제자리로 내려오게 그려야 한다.
+   */
+  clear: { rows: number[]; start: number; ms: number; shift: number[]; color: string } | null;
   /** 하드드롭 잔상 */
   trail: { cols: number[]; fromRow: number; toRow: number; color: string; start: number } | null;
   /** 락 화이트 플래시 */
   lock: { start: number } | null;
   /** 쓰레기 줄이 밀고 올라온 직후(아래→위 슬라이드) */
   rise: { start: number } | null;
-  /** 하드드롭 화면 진동 */
-  shake: { start: number } | null;
+  /** 화면 흔들림 — 사건별 세기/방향/길이 (fx.ts SHAKE 표) */
+  shake: ShakeState | null;
+  /** 4줄 — 판 전체 시안 플래시 + 세로 광선 */
+  beam: { start: number } | null;
+  /** T-스핀 — 보라 파문(보드 칸 좌표) */
+  ring: { x: number; y: number; start: number } | null;
+  /** 퍼펙트 클리어 — 판 전체 화이트 플래시 */
+  flash: { start: number } | null;
+  /** 락 딜레이 진행도 0..1. >0 이면 조각이 깜빡여 "곧 굳는다"가 눈에 보인다 */
+  lockDelay: number;
+  /** 현재 콤보 — 테두리 글로우 */
+  combo: number;
+  /** 0..1 위험도 — 테두리 빨간 맥박 + 미세 상시 떨림 */
+  danger: number;
+  /** 줄 파편/착지 먼지. 풀이라서 배열이 새로 생기지 않는다 */
+  particles: ParticleField;
   alive: boolean;
 }
 
@@ -122,8 +151,35 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
     let done = false;              // 레이스 완주·탈락 후에는 입력/시뮬을 멈춘다
     let toppedOut = false;
 
+    // 흔들림을 1/4 로 줄인다(끄지 않는 이유: 0 이면 "맞았다/지웠다"가 아예 전달되지 않는다).
+    const shakeScale = prefersReducedMotion() ? 0.25 : 1;
+    const particles = new ParticleField();
+    const shakeOut: ShakeOut = { x: 0, y: 0, rot: 0, power: 0 };
+    /** 낙하 연출용 행 이동량 버퍼 — 줄 지울 때마다 새 배열을 만들지 않는다 */
+    const clearShift: number[] = new Array(ROWS).fill(0);
+
     const fx: BoardFx = {
-      now: performance.now(), clear: null, trail: null, lock: null, rise: null, shake: null, alive: true,
+      now: performance.now(), dt: 16, clear: null, trail: null, lock: null, rise: null,
+      shake: null, beam: null, ring: null, flash: null,
+      lockDelay: 0, combo: 0, danger: 0, particles, alive: true,
+    };
+
+    /** 사건별 세기로 흔든다 — 약한 사건이 강한 사건을 덮어쓰지 않는다(fx.ts strongerShake). */
+    const bump = (ev: Parameters<typeof strongerShake>[2], power?: number) => {
+      fx.shake = strongerShake(fx.shake, performance.now(), ev, power);
+    };
+
+    /** 마지막으로 살아 있던 조각 — 락 직후에는 이미 다음 조각이 스폰돼 색/위치를 잃는다. */
+    const lastPiece = { id: 1, x: 3, y: 0 };
+    /** 락 직전의 대기 쓰레기 수. 락에서 줄어들었으면 = 이번에 실제로 밀려 올라왔다는 뜻. */
+    let prevPending = 0;
+    const notePiece = () => {
+      prevPending = engine.pendingCount(state);
+      if (state.piece) {
+        lastPiece.id = state.piece.id;
+        lastPiece.x = state.piece.x;
+        lastPiece.y = state.piece.y;
+      }
     };
 
     const syncHud = () => {
@@ -156,13 +212,40 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
 
     // ---------------------------------------------------------------- 락 처리
     const handleLock = (lock: LockResult) => {
-      fx.lock = { start: performance.now() };
+      const t0 = performance.now();
+      fx.lock = { start: t0 };
+      const pieceColor = PIECE_COLORS[lastPiece.id] ?? '#FFFFFF';
 
       if (lock.cleared > 0) {
         // 엔진이 kind/combo/b2b 를 확정해서 준다 — 소켓 페이로드와 배지가 어긋날 여지가 없다.
         const kind: ClearKind = lock.kind ?? PLAIN_KIND[Math.min(3, lock.cleared - 1)];
         const b2b = lock.b2b;
-        fx.clear = { rows: lock.rows.filter((r) => r >= 0), start: performance.now() };
+        const rows = lock.rows.filter((r) => r >= 0 && r < ROWS);
+        const big = lock.cleared >= 4 || lock.perfect;
+
+        // shift[r] = 자기보다 **아래에서** 지워진 줄 수 = 내려앉을 칸 수.
+        for (let r = 0; r < ROWS; r++) {
+          let n = 0;
+          for (const cr of rows) if (cr > r) n++;
+          clearShift[r] = n;
+        }
+        fx.clear = {
+          rows, start: t0, ms: big ? FX_MS.clearBig : FX_MS.clear,
+          shift: clearShift, color: pieceColor,
+        };
+
+        // 파티클은 지워진 줄에서 좌우로 튄다. 상한(120)은 풀이 알아서 지킨다.
+        for (const r of rows) particles.burstRow(r, COLS, pieceColor, big ? 1.35 : 1);
+
+        // 흔들림 — 줄 수 → 세기. T-스핀/퍼펙트가 더 세므로 뒤에서 덮어쓴다.
+        bump(shakeEventOfLines(lock.cleared));
+        if (kind.startsWith('ts')) {
+          bump('tspin');
+          fx.ring = { x: lastPiece.x + 1.5, y: lastPiece.y + 1.5 - HIDDEN_ROWS, start: t0 };
+        }
+        if (lock.cleared >= 4) fx.beam = { start: t0 };
+        if (lock.perfect) { bump('perfect'); fx.flash = { start: t0 }; }
+        if (lock.combo >= 2) bump('combo', comboShakePower(lock.combo));
 
         // 서버가 공격량·대상·상쇄를 계산한다(§T3.1). 클라는 "무엇을 지웠는지"만 보고한다.
         socket.emit('tetris:clear', {
@@ -175,6 +258,9 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
               : (`clear${lock.cleared}` as 'clear1' | 'clear2' | 'clear3'),
         );
         if (b2b) playGameSound('b2b');
+        // 콤보가 오를수록 **피치가 올라간다** — `match` 는 콤보 음계를 갖고 있어(sounds.ts)
+        // 파일을 건드리지 않고도 상승감을 얹을 수 있다.
+        if (lock.combo >= 2) playGameSound('match', { combo: lock.combo, gain: 0.5 });
 
         // 배지 하나만 띄운다 — B2B 는 뒤에 붙여서 화면에 두 개가 겹치지 않게.
         const base = lock.perfect ? 'PERFECT CLEAR!' : CLEAR_BADGE[kind];
@@ -182,7 +268,13 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
         if (badge) store.getState().setBadge(badge, lock.perfect ? 'gold' : toneOfClear(kind));
 
         store.getState().pushFx({ type: 'clear', lines: lock.cleared, kind });
-        if (lock.cleared >= 4 || lock.perfect) store.getState().pushFx({ type: 'screen', lines: lock.cleared });
+        // 화면(아레나 전체) 플래시 — 퍼펙트는 색이 달라야 해서 text 로 구분한다(스토어 타입 불변).
+        if (lock.cleared >= 4 || lock.perfect) {
+          store.getState().pushFx({
+            type: 'screen', lines: lock.cleared, kind,
+            text: lock.perfect ? 'perfect' : undefined,
+          });
+        }
 
         // 콤보 연출은 사천성 v4 ComboBurst 를 그대로 재사용한다(즉시 떴다 사라짐).
         if (lock.combo >= 2) {
@@ -202,11 +294,19 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
           playGameSound('win');
         }
       } else if (lock.spin !== 'none') {
-        // 줄은 못 지웠지만 T-스핀은 인정 — 손맛을 위해 배지/소리는 준다.
+        // 줄은 못 지웠지만 T-스핀은 인정 — 손맛을 위해 배지/소리/파문은 준다.
+        bump('tspin', 5);
+        fx.ring = { x: lastPiece.x + 1.5, y: lastPiece.y + 1.5 - HIDDEN_ROWS, start: t0 };
         playGameSound('tspin');
         store.getState().setBadge(lock.spin === 'mini' ? 'T-SPIN MINI' : 'T-SPIN', 'purple');
       } else {
         playGameSound('lock');
+      }
+
+      // 이번 락에서 쓰레기 줄이 실제로 밀고 올라왔다면 아래→위 밀림 연출.
+      if (engine.pendingCount(state) < prevPending) {
+        fx.rise = { start: t0 };
+        bump('rise');
       }
 
       if (lock.levelUp) {
@@ -251,26 +351,34 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
         case 'right': held.right = true; startDir(1); break;
         case 'softDrop': held.soft = true; softAcc = 0; if (engine.softDropStep(state)) playGameSound('move'); break;
         case 'hardDrop': {
-          // 잔상을 그리려면 **떨어지기 전에** 조각의 열과 낙하 거리를 재 둬야 한다.
+          // 잔상·먼지를 그리려면 **떨어지기 전에** 조각의 열과 낙하 거리를 재 둬야 한다.
+          notePiece();
           const before = engine.toCells(state, opts);
           const cols: number[] = [];
           let fromRow = Number.POSITIVE_INFINITY;
+          let bottomRow = -1;
           for (let i = 0; i < before.length; i++) {
             if (before[i] >= CELL_ACTIVE_BASE) {
               const c = i % COLS;
               if (!cols.includes(c)) cols.push(c);
-              fromRow = Math.min(fromRow, Math.floor(i / COLS));
+              const r = Math.floor(i / COLS);
+              if (r < fromRow) fromRow = r;
+              if (r > bottomRow) bottomRow = r;
             }
           }
           const drop = state.piece ? engine.ghostY(state) - state.piece.y : 0;
+          const dropColor = PIECE_COLORS[lastPiece.id] ?? '#FFFFFF';
           const res = engine.hardDrop(state);
+          const now = performance.now();
           if (Number.isFinite(fromRow)) {
             fx.trail = {
               cols, fromRow, toRow: fromRow + Math.max(0, drop),
-              color: colorOf(myUserId), start: performance.now(),
+              color: dropColor, start: now,
             };
+            // 착지 지점 먼지 — 잔상만 있으면 "멈춘 느낌"이 없다.
+            particles.dust(cols, Math.min(ROWS - 1, bottomRow + Math.max(0, drop)), dropColor);
           }
-          fx.shake = { start: performance.now() };
+          bump('drop');
           playGameSound('harddrop');
           handleLock(res);
           break;
@@ -331,6 +439,7 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
       const dt = Math.min(MAX_DT, now - lastT);
       lastT = now;
 
+      notePiece();
       if (canControl()) {
         if (dir !== 0) {
           das -= dt;
@@ -355,12 +464,37 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
       }
 
       fx.now = now;
+      fx.dt = dt;
       fx.alive = state.alive;
-      if (fx.clear && now - fx.clear.start > FX_MS.clear) fx.clear = null;
+      fx.combo = state.combo;
+      fx.lockDelay = state.piece && state.lockTimer > 0
+        ? Math.min(1, state.lockTimer / engine.LOCK_DELAY_MS)
+        : 0;
+      if (fx.clear && now - fx.clear.start > fx.clear.ms) fx.clear = null;
       if (fx.trail && now - fx.trail.start > FX_MS.trail) fx.trail = null;
       if (fx.lock && now - fx.lock.start > FX_MS.lock) fx.lock = null;
       if (fx.rise && now - fx.rise.start > FX_MS.rise) fx.rise = null;
-      if (fx.shake && now - fx.shake.start > FX_MS.shake) fx.shake = null;
+      if (fx.shake && now - fx.shake.start > fx.shake.ms) fx.shake = null;
+      if (fx.beam && now - fx.beam.start > FX_MS.beam) fx.beam = null;
+      if (fx.ring && now - fx.ring.start > FX_MS.ring) fx.ring = null;
+      if (fx.flash && now - fx.flash.start > FX_MS.flash) fx.flash = null;
+      particles.step(dt);
+
+      // 위험도는 게이지(스토어)와 캔버스 테두리가 같은 값을 써야 눈이 헷갈리지 않는다.
+      const danger = Math.min(1, stackHeight(state) / 20);
+      fx.danger = danger;
+
+      // 아레나 DOM 흔들림 — 스토어를 거치지 않고 transform 만 쓴다(리렌더 0회).
+      shakeAt(fx.shake, now, shakeScale, shakeOut);
+      if (danger >= 0.8 && state.alive && shakeScale > 0) {
+        // 위험할 때의 **아주 미세한 상시 떨림** — 0.6px 이하라 거슬리지 않지만 긴장감을 준다.
+        const micro = (danger - 0.8) * 3 * shakeScale;
+        shakeOut.y += Math.sin(now / 47) * micro;
+        shakeOut.x += Math.sin(now / 71) * micro * 0.6;
+        shakeOut.power = Math.max(shakeOut.power, micro);
+      }
+      emitShakeFrame(shakeOut);
+
       // 매 프레임 200칸 배열을 새로 만들지 않도록 엔진의 out 버퍼 재사용 기능을 쓴다.
       painter?.(engine.toCells(state, opts, renderCells), fx);
     };
@@ -405,6 +539,7 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
       if (!state.alive) return;
       engine.applyGarbage(state, e.amount, e.holes);
       fx.rise = { start: performance.now() };
+      bump('rise');
       playGameSound('garbageIn');
       store.getState().setBanner('바닥이 올라옵니다!');
       if (!state.alive) reportTopout();
@@ -445,6 +580,10 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
     return () => {
       cancelAnimationFrame(raf);
       clearInterval(frameTimer);
+      // 언마운트 순간의 transform 이 DOM 에 굳지 않도록 0 프레임을 한 번 더 보낸다.
+      shakeOut.x = 0; shakeOut.y = 0; shakeOut.rot = 0; shakeOut.power = 0;
+      emitShakeFrame(shakeOut);
+      particles.clear();
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);

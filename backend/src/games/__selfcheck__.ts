@@ -914,26 +914,30 @@ check('테트리스 탑아웃 — 3인 대전에서 먼저 죽은 사람이 3등
   return '10 cases';
 });
 
-check('테트리스 레이스 — 완주 순서 등수 + 정렬(시간 오름차순, 미완주는 줄 내림차순)', () => {
+check('테트리스 레이스 — 첫 완주자가 나오면 즉시 종료 + 정렬(미완주는 줄 내림차순)', () => {
   const h = harness(['a', 'b', 'c', 'd'], { ...DEFAULT_TETRIS_OPTIONS.sprint });
+  h.rt.players.get('a')!.lines = 22;
   h.rt.players.get('c')!.lines = 31;
   h.rt.players.get('d')!.lines = 12;
 
   assert(onFinish(h.rt, 'b', 41000, 40, 1000) === 1, 'b 가 먼저 완주 → 1등');
-  assert(onFinish(h.rt, 'a', 52000, 40, 2000) === 2, 'a 가 두 번째 → 2등');
+  // v5: 나머지가 40줄을 채울 때까지 기다리지 않는다(사용자 요청)
+  assert(h.ended.length === 1, '완주자가 나오는 순간 끝난다');
   assert(onFinish(h.rt, 'b', 30000, 40, 3000) === null, '두 번 완주는 무시');
-  assert(h.ended.length === 0, '아직 c/d 가 남았다');
   const fin = h.events.filter((e) => e.event === 'tetris:finished');
-  assert(fin.length === 2 && fin[0].payload.timeMs === 41000, 'finished 이벤트');
+  assert(fin.length === 1 && fin[0].payload.timeMs === 41000, 'finished 이벤트');
 
+  // 완주자 먼저, 미완주자는 지운 줄 내림차순
   const order = sortForResults(h.rt).map((p) => p.userId);
-  assert(order.join(',') === 'b,a,c,d', `sprint 정렬 ${order}`);
+  assert(order.join(',') === 'b,c,a,d', `sprint 정렬 ${order}`);
 
-  onTopout(h.rt, 'd', 4000);
-  assert(h.ended.length === 0, 'c 가 아직 살아 있다');
-  onTopout(h.rt, 'c', 5000);
-  assert(h.ended.length === 1, '전원 완주/탈락이면 끝난다');
-  return '8 cases';
+  // 아무도 완주 못 하고 전원 탈락해도 끝나야 한다
+  const h2 = harness(['a', 'b'], { ...DEFAULT_TETRIS_OPTIONS.sprint });
+  onTopout(h2.rt, 'a', 1000);
+  assert(h2.ended.length === 0, 'b 가 아직 살아 있다');
+  onTopout(h2.rt, 'b', 2000);
+  assert(h2.ended.length === 1, '전원 탈락이면 끝난다');
+  return '9 cases';
 });
 
 check('테트리스 타이머 — begin/stop 으로 반드시 정리된다', () => {
@@ -1064,19 +1068,20 @@ async function tetrisSprintFlow(): Promise<string> {
 
   gameManager.start(slug, p1);
   await sleep(3200);
-  gameManager.tetrisFrame(slug, p1, tframe({ lines: 40, score: 8000 }));
-  gameManager.tetrisFrame(slug, p2, tframe({ lines: 18, score: 2000 }));
+  // s2 가 먼저 40줄을 채우고, s1 은 18줄에서 멈춰 있는 상황
+  gameManager.tetrisFrame(slug, p1, tframe({ lines: 18, score: 2000 }));
+  gameManager.tetrisFrame(slug, p2, tframe({ lines: 40, score: 8000 }));
 
-  // s2 가 먼저(빠른 기록), s1 이 나중 — 등수는 완주 시간 오름차순
+  // v5: 한 명이라도 완주하면 **즉시** 끝난다(기다리지 않는다)
   assert(gameManager.tetrisFinish(slug, p2, 38000, 40).ok === true, 's2 finish');
-  assert(gameManager.getSnapshot(slug)!.phase === 'playing', '한 명 남았으면 계속');
-  assert(gameManager.tetrisFinish(slug, p1, 45000, 40).ok === true, 's1 finish');
+  assert(gameManager.getSnapshot(slug)!.phase === 'finished', '완주자가 나오면 즉시 종료');
+  assert(gameManager.tetrisFinish(slug, p1, 45000, 40).ok === false, '끝난 뒤 완주 보고는 거절');
 
   const done = gameManager.getSnapshot(slug)!;
-  assert(done.phase === 'finished', `phase ${done.phase}`);
   const rows = done.results!;
   assert(rows[0].userId === 's2' && rows[0].timeMs === 38000, `1등 ${rows[0].userId} ${rows[0].timeMs}`);
-  assert(rows[1].userId === 's1' && rows[1].timeMs === 45000, '2등은 느린 기록');
+  assert(rows[1].userId === 's1' && rows[1].timeMs === null, '미완주자는 기록 없이 2등');
+  assert(rows[1].remaining === 18, `미완주자는 지운 줄로 평가 (${rows[1].remaining})`);
   assert(rows[0].remaining === 40, '지운 줄 수가 remaining 자리에');
   assert(
     done.scoreboard.find((r) => r.userId === 's2')!.bestTimeMs === 38000,

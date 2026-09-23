@@ -57,6 +57,21 @@ function ensureCtx(): AudioContext | null {
   return ctx;
 }
 
+/**
+ * BGM(music.ts)이 **같은 AudioContext 를 공유**하도록 열어 두는 창구.
+ * 컨텍스트를 새로 만들면 브라우저 개수 제한에 걸리고 resume 타이밍도 따로 놀아
+ * "효과음은 나는데 음악만 안 나는" 상태가 된다.
+ */
+export function getAudioCtx(): AudioContext | null {
+  return ensureCtx();
+}
+
+/** 효과음 마스터 게인(0.35). 같은 버스에 얹고 싶은 쪽이 쓰라고 공개한다. */
+export function getMasterGain(): GainNode | null {
+  ensureCtx();
+  return master;
+}
+
 /** 첫 유저 제스처에서 AudioContext를 resume. 게임 패널이 열릴 때 한 번 호출한다. */
 export function initGameAudio(): void {
   const c = ensureCtx();

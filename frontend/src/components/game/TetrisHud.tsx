@@ -38,7 +38,12 @@ export function TetrisHud() {
           <motion.div
             key={`flash-${flash.id}`}
             className="absolute inset-0"
-            style={{ background: 'radial-gradient(circle at 50% 45%, rgba(37,244,238,0.35), transparent 65%)' }}
+            style={{
+              // 퍼펙트 클리어는 4줄과 **다른 색**이어야 한다 — 같으면 최고의 순간이 묻힌다.
+              background: flash.text === 'perfect'
+                ? 'radial-gradient(circle at 50% 45%, rgba(255,255,255,0.55), rgba(250,204,21,0.22) 45%, transparent 70%)'
+                : 'radial-gradient(circle at 50% 45%, rgba(37,244,238,0.35), transparent 65%)',
+            }}
             initial={{ opacity: 0 }}
             animate={{ opacity: [0, 1, 0] }}
             exit={{ opacity: 0 }}

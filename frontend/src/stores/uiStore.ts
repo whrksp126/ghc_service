@@ -9,6 +9,8 @@ interface UIState {
   isHomecamMode: boolean;
   /** 방 안 미니게임 효과음 on/off (게임 로비 헤더 스피커 아이콘) */
   gameSoundOn: boolean;
+  /** 방 안 미니게임 BGM on/off — 효과음과 **독립**이다(음악만 끄고 손맛은 남기는 사람이 많다) */
+  gameBgmOn: boolean;
   /** Participant keys (`${userId}:${deviceId}`) whose audio I've locally muted. */
   mutedAudio: Record<string, boolean>;
   /** Per-participant local playback volume 0..1 (default 1 when absent). */
@@ -20,6 +22,7 @@ interface UIState {
   toggleSettings: () => void;
   setHomecamMode: (v: boolean) => void;
   toggleGameSound: () => void;
+  toggleGameBgm: () => void;
   toggleAudioMute: (key: string) => void;
   setAudioVolume: (key: string, volume: number) => void;
 }
@@ -31,6 +34,7 @@ export const useUIStore = create<UIState>((set) => ({
   isSettingsOpen: false,
   isHomecamMode: false,
   gameSoundOn: true,
+  gameBgmOn: true,
   mutedAudio: {},
   volumeAudio: {},
 
@@ -40,6 +44,7 @@ export const useUIStore = create<UIState>((set) => ({
   toggleSettings: () => set((s) => ({ isSettingsOpen: !s.isSettingsOpen })),
   setHomecamMode: (v) => set({ isHomecamMode: v }),
   toggleGameSound: () => set((s) => ({ gameSoundOn: !s.gameSoundOn })),
+  toggleGameBgm: () => set((s) => ({ gameBgmOn: !s.gameBgmOn })),
   toggleAudioMute: (key) =>
     set((s) => ({ mutedAudio: { ...s.mutedAudio, [key]: !s.mutedAudio[key] } })),
   setAudioVolume: (key, volume) =>

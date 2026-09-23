@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { COLS, ROWS, type TetrisFrame } from '../../games/tetris/types';
 import { colorOfCell, isGhostCell } from '../../games/tetris/ui';
+import { useTetrisStore } from '../../stores/tetrisStore';
 
 interface TetrisMiniBoardProps {
   userId: string;
@@ -24,6 +25,20 @@ export function TetrisMiniBoard({
   const cvRef = useRef<HTMLCanvasElement>(null);
   const alive = frame ? frame.alive && !dead : !dead;
   const pending = frame?.pending ?? 0;
+
+  /**
+   * 이 사람이 4줄(또는 4줄 이상 공격)을 날리면 미니보드가 짧게 번쩍인다.
+   * `tetris:sent` 로 이미 들어와 있는 fx 를 읽기만 하므로 새 소켓/스토어 필드가 필요 없다.
+   */
+  const bigHit = useTetrisStore((s) => {
+    for (let i = s.fxQueue.length - 1; i >= 0; i--) {
+      const f = s.fxQueue[i];
+      if (f.type === 'attack' && f.from === userId && (f.kind === 'tetris' || (f.amount ?? 0) >= 4)) {
+        return f.id;
+      }
+    }
+    return 0;
+  });
 
   useEffect(() => {
     const cv = cvRef.current;
@@ -78,6 +93,15 @@ export function TetrisMiniBoard({
             className="absolute -left-1 bottom-0 w-1 rounded-full bg-danger"
             animate={{ height: `${Math.min(100, pending * 10)}%`, opacity: [0.7, 1, 0.7] }}
             transition={{ opacity: { duration: 0.8, repeat: Infinity } }}
+          />
+        )}
+        {bigHit > 0 && (
+          <motion.span
+            key={bigHit}
+            className="pointer-events-none absolute inset-0 rounded bg-secondary"
+            initial={{ opacity: 0.75 }}
+            animate={{ opacity: 0 }}
+            transition={{ duration: 0.34 }}
           />
         )}
         {!alive && (

@@ -22,7 +22,7 @@ export function ProgressGauge({ snapshot, myUserId }: { snapshot: GameSnapshot; 
   };
 
   return (
-    <div className="relative hidden w-[88px] shrink-0 pb-2 pt-5 md:block">
+    <div className="relative hidden w-[88px] shrink-0 pb-2 pt-5 lg:block">
       {/* 골인 캡 */}
       <span className="absolute right-2 top-0 w-[26px] rounded-t bg-white/15 text-center font-display text-[9px] leading-4 text-white/70">
         골인

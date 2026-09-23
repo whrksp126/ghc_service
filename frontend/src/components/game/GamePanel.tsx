@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Eye, Gamepad2, UserPlus, X } from 'lucide-react';
+import { Eye, Gamepad2, Music, Music2, UserPlus, X } from 'lucide-react';
 import { emitWithAck } from '../../lib/socket';
 import { showToast } from '../common/Toast';
 import { Button } from '../common/Button';
 import { useGameStore } from '../../stores/gameStore';
 import { useAuthStore } from '../../stores/authStore';
 import { initGameAudio } from '../../games/sounds';
+import { setBgmIntensity, startBgm, stopBgm, type BgmTrack } from '../../games/music';
+import { useUIStore } from '../../stores/uiStore';
+import { useTetrisStore } from '../../stores/tetrisStore';
 import { GameLobby } from './GameLobby';
 import { PackSelect } from './PackSelect';
 import { ShisenArena } from './ShisenArena';
@@ -100,13 +103,47 @@ function phaseLabel(s: GameSnapshot | null): string {
   return '결과';
 }
 
+/**
+ * 지금 화면에 맞는 BGM 트랙. 게임 방이 없으면(null) 무음이고, 결과 화면만 공용 마무리 루프다.
+ * BGM 생명주기는 **이 파일 한 곳에서만** 다룬다 — 아레나/로비에 흩으면 중복 재생·정지 누락이 난다.
+ */
+function trackFor(s: GameSnapshot | null): BgmTrack | null {
+  if (!s) return null;
+  if (s.phase === 'finished') return 'result';
+  return s.gameId === 'tetris' ? 'tetris' : 'shisen';
+}
+
 /** 게임 패널 컨테이너 — phase/역할별 분기 + 닫기. */
 export function GamePanel({ feeds = [] }: { feeds?: GameFeed[] }) {
   const snapshot = useGameStore((s) => s.snapshot);
   const closePanel = useGameStore((s) => s.closePanel);
 
+  const bgmOn = useUIStore((s) => s.gameBgmOn);
+  const toggleBgm = useUIStore((s) => s.toggleGameBgm);
+
   // 패널을 여는 동작 자체가 유저 제스처 → 여기서 AudioContext를 깨운다.
   useEffect(() => { initGameAudio(); }, []);
+
+  const bgmTrack = trackFor(snapshot);
+  // 트랙이 바뀌거나 음악을 껐을 때만 반응. startBgm 은 같은 트랙이면 무시하므로 재시작되지 않는다.
+  useEffect(() => {
+    if (!bgmOn || !bgmTrack) { stopBgm(); return; }
+    startBgm(bgmTrack);
+  }, [bgmOn, bgmTrack]);
+  // 패널을 닫거나 방을 나가면 반드시 멈춘다. 이 cleanup 이 빠지면 음악이 방 밖까지 따라온다.
+  useEffect(() => () => stopBgm(), []);
+
+  // 테트리스 강도(위기/레벨) → 템포·레이어. hud 는 8Hz로 바뀌므로 **구독만** 하고 리렌더는 안 한다
+  // (useTetrisStore 를 셀렉터로 읽으면 아레나 전체가 같이 리렌더돼 손맛이 죽는다).
+  useEffect(() => {
+    if (bgmTrack !== 'tetris') { setBgmIntensity(0); return; }
+    const apply = (hud: { danger: number; level: number }) =>
+      setBgmIntensity(Math.max(hud.danger, Math.min(1, (hud.level - 1) / 9)));
+    apply(useTetrisStore.getState().hud);
+    return useTetrisStore.subscribe((cur, prev) => {
+      if (cur.hud !== prev.hud) apply(cur.hud);
+    });
+  }, [bgmTrack]);
   // 아직 입장/관전을 고르지 않았으면 Idle 카드를 보여 준다(스냅샷 구독으로 자동 갱신).
   const myUserId = useAuthStore((s) => s.userId);
   const joined = !!snapshot && (
@@ -145,8 +182,16 @@ export function GamePanel({ feeds = [] }: { feeds?: GameFeed[] }) {
           {phaseLabel(snapshot)}
         </span>
         <button
-          onClick={closePanel}
+          data-ghc-bgm={bgmOn ? 'on' : 'off'}
+          onClick={() => { initGameAudio(); toggleBgm(); }}
           className="ml-auto text-white/40 transition-colors hover:text-white"
+          title={bgmOn ? '음악 끄기' : '음악 켜기'}
+        >
+          {bgmOn ? <Music size={16} /> : <Music2 size={16} className="opacity-50" />}
+        </button>
+        <button
+          onClick={closePanel}
+          className="text-white/40 transition-colors hover:text-white"
           title="게임 패널 닫기"
         >
           <X size={18} />

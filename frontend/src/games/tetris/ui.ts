@@ -17,16 +17,26 @@ export const DANGER_ROWS = 16;
 /** 캔버스에 그리는 위험선의 **보이는 행 인덱스**(위에서부터). 20행 중 16줄 높이 = 위에서 4번째. */
 export const DANGER_ROW_INDEX = ROWS - DANGER_ROWS;
 
-/** 연출 길이(ms). 전부 짧다 — v4 "숫자는 떴다가 즉시 사라진다" 결정과 톤을 맞춘다. */
+/**
+ * 연출 길이(ms). 배지/숫자는 v4 "떴다가 즉시 사라진다" 결정대로 짧게 유지하고,
+ * **줄 지움만** 3단계(번쩍 → 수축 → 낙하)를 담아야 해서 조금 길다.
+ */
 export const FX_MS = {
-  clear: 190,     // 줄 섬광 → 수축
+  clear: 240,     // 1~3줄: 번쩍 → 수축 → 위 블록 낙하
+  clearBig: 340,  // 4줄/퍼펙트: 같은 3단계를 더 길게 보여 준다
   trail: 160,     // 하드드롭 잔상
   lock: 70,       // 락 화이트 플래시
-  rise: 140,      // 쓰레기 줄 밀려 올라옴
-  shake: 90,      // 하드드롭 화면 진동
+  rise: 200,      // 쓰레기 줄 밀려 올라옴
+  shake: 90,      // (구) 하드드롭 화면 진동 — 지금은 fx.ts SHAKE 표가 담당
   badge: 900,     // TETRIS! / T-SPIN 배지
-  screen: 260,    // 테트리스 전체 시안 플래시
+  screen: 320,    // 화면 전체 플래시
+  beam: 320,      // 4줄 세로 광선
+  ring: 300,      // T-스핀 보라 파문
+  flash: 400,     // 퍼펙트 클리어 화이트 플래시
 } as const;
+
+/** 줄 지움 연출의 3단계 경계(0..1). 수축이 끝나야 위 블록이 내려앉는다. */
+export const CLEAR_PHASE = { flash: 0.3, shrink: 0.55 } as const;
 
 /** 셀 값 → 색. `toCells` 오버레이(9=그림자, 11..17=현재 조각)까지 한 곳에서 해석한다. */
 export function colorOfCell(v: number): string | null {

@@ -388,7 +388,10 @@ export function checkEnd(rt: TetrisRuntime): void {
   if (all.length === 0) return;
 
   if (rt.options.mode === 'sprint') {
-    if (all.every((p) => p.finishedAt !== null || !p.alive)) rt.hooks.onEnd('tetris sprint done');
+    // 한 명이라도 목표에 도달하면 **즉시** 끝낸다 — 승부가 이미 갈렸는데 나머지가 40줄을
+    // 채울 때까지 기다리면 결과 화면이 한참 안 뜬다(사용자 요청).
+    if (all.some((p) => p.finishedAt !== null)) return rt.hooks.onEnd('tetris sprint first finisher');
+    if (all.every((p) => !p.alive)) rt.hooks.onEnd('tetris sprint all out');
     return;
   }
   const alive = all.filter((p) => p.alive && p.finishedAt === null).length;

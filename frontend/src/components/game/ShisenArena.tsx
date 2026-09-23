@@ -11,7 +11,7 @@ import { FittedBoard } from './FittedBoard';
 import { ThemeBackdrop, TRAY_CLASS, themeOf } from './ArenaTheme';
 import { ComboBurst } from './ComboBurst';
 import { TopCounterBar, runItem } from './TopCounterBar';
-import { ProfileColumn } from './ProfileColumn';
+import { PROFILE_COL_CLASS, ProfileColumn } from './ProfileColumn';
 import { ProgressGauge } from './ProgressGauge';
 import { LiveScoreboard } from './LiveScoreboard';
 import { Countdown } from './Countdown';
@@ -246,28 +246,17 @@ export function ShisenArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
         spectating={!meActive}
       />
 
-      <div className="flex min-h-0 flex-1 flex-col gap-2 md:flex-row">
-        {/* 좌: 프로필 컬럼 (모바일은 상단 가로 스크롤) */}
-        <div className="shrink-0 md:w-[200px] md:overflow-y-auto">
-          <div className="md:hidden">
-            <ProfileColumn
-              snapshot={snapshot}
-              myUserId={myUserId}
-              feeds={feeds}
-              strip
-              watchedUserId={meActive ? undefined : watchedPlayer?.userId}
-              onSelect={meActive || isCoop ? undefined : setWatchedId}
-            />
-          </div>
-          <div className="hidden md:block">
-            <ProfileColumn
-              snapshot={snapshot}
-              myUserId={myUserId}
-              feeds={feeds}
-              watchedUserId={meActive ? undefined : watchedPlayer?.userId}
-              onSelect={meActive || isCoop ? undefined : setWatchedId}
-            />
-          </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row">
+        {/* 좌: 프로필 컬럼 — 한 줄에 한 사람, 카드가 컬럼 폭을 꽉 채운다(모바일은 상단 가로 스크롤).
+            **한 번만 렌더**한다 — 두 벌 렌더하면 같은 카메라 트랙이 두 번 attach 된다. */}
+        <div className={`min-h-0 shrink-0 ${PROFILE_COL_CLASS}`}>
+          <ProfileColumn
+            snapshot={snapshot}
+            myUserId={myUserId}
+            feeds={feeds}
+            watchedUserId={meActive ? undefined : watchedPlayer?.userId}
+            onSelect={meActive || isCoop ? undefined : setWatchedId}
+          />
         </div>
 
         {/* 중앙: 보드 */}
