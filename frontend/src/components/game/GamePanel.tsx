@@ -116,9 +116,10 @@ export function GamePanel({ feeds = [] }: { feeds?: GameFeed[] }) {
     snapshot.hostUserId === myUserId || snapshot.players.length <= 1
   );
 
-  // 아레나가 화면에 그리는 피드(플레이어 카드 + 관전자 칩) = 각 사람의 **첫 번째** 카메라 피드.
+  // 패널이 화면에 그리는 피드 = 각 참가자(플레이어+관전자)의 **첫 번째** 카메라 피드.
+  // 팩 선택·로비·아레나 모두 같은 규칙으로 그리므로 숨은 싱크는 "그 외 전부"가 된다.
   const attachedIds = new Set<string>();
-  if (snapshot && joined && !needsPack && snapshot.phase !== 'lobby') {
+  if (snapshot && joined) {
     const pickFor = (uid: string) => feeds.find((f) => f.userId === uid && !f.isScreen);
     for (const p of snapshot.players) { const f = pickFor(p.userId); if (f) attachedIds.add(f.id); }
     for (const sp of snapshot.spectators) { const f = pickFor(sp.userId); if (f) attachedIds.add(f.id); }
@@ -160,9 +161,9 @@ export function GamePanel({ feeds = [] }: { feeds?: GameFeed[] }) {
           <GameIdle snapshot={snapshot} />
         ) : snapshot.phase === 'lobby' && needsPack ? (
           /* 팩 선택은 로컬 UI 단계 — 방장이 고르면 모두 그 팩 방으로 들어간다 */
-          <PackSelect isHost={snapshot.hostUserId === myUserId} />
+          <PackSelect isHost={snapshot.hostUserId === myUserId} snapshot={snapshot} feeds={feeds} />
         ) : snapshot.phase === 'lobby' ? (
-          <GameLobby snapshot={snapshot} />
+          <GameLobby snapshot={snapshot} feeds={feeds} />
         ) : (
           <ShisenArena snapshot={snapshot} feeds={feeds} />
         )}

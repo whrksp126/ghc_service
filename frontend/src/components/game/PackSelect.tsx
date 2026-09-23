@@ -5,6 +5,8 @@ import { emitWithAck } from '../../lib/socket';
 import { showToast } from '../common/Toast';
 import { useGameStore } from '../../stores/gameStore';
 import { initGameAudio } from '../../games/sounds';
+import { ProfileVideo, type GameFeed } from './ProfileVideo';
+import type { GameSnapshot } from '../../games/types';
 
 interface Pack {
   id: string;
@@ -24,7 +26,9 @@ const PACKS: Pack[] = [
  * 게임 팩 선택 (v3 §W3). 방장이 고르면 그 팩 방으로 들어간다.
  * 팩 선택은 로컬 UI 단계라 비방장에게는 "방장이 고르는 중" 대기 화면을 보여 준다.
  */
-export function PackSelect({ isHost }: { isHost: boolean }) {
+export function PackSelect({
+  isHost, snapshot, feeds = [],
+}: { isHost: boolean; snapshot?: GameSnapshot | null; feeds?: GameFeed[] }) {
   const setPackChosen = useGameStore((s) => s.setPackChosen);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -42,12 +46,38 @@ export function PackSelect({ isHost }: { isHost: boolean }) {
     }
   };
 
+  /** 방에 들어와 있는 사람들(플레이어+관전자) 카메라 — 팩을 고르는 동안에도 서로 보이게. */
+  const people = [
+    ...(snapshot?.players ?? []).map((p) => ({ userId: p.userId, nickname: p.nickname, color: p.color })),
+    ...(snapshot?.spectators ?? []).map((s2) => ({ userId: s2.userId, nickname: s2.nickname, color: '#9CA3AF' })),
+  ];
+  const strip = people.length === 0 ? null : (
+    <div className="flex shrink-0 items-center gap-1.5 overflow-x-auto scrollbar-none px-1 pt-2">
+      {people.map((person) => (
+        <div key={person.userId} className="w-[96px] shrink-0">
+          <div className="aspect-video w-full overflow-hidden rounded-lg bg-black/40">
+            <ProfileVideo
+              feed={feeds.find((f) => f.userId === person.userId && !f.isScreen)}
+              color={person.color}
+              label={person.nickname}
+              className="h-full w-full"
+            />
+          </div>
+          <p className="truncate text-center text-[10px] text-white/50">{person.nickname}</p>
+        </div>
+      ))}
+    </div>
+  );
+
   if (!isHost) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
-        <Loader2 size={28} className="animate-spin text-white/30" />
-        <p className="text-sm text-white/60">방장이 게임을 고르는 중…</p>
-        <p className="text-xs text-white/30">잠시만 기다려 주세요</p>
+      <div className="flex h-full flex-col p-4">
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+          <Loader2 size={28} className="animate-spin text-white/30" />
+          <p className="text-sm text-white/60">방장이 게임을 고르는 중…</p>
+          <p className="text-xs text-white/30">잠시만 기다려 주세요</p>
+        </div>
+        {strip}
       </div>
     );
   }
@@ -80,6 +110,7 @@ export function PackSelect({ isHost }: { isHost: boolean }) {
           );
         })}
       </div>
+      {strip}
     </div>
   );
 }
