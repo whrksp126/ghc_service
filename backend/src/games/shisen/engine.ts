@@ -713,6 +713,9 @@ const WALL_RATIO_MIN = 0.04;
 const WALL_RATIO_MAX = 0.08;
 const LOCK_RATIO = 0.25;
 const MYSTERY_RATIO = 0.2;
+/** v4 §X2.2 특수 타일 분산 제약 */
+const SPECIAL_MIN_CHEBYSHEV = 3;
+const MYSTERY_ADJACENT_RATIO = 0.25;
 
 /** 마스크 안쪽에 좌우대칭으로 벽을 놓는다. 벽 수는 4의 배수(= 플레이 타일 수의 mod 4 유지). */
 function placeWalls(mask: boolean[], cols: number, rows: number, rng: () => number): number[] {
@@ -875,26 +878,68 @@ export function generateBoardV2(opts: GenerateV2Options, rng: () => number): Gen
     const cells = new Array<number>(cols * rows).fill(EMPTY);
     for (const idx of wallSet) cells[idx] = WALL;
 
-    // 열쇠: R의 앞 K쌍 (k=1..K 순) → 색깔 자물쇠는 그 뒤 쌍에서 종류별로 배정된다.
+    // 열쇠·숫자는 "R 안에서 어느 쌍을 쓸지"를 골라서 배치 제약(v4 §X2.2)을 맞춘다.
+    // 자리를 바꾸는 게 아니라 쌍을 고르는 방식이라 제거 순서 R 의 풀이 가능성이 그대로 유지된다.
     const keyPairs = Math.max(0, Math.min(keyTypes, MAX_KEY_TYPES, order.length));
     const usedByRule = new Set<number>(); // R 인덱스
+    const cheb = (x: number, y: number) =>
+      Math.max(Math.abs(((x / cols) | 0) - ((y / cols) | 0)), Math.abs((x % cols) - (y % cols)));
+    const keyTiles: number[] = [];
+    let lastKeyIndex = -1;
     for (let k = 1; k <= keyPairs; k++) {
-      const [a, b] = order[k - 1];
+      // 열쇠는 앞쪽 R 구간에서 고른다(뒤의 자물쇠가 항상 열쇠보다 나중이 되도록).
+      const window = Math.min(order.length, Math.max(keyPairs * 10, Math.floor(order.length * 0.45), 30));
+      let chosen = -1;
+      // 완화 순서: (앞 구간, 거리+비인접) → (전체, 거리+비인접) → (전체, 비인접) → 아무거나.
+      // "열쇠끼리 8방향 인접 금지"는 가장 마지막까지 지킨다.
+      const passes: { scope: number; distance: boolean; nonAdjacent: boolean }[] = [
+        { scope: window, distance: true, nonAdjacent: true },
+        { scope: order.length, distance: true, nonAdjacent: true },
+        { scope: order.length, distance: false, nonAdjacent: true },
+        { scope: order.length, distance: false, nonAdjacent: false },
+      ];
+      for (const pass of passes) {
+        for (let i = 0; i < pass.scope && chosen < 0; i++) {
+          if (usedByRule.has(i)) continue;
+          const [a, b] = order[i];
+          if (pass.distance && cheb(a, b) < SPECIAL_MIN_CHEBYSHEV) continue;
+          if (pass.nonAdjacent && keyTiles.some((t) => cheb(t, a) <= 1 || cheb(t, b) <= 1)) continue;
+          chosen = i;
+        }
+        if (chosen >= 0) break;
+      }
+      if (chosen < 0) chosen = order.findIndex((_, i) => !usedByRule.has(i));
+      if (chosen < 0) break;
+      usedByRule.add(chosen);
+      lastKeyIndex = Math.max(lastKeyIndex, chosen);
+      const [a, b] = order[chosen];
       cells[a] = KEY_BASE + k;
       cells[b] = KEY_BASE + k;
-      usedByRule.add(k - 1);
+      keyTiles.push(a, b);
     }
     const numberCount = Math.max(0, Math.min(numbers, order.length - usedByRule.size));
     if (numberCount > 0) {
-      const first = keyPairs;
-      const span = order.length - first;
+      const first = lastKeyIndex + 1;
+      const span = Math.max(1, order.length - first);
+      let prev = first - 1;
       for (let n = 1; n <= numberCount; n++) {
-        // R 안에서 균등 간격
-        let at = first + Math.floor(((n - 0.5) * span) / numberCount);
-        while (usedByRule.has(at) && at < order.length - 1) at++;
-        while (usedByRule.has(at) && at > first) at--;
-        if (usedByRule.has(at)) continue;
+        // R 안에서 균등 간격 + 같은 숫자 두 타일이 붙지 않는 쌍을 그 근처에서 고른다.
+        const target = first + Math.floor(((n - 0.5) * span) / numberCount);
+        let at = -1;
+        for (let pass = 0; pass < 2 && at < 0; pass++) {
+          for (let step = 0; step < order.length; step++) {
+            for (const i of [target + step, target - step]) {
+              if (i <= prev || i >= order.length || usedByRule.has(i)) continue;
+              if (pass === 0 && cheb(order[i][0], order[i][1]) < SPECIAL_MIN_CHEBYSHEV) continue;
+              at = i;
+              break;
+            }
+            if (at >= 0) break;
+          }
+        }
+        if (at < 0) continue;
         usedByRule.add(at);
+        prev = at;
         const [a, b] = order[at];
         cells[a] = NUMBER_BASE + n;
         cells[b] = NUMBER_BASE + n;
@@ -913,19 +958,43 @@ export function generateBoardV2(opts: GenerateV2Options, rng: () => number): Gen
     assignSymbols(cells, order, shuffledPairs, cols, rows, symbolCount, tuning.minimizeAdjacency, rng);
 
 
-    // 자물쇠: 열쇠를 쓴 뒤의 일반 쌍 중 25%를 종류별로 균등 배정
+    // 자물쇠: 열쇠보다 뒤에 있는 일반 쌍 중 25%. 색은 "같은 색끼리 4방향으로 붙지 않게" 골라 준다.
     const locks: [number, number][] = [];
     if (keyPairs > 0 && shuffledPairs.length > 0) {
+      const lockable = shuffledPairs.filter((i) => i > lastKeyIndex);
       const lockCount = Math.floor(shuffledPairs.length * LOCK_RATIO);
-      for (let k = 0; k < lockCount; k++) {
-        const [a, b] = order[shuffledPairs[k]];
-        const keyType = (k % keyPairs) + 1;
-        locks.push([a, keyType], [b, keyType]);
+      const byColor = new Map<number, Set<number>>();
+      for (let k = 1; k <= keyPairs; k++) byColor.set(k, new Set());
+      const conflictsWith = (idx: number, color: number) =>
+        neighborsOf(idx, cols, rows).filter((nb) => byColor.get(color)!.has(nb)).length;
+      // 같은 색 자물쇠끼리 4방향으로 붙지 않게 고른다. 불가피한 경우는 판당 1쌍까지만 허용(§X2.2).
+      let adjacentAllowance = 1;
+      let placed = 0;
+      for (let k = 0; k < lockable.length && placed < lockCount; k++) {
+        const [a, b] = order[lockable[k]];
+        // 쌍의 두 타일이 서로 붙어 있으면 그 자체로 "같은 색 자물쇠 인접"이 된다
+        const selfAdjacent = neighborsOf(a, cols, rows).includes(b) ? 1 : 0;
+        let color = ((placed % keyPairs) + 1) as number;
+        let conflicts = Infinity;
+        for (let t = 0; t < keyPairs; t++) {
+          const c = ((placed + t) % keyPairs) + 1;
+          const n = conflictsWith(a, c) + conflictsWith(b, c) + selfAdjacent;
+          if (n < conflicts) {
+            conflicts = n;
+            color = c;
+            if (n === 0) break;
+          }
+        }
+        if (conflicts > adjacentAllowance) continue; // 이 쌍은 건너뛰고 다른 쌍을 잠근다
+        adjacentAllowance -= conflicts;
+        byColor.get(color)!.add(a).add(b);
+        locks.push([a, color], [b, color]);
+        placed++;
       }
     }
     const lockedSet = new Set(locks.map(([idx]) => idx));
 
-    // 물음표: 자물쇠가 아닌 일반 타일의 20%
+    // 물음표: 자물쇠가 아닌 일반 타일의 20%. 서로 붙은 `?` 가 전체의 25%를 넘지 않게 고른다.
     const hidden: number[] = [];
     if (mystery) {
       const candidates: number[] = [];
@@ -934,7 +1003,22 @@ export function generateBoardV2(opts: GenerateV2Options, rng: () => number): Gen
       }
       shuffleInPlace(candidates, rng);
       const hideCount = Math.floor(candidates.length * MYSTERY_RATIO);
-      for (let i = 0; i < hideCount; i++) hidden.push(candidates[i]);
+      const chosen = new Set<number>();
+      const maxTouching = Math.floor(hideCount * MYSTERY_ADJACENT_RATIO);
+      let touching = 0;
+      for (const idx of candidates) {
+        if (chosen.size >= hideCount) break;
+        const near = neighborsOf(idx, cols, rows).filter((nb) => chosen.has(nb)).length;
+        if (near > 0 && touching + near > maxTouching) continue;
+        touching += near;
+        chosen.add(idx);
+      }
+      // 제약 때문에 모자라면 남은 후보로 채운다(개수 우선)
+      for (const idx of candidates) {
+        if (chosen.size >= hideCount) break;
+        chosen.add(idx);
+      }
+      hidden.push(...chosen);
       hidden.sort((a, b) => a - b);
     }
 

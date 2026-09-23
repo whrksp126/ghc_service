@@ -12,15 +12,22 @@ export type MapShape = 'random' | 'rect' | 'diamond' | 'frame' | 'towers' | 'pyr
 export const MAP_SHAPES: MapShape[] = ['random', 'rect', 'diamond', 'frame', 'towers', 'pyramid', 'cross', 'blob'];
 export interface SpecialToggles { mystery: boolean; numbers: boolean; keys: boolean; walls: boolean; }
 
+/** 소모품 아이템 (v3 §W1). 쟁탈전은 공유 카운트를 각 플레이어에 미러한다. */
+export interface PlayerItems { hint: number; shuffle: number; wand: number; }
+
 /** 1 = 가장 쉬움(같은 그림 많고 붙어 있음), 5 = 가장 어려움 (v3 §W1) */
 export type Difficulty = 1 | 2 | 3 | 4 | 5;
 export interface GameOptions {
   boardSize: BoardSize; mapShape: MapShape; specials: SpecialToggles;
-  difficulty: Difficulty; items: boolean; timeLimitSec: number;
+  difficulty: Difficulty; tools: PlayerItems; items: boolean; timeLimitSec: number;
 }
 export const DEFAULT_OPTIONS: Record<GameMode, GameOptions> = {
-  race: { boardSize: 'm', mapShape: 'random', specials: { mystery: false, numbers: false, keys: false, walls: false }, difficulty: 3, items: false, timeLimitSec: 300 },
-  coop: { boardSize: 'l', mapShape: 'random', specials: { mystery: false, numbers: false, keys: false, walls: false }, difficulty: 3, items: false, timeLimitSec: 0 },
+  race: { boardSize: 'm', mapShape: 'random', specials: { mystery: false, numbers: false, keys: false, walls: false }, difficulty: 3, tools: { hint: 3, shuffle: 2, wand: 1 }, items: false, timeLimitSec: 300 },
+  coop: { boardSize: 'l', mapShape: 'random', specials: { mystery: false, numbers: false, keys: false, walls: false }, difficulty: 3, tools: { hint: 5, shuffle: 3, wand: 2 }, items: false, timeLimitSec: 0 },
+};
+/** 아이템 횟수 설정 범위 (v4 §X2.3) */
+export const TOOL_LIMITS: Record<keyof PlayerItems, { min: number; max: number }> = {
+  hint: { min: 0, max: 9 }, shuffle: { min: 0, max: 9 }, wand: { min: 0, max: 3 },
 };
 // 격자(모양은 이 안에서 마스크) — 타일 수는 마스크가 정함(대략 s≈40, m≈72~80, l≈112~120)
 export const BOARD_DIMS: Record<BoardSize, { cols: number; rows: number }> = {
@@ -29,7 +36,7 @@ export const BOARD_DIMS: Record<BoardSize, { cols: number; rows: number }> = {
 // cells 인코딩
 export const EMPTY = 0;
 export const WALL = -1;          // 벽: 영구 점유. 선택 불가, 경로 차단, 셔플 대상 아님
-export const MYSTERY = 99;       // 물음표(플레이스홀더): game:peek로 엿보기, 인접 제거 시 영구 공개
+export const MYSTERY = 99;       // 물음표(플레이스홀더): game:peek로 본인만 일회성 확인 (자동 공개 없음)
 export const NUMBER_BASE = 200;  // 숫자 타일: NUMBER_BASE + n (n=1..K, 각 n 1쌍). n 순서대로만 제거 가능
 export const isNormalSymbol = (v: number) => v >= 1 && v <= 28;
 
@@ -43,8 +50,6 @@ export const KEY_COLORS = ['#F87171', '#60A5FA', '#4ADE80'];
 /** 판 크기별 열쇠 종류 수 (specials.keys 가 true일 때) */
 export const KEY_TYPES_PER_SIZE: Record<BoardSize, number> = { s: 1, m: 2, l: 3 };
 
-/** 소모품 아이템 (v3 §W1). 쟁탈전은 공유 카운트를 각 플레이어에 미러한다. */
-export interface PlayerItems { hint: number; shuffle: number; wand: number; }
 
 export const MAX_PLAYERS = 4;
 export const COMBO_WINDOW_MS = 2000;
@@ -56,8 +61,9 @@ export interface Effect { type: AttackType; until: number; hidden?: number[]; }
 export interface Board {
   id: string;            // race: userId, coop: 'shared'
   cols: number; rows: number;
-  cells: number[];       // 위 인코딩. 물음표/자물쇠는 플레이스홀더로 마스킹된 상태로 전송
+  cells: number[];       // 위 인코딩. 물음표/자물쇠는 플레이스홀더로 마스킹된 상태로 전송(공개는 peek 뿐)
   remaining: number;     // 벽 제외 남은 타일 수
+  total: number;         // 시작 시 타일 수(벽 제외). 진행률 = (total - remaining) / total
   effects: Effect[];
   shape: Exclude<MapShape, 'random'>;   // 실제 결정된 모양(랜덤이면 서버가 고른 값)
   nextNumber: number;    // 숫자 순서 타일이 있으면 다음에 지워야 할 n, 없거나 끝났으면 0
@@ -76,6 +82,7 @@ export interface PlayerState {
   finishedAt: number | null;   // race 완주 시각
   connected: boolean;    // 소켓 끊김(10s 유예 중) 표시용
   forfeited: boolean;    // playing 중 기권(보드는 남지만 순위는 최하위 그룹)
+  rank: number;          // 서버가 계산한 실시간 등수(동률은 같은 등수)
 }
 
 export interface ResultRow {
@@ -110,7 +117,7 @@ export const PLAYER_COLORS = ['#FE2C55', '#25F4EE', '#FACC15', '#A78BFA'];
  * 부수효과(인접 공개·자물쇠 해제·막힘 재배치)까지 **전부 끝난 뒤**의 값이다.
  */
 export interface BoardPatch {
-  remaining: number; nextNumber: number; keysLeft: number; movesLeft: number;
+  remaining: number; total: number; nextNumber: number; keysLeft: number; movesLeft: number;
 }
 export interface AttackEvent {
   seq: number; from: string; to: string; boardId: string;
@@ -132,11 +139,6 @@ export interface ShuffledEvent {
   userId?: string;      // cause:'item' 일 때 아이템을 쓴 사람
 }
 export interface PeerSelectEvent { userId: string; idx: number | null; }
-/** game:revealed — 물음표 공개(클릭 또는 인접 제거) */
-export interface RevealedEvent {
-  seq: number; boardId: string; tiles: { idx: number; symbol: number }[]; movesLeft: number;
-  board: BoardPatch;
-}
 /** game:unlocked — 그 색 열쇠 쌍 제거로 같은 색 자물쇠만 해제 */
 export interface UnlockedEvent {
   seq: number; boardId: string; tiles: { idx: number; symbol: number }[]; movesLeft: number;

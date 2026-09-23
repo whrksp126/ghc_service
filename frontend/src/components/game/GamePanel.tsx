@@ -10,6 +10,7 @@ import { initGameAudio } from '../../games/sounds';
 import { GameLobby } from './GameLobby';
 import { PackSelect } from './PackSelect';
 import { ShisenArena } from './ShisenArena';
+import { ProfileVideo, type GameFeed } from './ProfileVideo';
 import { MAX_PLAYERS, type GameSnapshot } from '../../games/types';
 
 /** 게임 방이 없을 때 — 버튼 하나로 만든다(만든 사람이 방장). */
@@ -96,7 +97,7 @@ function phaseLabel(s: GameSnapshot | null): string {
 }
 
 /** 게임 패널 컨테이너 — phase/역할별 분기 + 닫기. */
-export function GamePanel() {
+export function GamePanel({ feeds = [] }: { feeds?: GameFeed[] }) {
   const snapshot = useGameStore((s) => s.snapshot);
   const closePanel = useGameStore((s) => s.closePanel);
 
@@ -109,10 +110,20 @@ export function GamePanel() {
     || snapshot.spectators.some((p) => p.userId === myUserId)
   );
   const packChosen = useGameStore((s) => s.packChosen);
+
   // 방장: 팩을 고르기 전까지 선택 화면. 비방장: 방장이 혼자 있는 동안 "고르는 중" 대기.
   const needsPack = !!snapshot && !packChosen && (
     snapshot.hostUserId === myUserId || snapshot.players.length <= 1
   );
+
+  // 아레나가 화면에 그리는 피드(플레이어 카드 + 관전자 칩) = 각 사람의 **첫 번째** 카메라 피드.
+  const attachedIds = new Set<string>();
+  if (snapshot && joined && !needsPack && snapshot.phase !== 'lobby') {
+    const pickFor = (uid: string) => feeds.find((f) => f.userId === uid && !f.isScreen);
+    for (const p of snapshot.players) { const f = pickFor(p.userId); if (f) attachedIds.add(f.id); }
+    for (const sp of snapshot.spectators) { const f = pickFor(sp.userId); if (f) attachedIds.add(f.id); }
+  }
+  const hiddenSinks = feeds.filter((f) => !f.isScreen && !!f.audioTrack && !attachedIds.has(f.id));
 
   return (
     <motion.div
@@ -135,6 +146,15 @@ export function GamePanel() {
         </button>
       </div>
 
+      {/* 패널 안에서 보이지 않는 카메라 피드의 **소리만** 유지하는 숨은 싱크.
+          RoomPage의 비디오 컬럼이 꺼져 있으므로(= 이 트랙들의 유일한 attach 지점) 필요하다.
+          보이는 피드는 프로필/관전자 스트립이 이미 attach 하므로 여기서 제외한다(중복 attach 금지). */}
+      <div className="pointer-events-none absolute h-0 w-0 overflow-hidden opacity-0">
+        {hiddenSinks.map((f) => (
+          <ProfileVideo key={f.id} feed={f} color="#000000" label="" className="h-1 w-1" />
+        ))}
+      </div>
+
       <div className="min-h-0 flex-1">
         {!snapshot || !joined ? (
           <GameIdle snapshot={snapshot} />
@@ -144,7 +164,7 @@ export function GamePanel() {
         ) : snapshot.phase === 'lobby' ? (
           <GameLobby snapshot={snapshot} />
         ) : (
-          <ShisenArena snapshot={snapshot} />
+          <ShisenArena snapshot={snapshot} feeds={feeds} />
         )}
       </div>
     </motion.div>

@@ -143,12 +143,6 @@ function removePair(b: SimBoard, a: number, c: number): void {
     b.hidden.delete(idx);
     b.locks.delete(idx);
   }
-  for (const idx of [a, c]) {
-    const r = (idx / b.cols) | 0;
-    const col = idx % b.cols;
-    const nbs = [r > 0 ? idx - b.cols : -1, r < b.rows - 1 ? idx + b.cols : -1, col > 0 ? idx - 1 : -1, col < b.cols - 1 ? idx + 1 : -1];
-    for (const nb of nbs) if (nb >= 0) b.hidden.delete(nb);
-  }
   if (isKey(value)) {
     const keyType = value - KEY_BASE;
     b.keysLeft = Math.max(0, b.keysLeft - 1);
@@ -237,6 +231,7 @@ check('previewMask — 같은 seed면 항상 같은 마스크', () => {
     mapShape: 'random',
     specials: { mystery: true, numbers: true, keys: true, walls: true },
     difficulty: 3,
+    tools: { hint: 3, shuffle: 2, wand: 1 },
     items: false,
     timeLimitSec: 300,
   };
@@ -317,10 +312,8 @@ function replayOrder(size: BoardSize, shape: Shape, specials: SpecialToggles, se
   }
 
   for (const [a, b] of gen.order) {
-    // 물음표는 클릭 한 번으로 공개된다(선택으로 치지 않음) → 재생에서도 먼저 공개
-    board.hidden.delete(a);
-    board.hidden.delete(b);
-    const reason = canPick(clientView(board), a, b);
+    // v3+: 숨김 타일도 서버는 진실 심볼로 판정한다(엿보기가 공짜)
+    const reason = canPick(ruleView(board), a, b);
     if (reason) return { ok: false, detail: `reason='${reason}' with ${countRemaining(board.cells)} tiles left` };
     removePair(board, a, b);
   }
@@ -389,6 +382,83 @@ check('색 자물쇠 — 같은 색 열쇠만 그 색을 연다 (l = 3색)', () 
   }
   assert(checked > 0, 'no board with locks to check');
   return `${checked} boards`;
+});
+
+check('특수 타일 분산 (v4 §X2.2) — 크기 3종 × 100판, 특수 전부 ON', () => {
+  const lines: string[] = [];
+  for (const size of SIZES) {
+    const { cols } = BOARD_DIMS[size];
+    const cheb = (x: number, y: number) =>
+      Math.max(Math.abs(((x / cols) | 0) - ((y / cols) | 0)), Math.abs((x % cols) - (y % cols)));
+    let keyPairClose = 0;
+    let keyPairCloseMax = 0;
+    let adjacentKeys = 0;
+    let adjacentLocks = 0;
+    let adjacentLocksMax = 0;
+    let numberClose = 0;
+    let numberCloseMax = 0;
+    let mysteryAdjOver = 0;
+    for (let i = 0; i < 100; i++) {
+      const { board } = makeBoard(size, SHAPES[i % SHAPES.length], SPECIAL_SETS[1].specials, 620000 + i * 7);
+      const { cells, rows } = board;
+      const tilesOf = (test: (v: number) => boolean) => {
+        const out: number[] = [];
+        for (let k = 0; k < cells.length; k++) if (test(cells[k])) out.push(k);
+        return out;
+      };
+      // 열쇠: 한 쌍의 두 타일 체비셰프 ≥ 3, 아무 열쇠끼리도 8방향 인접 금지
+      const keys = tilesOf(isKey);
+      let closeThisBoard = 0;
+      for (let k = 1; k <= KEY_TYPES_PER_SIZE[size]; k++) {
+        const pair = tilesOf((v) => v === KEY_BASE + k);
+        if (pair.length === 2 && cheb(pair[0], pair[1]) < 3) closeThisBoard++;
+      }
+      keyPairClose += closeThisBoard;
+      keyPairCloseMax = Math.max(keyPairCloseMax, closeThisBoard);
+      for (let x = 0; x < keys.length; x++) {
+        for (let y = x + 1; y < keys.length; y++) if (cheb(keys[x], keys[y]) <= 1) adjacentKeys++;
+      }
+      // 자물쇠: 같은 색끼리 4방향 인접
+      let lockPairs = 0;
+      for (const [idx, k] of board.locks) {
+        for (const nb of [idx + 1, idx + cols]) {
+          if (nb >= cells.length) continue;
+          if (nb === idx + 1 && (nb % cols) === 0) continue;
+          if (board.locks.get(nb) === k) lockPairs++;
+        }
+      }
+      adjacentLocks += lockPairs;
+      adjacentLocksMax = Math.max(adjacentLocksMax, lockPairs);
+      // 숫자: 같은 숫자 두 타일 체비셰프 ≥ 3
+      let numClose = 0;
+      for (let n = 1; n <= NUMBERS_PER_SIZE[size]; n++) {
+        const pair = tilesOf((v) => v === NUMBER_BASE + n);
+        if (pair.length === 2 && cheb(pair[0], pair[1]) < 3) numClose++;
+      }
+      numberClose += numClose;
+      numberCloseMax = Math.max(numberCloseMax, numClose);
+      // 물음표: 4방향으로 붙은 `?` 가 전체의 25% 이하
+      const hidden = [...board.hidden];
+      let touching = 0;
+      for (const idx of hidden) {
+        for (const nb of [idx + 1, idx + cols]) {
+          if (nb >= cols * rows) continue;
+          if (nb === idx + 1 && (nb % cols) === 0) continue;
+          if (board.hidden.has(nb)) touching++;
+        }
+      }
+      if (hidden.length > 0 && touching > Math.ceil(hidden.length * 0.25)) mysteryAdjOver++;
+    }
+    assert(adjacentKeys === 0, `${size}: 열쇠끼리 8방향 인접 ${adjacentKeys}건 (0이어야 함)`);
+    assert(adjacentLocksMax <= 1, `${size}: 같은 색 자물쇠 인접 최대 ${adjacentLocksMax}쌍 (1 이하)`);
+    assert(keyPairCloseMax === 0, `${size}: 열쇠 쌍 거리 위반 최대 ${keyPairCloseMax}`);
+    assert(mysteryAdjOver === 0, `${size}: 물음표 인접 25% 초과 ${mysteryAdjOver}판`);
+    lines.push(
+      `${size} keyDist ${(keyPairClose / 100).toFixed(2)}/${keyPairCloseMax} adjKey ${adjacentKeys} ` +
+        `adjLock ${(adjacentLocks / 100).toFixed(2)}/${adjacentLocksMax} numDist ${(numberClose / 100).toFixed(2)}/${numberCloseMax}`
+    );
+  }
+  return lines.join(' | ');
 });
 
 // --- 3. 무작위 순서 플레이: 셔플 복구 / 막힘 해소(system) 비율 ---------------
@@ -623,6 +693,10 @@ async function managerFlow(): Promise<string> {
   // A6: 모드를 바꿔도 맵 모양·특수 타일은 유지, 판 크기/제한 시간만 새 모드 기본값
   gameManager.updateOptions(slug, p1, { mode: 'coop' });
   const afterCoop = gameManager.getSnapshot(slug)!.options;
+  assert(
+    afterCoop.tools.hint === 5 && afterCoop.tools.shuffle === 3 && afterCoop.tools.wand === 2,
+    `모드 전환 시 아이템 횟수는 그 모드 기본값: ${JSON.stringify(afterCoop.tools)}`
+  );
   assert(afterCoop.mapShape === 'diamond', '모드 전환에서 mapShape가 날아갔다');
   assert(afterCoop.specials.keys && afterCoop.specials.mystery, '모드 전환에서 specials가 날아갔다');
   assert(afterCoop.boardSize === 'l' && afterCoop.timeLimitSec === 0, '모드 기본값(판 크기/제한 시간) 미적용');
@@ -631,6 +705,15 @@ async function managerFlow(): Promise<string> {
   const backToRace = gameManager.getSnapshot(slug)!.options;
   assert(backToRace.mapShape === 'diamond' && backToRace.specials.mystery, '되돌릴 때도 유지돼야 한다');
   assert(backToRace.boardSize === 's' && backToRace.items, 'patch가 모드 기본값을 덮어써야 한다');
+
+  // A10: 아이템 횟수 옵션(부분 병합 + 범위 클램프)
+  gameManager.updateOptions(slug, p1, { options: { tools: { hint: 7 } } });
+  const tools1 = gameManager.getSnapshot(slug)!.options.tools;
+  assert(tools1.hint === 7 && tools1.shuffle === 2 && tools1.wand === 1, `tools 부분 병합 실패: ${JSON.stringify(tools1)}`);
+  gameManager.updateOptions(slug, p1, { options: { tools: { hint: 99, wand: 9, shuffle: -3 } } });
+  const tools2 = gameManager.getSnapshot(slug)!.options.tools;
+  assert(tools2.hint === 9 && tools2.wand === 3 && tools2.shuffle === 0, `tools 클램프 실패: ${JSON.stringify(tools2)}`);
+  gameManager.updateOptions(slug, p1, { options: { tools: { hint: 3, shuffle: 2, wand: 1 } } });
 
   // A8: GameOptions 의 모든 필드가 부분 병합돼야 한다 (difficulty 가 빠져 있었다)
   assert(gameManager.getSnapshot(slug)!.options.difficulty === 3, '기본 난이도는 3');
@@ -668,6 +751,11 @@ async function managerFlow(): Promise<string> {
     `race item defaults wrong: ${JSON.stringify(startState.players[0].items)}`
   );
   assert(startState.boards['u1'].movesLeft > 0, 'movesLeft missing in snapshot');
+  assert(
+    startState.boards['u1'].total === startState.boards['u1'].remaining && startState.boards['u1'].total > 0,
+    'Board.total 은 시작 시 남은 패 수와 같아야 한다'
+  );
+  assert(startState.players.every((p) => p.rank >= 1), 'rank 가 없다');
   assert(gameManager.pick(slug, p1, 0, 1).ok === false, 'pick before startAt must be rejected');
 
   await sleep(3200); // 카운트다운
@@ -703,6 +791,17 @@ async function managerFlow(): Promise<string> {
   assert(afterWand.boards['u1'].remaining === beforeWand.boards['u1'].remaining - 2, 'wand did not remove a pair');
   assert(afterWand.players[0].combo === 0, 'wand must break the combo');
   assert(gameManager.useWand(slug, p1).ok === false, 'wand must be empty now');
+
+  // A10: total 은 고정, rank 는 실시간
+  {
+    const live = gameManager.getSnapshot(slug)!;
+    const b = live.boards['u1'];
+    assert(b.total > b.remaining, `total(${b.total}) 이 remaining(${b.remaining}) 보다 커야 한다(이미 몇 쌍 지움)`);
+    assert(b.total === startState.boards['u1'].total, 'total 은 변하면 안 된다');
+    const me = live.players.find((p) => p.userId === 'u1')!;
+    const other = live.players.find((p) => p.userId === 'u2')!;
+    assert(me.rank === 1 && other.rank === 2, `실시간 등수가 틀렸다: u1 ${me.rank}, u2 ${other.rank}`);
+  }
 
   // A9 준비: u2는 진행 중에 기권(플레이어 목록에는 남는다)
   gameManager.spectate(slug, p2);
@@ -766,7 +865,7 @@ async function managerFlow(): Promise<string> {
   gameManager.destroy(slug);
 
   // v2.1: 모든 판 변경 델타에 movesLeft가 실려야 하고, movesLeft 0 + 타일 잔여면 바로 재배치돼야 한다.
-  const deltaEvents = ['game:matched', 'game:revealed', 'game:unlocked', 'game:shuffled'];
+  const deltaEvents = ['game:matched', 'game:unlocked', 'game:shuffled'];
   for (let i = 0; i < events.length; i++) {
     const e = events[i];
     if (!deltaEvents.includes(e.event)) continue;
@@ -775,6 +874,7 @@ async function managerFlow(): Promise<string> {
     assert(
       patch &&
         typeof patch.remaining === 'number' &&
+        typeof patch.total === 'number' &&
         typeof patch.nextNumber === 'number' &&
         typeof patch.keysLeft === 'number' &&
         typeof patch.movesLeft === 'number',
@@ -798,7 +898,7 @@ async function managerFlow(): Promise<string> {
   const revealedEvents = events.filter((e) => e.event === 'game:revealed');
   assert(unlocked.length === 1, `expected exactly one unlock broadcast, got ${unlocked.length}`);
   assert(unlocked[0].payload.tiles.length > 0, 'unlock payload must list the revealed symbols');
-  assert(revealedEvents.length > 0, 'expected reveal broadcasts');
+  assert(revealedEvents.length === 0, 'v4: game:revealed 브로드캐스트는 없어야 한다');
   let lastSeq = -1;
   for (const e of events) {
     const seq = e.event === 'game:state' ? e.payload.state?.seq : e.payload.seq;
@@ -807,7 +907,7 @@ async function managerFlow(): Promise<string> {
     lastSeq = seq;
   }
   const system = events.filter((e) => e.event === 'game:matched' && e.payload.userId === 'system').length;
-  return `${events.filter((e) => e.event === 'game:matched').length} matched (system ${system}), ${revealedEvents.length} revealed, seq monotonic`;
+  return `${events.filter((e) => e.event === 'game:matched').length} matched (system ${system}), seq monotonic`;
 }
 
 async function coopFlow(): Promise<string> {

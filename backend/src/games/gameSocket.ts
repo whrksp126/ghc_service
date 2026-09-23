@@ -22,12 +22,20 @@ const specialsSchema = z
   })
   .partial();
 
+// 아이템 횟수는 범위를 벗어나면 잘라서 받는다(클램프) — 프론트 스테퍼가 넘겨도 에러 대신 보정.
+const clampTool = (max: number) =>
+  z.number().int().transform((v) => Math.max(0, Math.min(max, v)));
+const toolsSchema = z
+  .object({ hint: clampTool(9), shuffle: clampTool(9), wand: clampTool(3) })
+  .partial();
+
 const optionsSchema = z
   .object({
     boardSize: z.enum(['s', 'm', 'l']),
     mapShape: z.enum(['random', 'rect', 'diamond', 'frame', 'towers', 'pyramid', 'cross', 'blob']),
     specials: specialsSchema,
     difficulty: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]),
+    tools: toolsSchema,
     items: z.boolean(),
     timeLimitSec: z.number().int().min(0).max(3600),
   })

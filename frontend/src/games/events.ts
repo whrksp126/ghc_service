@@ -6,10 +6,10 @@ import type { PickReason, Point } from './types';
 
 export type {
   AttackEvent, BoardPatch, MatchedEvent, PeerSelectEvent, PickAck, PickReason,
-  RevealedEvent, ShuffledEvent, UnlockedEvent, HintAck,
+  ShuffledEvent, UnlockedEvent, HintAck,
 } from './types';
 
-/** `game:revealed` / `game:unlocked` 공용 모양 (둘 다 tiles를 나른다) */
+/** `game:unlocked` 페이로드 (v4에서 `game:revealed`는 프로토콜에서 삭제됨) */
 export interface TilesEvent {
   seq: number; boardId: string; tiles: { idx: number; symbol: number }[];
   movesLeft?: number;

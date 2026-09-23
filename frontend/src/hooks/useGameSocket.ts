@@ -109,10 +109,6 @@ export function useGameSocket(active: boolean) {
         showToast('막혀서 한 쌍 정리했어요', 'info');
       }
     };
-    const onRevealed = (e: TilesEvent) => {
-      if (!store.getState().applyTiles(e, 'reveal')) void syncGame();
-      if (store.getState().myBoard()?.id === e.boardId) playGameSound('reveal');
-    };
     const onUnlocked = (e: TilesEvent) => {
       if (!store.getState().applyTiles(e, 'unlock')) void syncGame();
       if (store.getState().myBoard()?.id === e.boardId) {
@@ -139,7 +135,6 @@ export function useGameSocket(active: boolean) {
     socket.off('game:shuffled').on('game:shuffled', onShuffled);
     socket.off('game:attack').on('game:attack', onAttack);
     socket.off('game:peerSelect').on('game:peerSelect', onPeerSelect);
-    socket.off('game:revealed').on('game:revealed', onRevealed);
     socket.off('game:unlocked').on('game:unlocked', onUnlocked);
 
     void syncGame();
@@ -155,7 +150,6 @@ export function useGameSocket(active: boolean) {
       socket.off('game:shuffled', onShuffled);
       socket.off('game:attack', onAttack);
       socket.off('game:peerSelect', onPeerSelect);
-      socket.off('game:revealed', onRevealed);
       socket.off('game:unlocked', onUnlocked);
       socket.io.off('reconnect', onReconnect);
     };

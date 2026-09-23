@@ -78,8 +78,8 @@ interface GameStore {
   applyShuffled: (e: ShuffledEvent) => boolean;
   applyAttack: (e: AttackEvent) => boolean;
   applyPeerSelect: (e: PeerSelectEvent) => void;
-  /** 물음표 공개 / 자물쇠 해제 — 둘 다 타일 값을 채워 넣고 뒤집기 연출을 남긴다 */
-  applyTiles: (e: TilesEvent, kind: 'reveal' | 'unlock') => boolean;
+  /** 자물쇠 해제 — 타일 값을 채워 넣고 순차 뒤집기 연출을 남긴다 (v4: 물음표 자동 공개는 삭제) */
+  applyTiles: (e: TilesEvent, kind: 'unlock') => boolean;
 
   /** HUD 옆에 1.2초 떴다 사라지는 짧은 안내("1번부터 지워야 해요") */
   notice: { text: string; at: number } | null;
@@ -208,7 +208,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       // 스냅샷은 권위 — 예측/선택 상태를 모두 버린다.
       pendingPicks: [],
       selectedIdx: s && s.phase === 'playing' ? prev.selectedIdx : null,
-      peek: s && s.phase === 'playing' ? prev.peek : null,
+      // 엿보기는 **일회성**이다. 스냅샷이 오면(판이 바뀌었을 수 있으므로) 즉시 다시 숨긴다.
+      peek: null,
       hintPair: null,
       peerSelect: s ? prev.peerSelect : {},
       focusBoardId: s ? prev.focusBoardId : null,
@@ -295,7 +296,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       if (!prev.snapshot) return prev;
       const next = withBoard(prev.snapshot, e.boardId, (b) =>
         withMeta({ ...b, cells: e.cells.slice() }, { patch: patchOf(e) ?? { movesLeft: e.movesLeft } }));
-      return { snapshot: { ...next, seq: e.seq }, selectedIdx: null, hintPair: null, pendingPicks: [] };
+      return {
+        snapshot: { ...next, seq: e.seq },
+        selectedIdx: null, peek: null, hintPair: null, pendingPicks: [],
+      };
     });
     get().pushFx({ type: 'shuffle', boardId: e.boardId });
     return true;
@@ -435,10 +439,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   pushFx: (fx) =>
-    set((prev) => ({
-      // 오래된 연출이 쌓이지 않도록 상한(렉 방지). 소비는 보드 컴포넌트가 한다.
-      fxQueue: [...prev.fxQueue.slice(-40), { ...fx, id: nextFxId++, at: Date.now() }],
-    })),
+    set((prev) => {
+      // 화면에 없는 보드(레이스에서 상대 판)의 연출은 아무도 소비하지 않는다 →
+      // 2.5초가 지난 항목은 여기서 정리해서 큐가 눌러앉지 않게 한다.
+      const cutoff = Date.now() - 2500;
+      const live = prev.fxQueue.filter((f) => f.at > cutoff).slice(-40);
+      return { fxQueue: [...live, { ...fx, id: nextFxId++, at: Date.now() }] };
+    }),
   consumeFx: (id) => set((prev) => ({ fxQueue: prev.fxQueue.filter((f) => f.id !== id) })),
 
   me: () => {

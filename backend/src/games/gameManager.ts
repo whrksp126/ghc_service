@@ -34,6 +34,7 @@ import {
   ResultRow,
   ScoreboardRow,
   SpecialToggles,
+  TOOL_LIMITS,
   isKey,
 } from './types';
 import {
@@ -62,8 +63,6 @@ export interface GameActor {
 
 export type StateResult = { error: string } | { state: GameSnapshot };
 
-const RACE_ITEMS: PlayerItems = { hint: 3, shuffle: 2, wand: 1 };
-const COOP_ITEMS: PlayerItems = { hint: 5, shuffle: 3, wand: 2 };
 const WAND_SCORE = 10;
 const DISCONNECT_FORFEIT_MS = 30000;
 const ATTACK_COMBO_STEPS = [3, 6, 9];
@@ -94,6 +93,7 @@ interface ServerBoard {
   hidden: Set<number>;         // 물음표로 가려진 칸(엿보기 가능, 진실 심볼로 판정)
   locks: Map<number, number>;  // 자물쇠 칸 → 열쇠 종류(1..MAX_KEY_TYPES)
   remaining: number;       // 벽 제외 남은 타일 수
+  total: number;           // 시작 시 타일 수(진행률용)
   effects: Effect[];
   shape: Shape;
   nextNumber: number;      // 다음에 지워야 할 숫자(없으면 0)
@@ -161,12 +161,42 @@ function makePlayer(game: RoomGame, actor: GameActor): InternalPlayer {
     maxCombo: 0,
     pairsCleared: 0,
     lastMatchAt: 0,
-    items: { ...(game.mode === 'coop' ? game.sharedItems : RACE_ITEMS) },
+    items: { ...(game.mode === 'coop' ? game.sharedItems : game.options.tools) },
     finishedAt: null,
     connected: true,
     forfeited: false,
+    rank: 1,
     hintBreak: false,
   };
+}
+
+/**
+ * 실시간 등수 (v4 §X2.5): 완주자 먼저(완주 시각 오름차순) → 레이스는 남은 패 오름차순 /
+ * 쟁탈전은 지운 쌍 내림차순 → 점수 내림차순. 동률은 같은 등수를 공유한다.
+ */
+function recomputeRanks(game: RoomGame): void {
+  const players = [...game.players.values()];
+  if (players.length === 0) return;
+  const remainingOf = (p: InternalPlayer) => boardOf(game, p)?.remaining ?? 0;
+  const keyOf = (p: InternalPlayer): [number, number, number, number] => [
+    p.finishedAt !== null ? 0 : 1,
+    p.finishedAt ?? 0,
+    game.mode === 'coop' ? -p.pairsCleared : remainingOf(p),
+    -p.score,
+  ];
+  const sorted = players
+    .map((p) => ({ p, key: keyOf(p) }))
+    .sort((x, y) => {
+      for (let i = 0; i < x.key.length; i++) if (x.key[i] !== y.key[i]) return x.key[i] - y.key[i];
+      return 0;
+    });
+  let rank = 0;
+  let prev: number[] | null = null;
+  sorted.forEach((entry, i) => {
+    if (!prev || prev.some((v, k) => v !== entry.key[k])) rank = i + 1;
+    entry.p.rank = rank;
+    prev = entry.key;
+  });
 }
 
 function purgeEffects(game: RoomGame, now: number): void {
@@ -191,11 +221,13 @@ function toPublicPlayer(p: InternalPlayer): PlayerState {
     finishedAt: p.finishedAt,
     connected: p.connected,
     forfeited: p.forfeited,
+    rank: p.rank,
   };
 }
 
 function snapshot(game: RoomGame): GameSnapshot {
   purgeEffects(game, Date.now());
+  recomputeRanks(game);
   const boards: Record<string, Board> = {};
   for (const [id, b] of game.boards) boards[id] = toPublicBoard(b);
   return {
@@ -277,6 +309,7 @@ function toPublicBoard(b: ServerBoard): Board {
     rows: b.rows,
     cells: maskForClient(b.cells, b.hidden, b.locks),
     remaining: b.remaining,
+    total: b.total,
     effects: b.effects.map((e) => ({ ...e })),
     shape: b.shape,
     nextNumber: b.nextNumber,
@@ -287,24 +320,19 @@ function toPublicBoard(b: ServerBoard): Board {
 
 /** 델타에 같이 싣는 보드 요약. 부수효과가 전부 끝난 뒤 값으로 찍는다(v2.1 A5). */
 function boardPatch(b: ServerBoard): BoardPatch {
-  return { remaining: b.remaining, nextNumber: b.nextNumber, keysLeft: b.keysLeft, movesLeft: b.movesLeft };
+  return {
+    remaining: b.remaining,
+    total: b.total,
+    nextNumber: b.nextNumber,
+    keysLeft: b.keysLeft,
+    movesLeft: b.movesLeft,
+  };
 }
 
 /** v2.1: 연결 가능 쌍 수를 다시 센다. 판이 바뀔 때마다 호출. */
 function recomputeMoves(board: ServerBoard): number {
   board.movesLeft = board.remaining > 0 ? findAllMoves(ruleView(board)).length : 0;
   return board.movesLeft;
-}
-
-function orthNeighbors(idx: number, cols: number, rows: number): number[] {
-  const r = (idx / cols) | 0;
-  const c = idx % cols;
-  const out: number[] = [];
-  if (r > 0) out.push(idx - cols);
-  if (r < rows - 1) out.push(idx + cols);
-  if (c > 0) out.push(idx - 1);
-  if (c < cols - 1) out.push(idx + 1);
-  return out;
 }
 
 interface ShuffledPayload {
@@ -579,14 +607,27 @@ function finishBoard(game: RoomGame, player: InternalPlayer): void {
 // --- 옵션 병합 (v2 §V2: 전부 optional, 부분 병합) ----------------------------
 
 /** GameOptions 의 모든 필드를 optional 로 — 새 필드를 넣으면 여기와 mergeOptions 둘 다 고칠 것. */
-export type OptionsPatch = Partial<Omit<GameOptions, 'specials'>> & { specials?: Partial<SpecialToggles> };
+export type OptionsPatch = Partial<Omit<GameOptions, 'specials' | 'tools'>> & {
+  specials?: Partial<SpecialToggles>;
+  tools?: Partial<PlayerItems>;
+};
+
+/** 아이템 횟수를 허용 범위로 자른다 (v4 §X2.3) */
+function clampTools(tools: PlayerItems): PlayerItems {
+  const clamp = (v: number, kind: keyof PlayerItems) =>
+    Math.max(TOOL_LIMITS[kind].min, Math.min(TOOL_LIMITS[kind].max, Math.round(v) || 0));
+  return { hint: clamp(tools.hint, 'hint'), shuffle: clamp(tools.shuffle, 'shuffle'), wand: clamp(tools.wand, 'wand') };
+}
 
 function mergeOptions(base: GameOptions, patch: OptionsPatch | undefined, mode: GameMode): GameOptions {
-  const next: GameOptions = { ...base, specials: { ...base.specials } };
+  const next: GameOptions = { ...base, specials: { ...base.specials }, tools: { ...base.tools } };
   if (patch) {
     if (patch.boardSize) next.boardSize = patch.boardSize;
     if (patch.mapShape) next.mapShape = patch.mapShape;
     if (patch.difficulty) next.difficulty = patch.difficulty;
+    if (patch.tools) {
+      next.tools = clampTools({ ...next.tools, ...patch.tools });
+    }
     if (typeof patch.items === 'boolean') next.items = patch.items;
     if (typeof patch.timeLimitSec === 'number') next.timeLimitSec = patch.timeLimitSec;
     if (patch.specials) next.specials = { ...next.specials, ...patch.specials };
@@ -607,16 +648,14 @@ interface TilesPayload {
 }
 
 interface RemovalEffects {
-  revealed: TilesPayload | null;
   unlocked: TilesPayload | null;
 }
 
 /**
  * 두 칸을 실제로 지우고 규칙 상태를 갱신한다.
- * - 인접한 물음표 자동 공개 → game:revealed
  * - 열쇠 쌍이었으면 자물쇠 전부 해제 → game:unlocked
  * - 숫자 쌍이었으면 nextNumber 진행
- * seq는 방출 순서(matched → revealed → unlocked)에 맞춰 여기서 올린다.
+ * seq는 방출 순서(matched → unlocked)에 맞춰 여기서 올린다.
  */
 function applyRemoval(game: RoomGame, board: ServerBoard, a: number, b: number): RemovalEffects {
   const value = board.cells[a];
@@ -631,18 +670,8 @@ function applyRemoval(game: RoomGame, board: ServerBoard, a: number, b: number):
   }
   board.remaining -= 2;
 
-  const revealedTiles: { idx: number; symbol: number }[] = [];
-  for (const idx of [a, b]) {
-    for (const nb of orthNeighbors(idx, board.cols, board.rows)) {
-      if (!board.hidden.has(nb)) continue;
-      board.hidden.delete(nb);
-      revealedTiles.push({ idx: nb, symbol: board.cells[nb] });
-    }
-  }
+  // v4: 인접 물음표 자동 공개는 없다. `?` 는 오직 game:peek 로 본인에게만 보인다.
   recomputeMoves(board);
-  const revealed = revealedTiles.length
-    ? { seq: ++game.seq, boardId: board.id, tiles: revealedTiles, movesLeft: board.movesLeft, board: boardPatch(board) }
-    : null;
 
   let unlocked: TilesPayload | null = null;
   if (keyType > 0) {
@@ -666,7 +695,7 @@ function applyRemoval(game: RoomGame, board: ServerBoard, a: number, b: number):
     board.nextNumber = board.nextNumber < board.maxNumber ? board.nextNumber + 1 : 0;
   }
   recomputeMoves(board);
-  return { revealed, unlocked };
+  return { unlocked };
 }
 
 interface StuckResolution {
@@ -727,7 +756,6 @@ function collectStuckResolution(game: RoomGame, board: ServerBoard): PendingDelt
       },
       board,
     });
-    if (effects.revealed) out.push({ event: 'game:revealed', payload: { ...effects.revealed }, board });
     if (effects.unlocked) out.push({ event: 'game:unlocked', payload: { ...effects.unlocked }, board });
     if (board.remaining === 0) return out;
   }
@@ -738,9 +766,10 @@ function collectStuckResolution(game: RoomGame, board: ServerBoard): PendingDelt
  * 모은 델타를 순서대로 방출한다. board patch는 **판 변화가 전부 끝난 지금** 값으로 다시 찍는다 —
  * 그래야 클라가 마지막 델타만 적용해도 nextNumber/keysLeft/movesLeft가 서버와 일치한다.
  */
-const BOARD_DELTA_EVENTS = new Set(['game:matched', 'game:revealed', 'game:unlocked', 'game:shuffled']);
+const BOARD_DELTA_EVENTS = new Set(['game:matched', 'game:unlocked', 'game:shuffled']);
 
 function flushDeltas(game: RoomGame, deltas: PendingDelta[]): void {
+  recomputeRanks(game); // 판이 바뀌었으니 등수도 갱신 (다음 스냅샷에 실린다)
   for (const d of deltas) {
     if (BOARD_DELTA_EVENTS.has(d.event)) d.payload.board = boardPatch(d.board);
     broadcast(game.slug, d.event, d.payload);
@@ -813,7 +842,7 @@ export const gameManager = {
       results: null,
       seq: 0,
       rng: mulberry32(newSeed()),
-      sharedItems: { ...COOP_ITEMS },
+      sharedItems: { ...options.tools },
       countdownTimer: null,
       limitTimer: null,
       forfeitTimers: new Map(),
@@ -888,6 +917,7 @@ export const gameManager = {
         ...game.options,
         boardSize: defaults.boardSize,
         timeLimitSec: defaults.timeLimitSec,
+        tools: { ...defaults.tools }, // 아이템 횟수는 모드 기본값으로 (v4 §X2.3)
       };
       for (const p of game.players.values()) p.boardId = boardIdFor(game.mode, p.userId);
     }
@@ -937,6 +967,7 @@ export const gameManager = {
       hidden: new Set(generated.hidden),
       locks: new Map(generated.locks),
       remaining: countRemaining(generated.cells),
+      total: countRemaining(generated.cells),
       effects: [],
       shape,
       nextNumber: numbers > 0 ? 1 : 0,
@@ -957,7 +988,7 @@ export const gameManager = {
         `in ${Date.now() - t0}ms (seed ${game.seed})`
     );
 
-    game.sharedItems = { ...COOP_ITEMS };
+    game.sharedItems = { ...game.options.tools };
     for (const p of players) {
       p.boardId = boardIdFor(game.mode, p.userId);
       p.score = 0;
@@ -965,7 +996,7 @@ export const gameManager = {
       p.maxCombo = 0;
       p.pairsCleared = 0;
       p.lastMatchAt = 0;
-      p.items = { ...(game.mode === 'coop' ? game.sharedItems : RACE_ITEMS) };
+      p.items = { ...(game.mode === 'coop' ? game.sharedItems : game.options.tools) };
       p.finishedAt = null;
       p.forfeited = false;
       p.hintBreak = false;
@@ -1014,7 +1045,7 @@ export const gameManager = {
 
     // --- 제거 확정 ---
     // seq는 실제 방출 순서대로 올라가야 한다(클라가 seq로 늦은 델타를 버리므로):
-    // matched → revealed → unlocked → attack → shuffled.
+    // matched → unlocked → attack → shuffled.
     const matchedSeq = ++game.seq;
     const effects = applyRemoval(game, board, a, b);
 
@@ -1055,7 +1086,6 @@ export const gameManager = {
         board,
       },
     ];
-    if (effects.revealed) deltas.push({ event: 'game:revealed', payload: { ...effects.revealed }, board });
     if (effects.unlocked) deltas.push({ event: 'game:unlocked', payload: { ...effects.unlocked }, board });
 
     const targetBoard = attack ? game.boards.get(attack.event.boardId) ?? board : board;
@@ -1164,7 +1194,6 @@ export const gameManager = {
         board,
       },
     ];
-    if (effects.revealed) deltas.push({ event: 'game:revealed', payload: { ...effects.revealed }, board });
     if (effects.unlocked) deltas.push({ event: 'game:unlocked', payload: { ...effects.unlocked }, board });
     deltas.push(...collectStuckResolution(game, board));
     flushDeltas(game, deltas);
@@ -1203,14 +1232,14 @@ export const gameManager = {
     game.endedAt = null;
     game.results = null;
     game.boards.clear();
-    game.sharedItems = { ...COOP_ITEMS };
+    game.sharedItems = { ...game.options.tools };
     for (const p of game.players.values()) {
       p.score = 0;
       p.combo = 0;
       p.maxCombo = 0;
       p.pairsCleared = 0;
       p.lastMatchAt = 0;
-      p.items = { ...(game.mode === 'coop' ? game.sharedItems : RACE_ITEMS) };
+      p.items = { ...(game.mode === 'coop' ? game.sharedItems : game.options.tools) };
       p.finishedAt = null;
       p.forfeited = false;
       p.hintBreak = false;

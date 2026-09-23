@@ -43,7 +43,16 @@ export function ComboBurst({ boardId, myUserId }: { boardId?: string; myUserId: 
   const lastId = useRef(0);
   const lastTier = useRef(0);
   const prevCombo = useRef(0);
+  /** 화면에 떠 있는 콤보는 **항상 1개**. 새 콤보가 오면 이전 타이머를 즉시 정리하고 교체한다. */
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const breakTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reduced = prefersReducedMotion();
+
+  // 언마운트 시 타이머 정리(남아서 상태를 되살리는 일이 없도록).
+  useEffect(() => () => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    if (breakTimer.current) clearTimeout(breakTimer.current);
+  }, []);
 
   // 콤보 성립 — pop 연출 이벤트에서만.
   useEffect(() => {
@@ -57,12 +66,13 @@ export function ComboBurst({ boardId, myUserId }: { boardId?: string; myUserId: 
     const tier = tierOf(combo);
     const tierUp = tier > lastTier.current;
     lastTier.current = tier;
+    if (hideTimer.current) clearTimeout(hideTimer.current);
     setBurst({ id: hot.id, combo, tier, tierUp });
-    const t = setTimeout(() => setBurst((cur) => (cur?.id === hot.id ? null : cur)), reduced ? 320 : 900);
-    return () => clearTimeout(t);
+    // 총 수명 700ms(등장 180 → 유지 220 → 퇴장 300) — 절대 쌓이지 않는다.
+    hideTimer.current = setTimeout(() => setBurst(null), reduced ? 300 : 400);
   }, [fxQueue, boardId, myUserId, reduced]);
 
-  // 콤보가 끊기면 텍스트가 흔들리며 떨어진다.
+  // 콤보가 끊기면 텍스트가 흔들리며 떨어진다(역시 1개만, 타이머 정리 포함).
   useEffect(() => {
     const was = prevCombo.current;
     prevCombo.current = myCombo;
@@ -72,9 +82,9 @@ export function ComboBurst({ boardId, myUserId }: { boardId?: string; myUserId: 
     }
     lastTier.current = 0;
     if (reduced) return;
+    if (breakTimer.current) clearTimeout(breakTimer.current);
     setBroken(was);
-    const t = setTimeout(() => setBroken(null), 600);
-    return () => clearTimeout(t);
+    breakTimer.current = setTimeout(() => setBroken(null), 600);
   }, [myCombo, reduced]);
 
   const combo = burst?.combo ?? 0;
@@ -109,8 +119,8 @@ export function ComboBurst({ boardId, myUserId }: { boardId?: string; myUserId: 
               animate={reduced
                 ? { opacity: 1 }
                 : { scale: [0.6, 1.15, 1], opacity: 1, rotate: -6 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              transition={{ duration: reduced ? 0.15 : 0.45, times: reduced ? undefined : [0, 0.55, 1] }}
+              exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.3 } }}
+              transition={{ duration: reduced ? 0.12 : 0.18, times: reduced ? undefined : [0, 0.55, 1] }}
             >
               {/* 1) 진한 그림자 2) 두꺼운 흰 스트로크 3) 그라디언트 채움 */}
               <span

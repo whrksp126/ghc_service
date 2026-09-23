@@ -756,7 +756,7 @@ export function RoomPage() {
 
     // My current device — always present so its slot stays even with the camera off.
     items.push({
-      id: `self:${deviceId}`, track: localVideoTrack, label: nickname || '나',
+      id: `self:${deviceId}`, userId, track: localVideoTrack, label: nickname || '나',
       isLocal: true, isScreen: false, voiceKey: selfKey,
       controls: (
         <>
@@ -801,7 +801,7 @@ export function RoomPage() {
       }
 
       items.push({
-        id: key, track: consumer?.track ?? null, lkTrack: consumer?.lkTrack,
+        id: key, userId: uid, track: consumer?.track ?? null, lkTrack: consumer?.lkTrack,
         audioTrack: !isMine && consumer ? audioByDevice.get(key) : undefined,
         audioKey: !isMine ? key : undefined,
         hlsUrl: consumer?.hlsUrl,
@@ -824,7 +824,7 @@ export function RoomPage() {
     const items: any[] = [];
     if (localScreenTrack) {
       items.push({
-        id: 'local-screen', track: localScreenTrack, label: nickname || '나',
+        id: 'local-screen', userId, track: localScreenTrack, label: nickname || '나',
         deviceLabel: '화면 공유', isLocal: true, isScreen: true,
       });
     }
@@ -833,7 +833,7 @@ export function RoomPage() {
       const info = participantLookup.get(`${c.userId}:${c.deviceId}`);
       const isMine = c.userId === userId;
       items.push({
-        id: c.consumerId, track: c.track, lkTrack: c.lkTrack,
+        id: c.consumerId, userId: c.userId, track: c.track, lkTrack: c.lkTrack,
         label: isMine ? (nickname || '나') : (c.nickname || info?.nickname || '참가자'),
         isMuted: false, isLocal: false, isScreen: true,
         voiceKey: `${c.userId}:${c.deviceId}`,
@@ -1069,22 +1069,18 @@ export function RoomPage() {
         <RemoteAudio key={c.consumerId} track={c.track!} voiceKey={`${c.userId}:${c.deviceId}`} />
       ))}
 
-      <div className={`flex-1 min-h-0 relative ${isGamePanelOpen ? 'flex flex-col md:flex-row' : ''}`}>
-        {/* 게임 패널이 열리면 비디오는 좁은 컬럼(데스크탑)/상단 필름스트립(모바일)으로 밀리고,
-            본문은 GamePanel이 차지한다. 스포트라이트 모드는 게임 중엔 무시(그리드로 고정). */}
-        <div
-          className={
-            isGamePanelOpen
-              ? 'order-1 shrink-0 h-20 w-full overflow-x-auto overflow-y-hidden md:order-2 md:h-auto md:w-[280px] md:overflow-hidden border-b border-white/5 md:border-b-0 md:border-l'
-              : 'w-full h-full'
-          }
-        >
+      <div className="flex-1 min-h-0 relative">
+        {/* 게임 패널이 열려 있는 동안에는 비디오 컬럼을 **전혀 렌더하지 않는다**(v4 §X3).
+            카메라는 전부 게임 패널 안(프로필 카드 + 관전자 스트립)에서만 보인다 — 같은 트랙을
+            두 번 attach 하지 않기 위해서도 필요하다. */}
+        {!isGamePanelOpen && (
+        <div className="w-full h-full">
           {allFeeds.length > 0 ? (
             <LayoutGroup>
-              {(layoutMode === 'grid' || isGamePanelOpen) && (
+              {layoutMode === 'grid' && (
                 <GridLayout feeds={allFeeds} onFeedClick={focusFeed} onPip={togglePip} />
               )}
-              {layoutMode === 'spotlight' && !isGamePanelOpen && (
+              {layoutMode === 'spotlight' && (
                 <SpotlightLayout
                   feeds={allFeeds}
                   spotlightId={spotlightProducerId}
@@ -1097,19 +1093,16 @@ export function RoomPage() {
           ) : (
             <div className="w-full h-full flex flex-col items-center justify-center text-white/30 gap-2 px-6 text-center">
               <Users size={40} strokeWidth={1.5} />
-              {!isGamePanelOpen && (
-                <>
-                  <p className="text-sm">카메라를 켜면 여기에 표시됩니다</p>
-                  <p className="text-xs text-white/20">타일을 한 번 누르면 설정, 두 번 누르면 크게 보기</p>
-                </>
-              )}
+              <p className="text-sm">카메라를 켜면 여기에 표시됩니다</p>
+              <p className="text-xs text-white/20">타일을 한 번 누르면 설정, 두 번 누르면 크게 보기</p>
             </div>
           )}
         </div>
+        )}
 
         {isGamePanelOpen && (
-          <div className="order-2 min-h-0 min-w-0 flex-1 p-2 md:order-1">
-            <GamePanel />
+          <div className="absolute inset-0 p-2">
+            <GamePanel feeds={allFeeds} />
           </div>
         )}
       </div>

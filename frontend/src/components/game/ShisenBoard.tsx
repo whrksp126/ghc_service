@@ -22,7 +22,7 @@ export const BOARD_GAP = 4;
 
 interface ShisenBoardProps {
   board: Board;
-  /** 이 보드의 주인(쟁탈전은 undefined). 헤더는 PlayerHeader가 따로 그린다. */
+  /** (v4) 보드 위 헤더는 좌측 프로필 컬럼으로 옮겨져 더 이상 쓰지 않는다. */
   player?: PlayerState;
   /** 내가 클릭할 수 있는 판인지 */
   interactive: boolean;
@@ -191,10 +191,8 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
   // 공개/해제 뒤집기: 자물쇠 해제는 순차(60ms 간격)로 넘어간다.
   const flips = useMemo(() => {
     const out: Record<number, { key: number; delay: number }> = {};
-    fx.filter((f) => f.type === 'reveal' || f.type === 'unlock').forEach((f) => {
-      (f.cells ?? []).forEach((c, i) => {
-        out[c] = { key: f.id, delay: f.type === 'unlock' ? i * 60 : 0 };
-      });
+    fx.filter((f) => f.type === 'unlock').forEach((f) => {
+      (f.cells ?? []).forEach((c, i) => { out[c] = { key: f.id, delay: i * 60 }; });
     });
     return out;
   }, [fx]);
@@ -213,7 +211,7 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
   }, [peek]);
 
   const oneShotKey = fx
-    .filter((f) => ['invalid', 'shuffle', 'flash', 'reveal', 'unlock'].includes(f.type))
+    .filter((f) => ['invalid', 'shuffle', 'flash', 'unlock'].includes(f.type))
     .map((f) => f.id)
     .join(',');
   useEffect(() => {
@@ -259,6 +257,7 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
         const ack = await emitWithAck<PeekAck>('game:peek', { idx });
         if (ack.ok) {
           playGameSound('reveal');
+          // 뒤집기 연출은 peekAnim이 담당한다(fx 큐에 남기지 않는다 — v4에서 영구 공개는 없음).
           useGameStore.getState().setPeek({ idx, symbol: ack.symbol });
           useGameStore.getState().setSelected(idx);
           emitSelect(idx);
@@ -444,8 +443,8 @@ export function ShisenBoard({ board, interactive, cellPx }: ShisenBoardProps) {
         );
       })}
 
-      {/* 제거 고스트 + 파티클 */}
-      {fx.filter((f) => f.type === 'pop').map((f) => (
+      {/* 제거 고스트 + 파티클 (+점수 텍스트는 최신 4개까지만) */}
+      {fx.filter((f) => f.type === 'pop').slice(-4).map((f) => (
         <PopGhosts key={f.id} fx={f} cols={board.cols} box={box} step={step} size={cellPx} reduced={reduced} />
       ))}
 
@@ -537,7 +536,7 @@ function PopGhosts({
 }: { fx: FxEvent; cols: number; box: BoardBox; step: number; size: number; reduced: boolean }) {
   const consumeFx = useGameStore((s) => s.consumeFx);
   useEffect(() => {
-    const t = setTimeout(() => consumeFx(fx.id), reduced ? 180 : 760);
+    const t = setTimeout(() => consumeFx(fx.id), reduced ? 180 : 620);
     return () => clearTimeout(t);
   }, [fx.id, consumeFx, reduced]);
 
@@ -568,7 +567,7 @@ function PopGhosts({
           }}
           initial={{ opacity: 0, y: 0, scale: 0.8 }}
           animate={{ opacity: [0, 1, 1, 0], y: reduced ? -12 : -40, scale: 1 }}
-          transition={{ duration: reduced ? 0.25 : 0.7, times: [0, 0.15, 0.7, 1] }}
+          transition={{ duration: reduced ? 0.25 : 0.6, times: [0, 0.15, 0.7, 1] }}
         >
           +{fx.points}
         </motion.span>
