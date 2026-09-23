@@ -18,7 +18,7 @@ interface Pack {
 
 const PACKS: Pack[] = [
   { id: 'shisen', name: '사천성', desc: '같은 그림 두 개를 이어서 지우기', icon: Grid3x3, ready: true },
-  { id: 'tetris', name: '테트리스', desc: '준비 중', icon: Blocks, ready: false },
+  { id: 'tetris', name: '테트리스', desc: '블록을 쌓아 줄을 지우고 상대에게 보내기', icon: Blocks, ready: true },
   { id: 'soon1', name: '곧 추가', desc: '다음 게임을 준비하고 있어요', icon: Gamepad2, ready: false },
 ];
 

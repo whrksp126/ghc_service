@@ -19,7 +19,21 @@ export type GameSoundName =
   | 'go'
   | 'win'
   | 'lose'
-  | 'finish';
+  | 'finish'
+  // --- 테트리스 (설계서 §T6.2). 톤: 테트리스=시안(밝은 벨), T스핀=보라(저음+벨), KO=하강 글리산도 ---
+  | 'move'
+  | 'rotate'
+  | 'lock'
+  | 'harddrop'
+  | 'clear1'
+  | 'clear2'
+  | 'clear3'
+  | 'tetris'
+  | 'tspin'
+  | 'b2b'
+  | 'garbageIn'
+  | 'levelUp'
+  | 'ko';
 
 const MASTER = 0.35;
 
@@ -225,6 +239,75 @@ export function playGameSound(name: GameSoundName, opts?: { combo?: number; gain
 
     case 'finish':
       [523.25, 659.25, 783.99, 1046.5, 1318.51].forEach((f, i) => note(bus, c, f, i * 0.08, 0.4, 0.34, 'glass'));
+      break;
+
+    // ---------------------------------------------------------------- 테트리스
+    // 이동/회전은 **초당 수십 번** 울릴 수 있다 → 아주 짧고 작게. 안 그러면 귀가 아프다.
+    case 'move':
+      knock(bus, c, 0, pick([520, 560]), 0.14, 0.028);
+      break;
+
+    case 'rotate':
+      knock(bus, c, 0, 760, 0.16, 0.035);
+      note(bus, c, 1046.5, 0, 0.06, 0.12, 'marimba');
+      break;
+
+    case 'lock':
+      knock(bus, c, 0, 300, 0.26, 0.05);
+      break;
+
+    case 'harddrop':
+      noiseBurst(bus, c, 0.11, 0.2);
+      note(bus, c, 98, 0, 0.18, 0.34, 'marimba');
+      break;
+
+    case 'clear1':
+      note(bus, c, 659.25, 0, 0.2, 0.32, 'glass');
+      break;
+
+    case 'clear2':
+      note(bus, c, 659.25, 0, 0.22, 0.32, 'glass');
+      note(bus, c, 783.99, 0.055, 0.24, 0.3, 'glass');
+      break;
+
+    case 'clear3':
+      [659.25, 783.99, 987.77].forEach((f, i) => note(bus, c, f, i * 0.055, 0.26, 0.32, 'glass'));
+      break;
+
+    case 'tetris':
+      // 시안 톤 = 밝은 벨 아르페지오 + 반짝임. 4줄은 이 게임에서 가장 기분 좋은 순간이다.
+      [783.99, 1046.5, 1318.51, 1567.98].forEach((f, i) => note(bus, c, f, i * 0.045, 0.5, 0.4, 'bell'));
+      sparkle(bus, c, 0.18);
+      break;
+
+    case 'tspin':
+      // 보라 톤 = 저음 한 방 + 그 위에 벨 두 음
+      note(bus, c, 146.83, 0, 0.34, 0.4, 'marimba');
+      note(bus, c, 466.16, 0.05, 0.4, 0.3, 'bell');
+      note(bus, c, 622.25, 0.11, 0.44, 0.26, 'bell');
+      break;
+
+    case 'b2b':
+      note(bus, c, 1174.66, 0, 0.22, 0.2, 'glass');
+      note(bus, c, 1760, 0.06, 0.26, 0.18, 'glass');
+      break;
+
+    case 'garbageIn':
+      // 아래에서 밀려 올라오는 느낌 — 둔탁한 노이즈 + 상승 저음
+      noiseBurst(bus, c, 0.22, 0.26);
+      note(bus, c, 110, 0, 0.26, 0.3, 'marimba');
+      note(bus, c, 146.83, 0.09, 0.26, 0.24, 'marimba');
+      break;
+
+    case 'levelUp':
+      [659.25, 830.61, 1046.5].forEach((f, i) => note(bus, c, f, i * 0.06, 0.34, 0.32, 'bell'));
+      break;
+
+    case 'ko':
+      // 하강 글리산도 — "무너졌다"
+      Array.from({ length: 12 }).forEach((_, i) => {
+        note(bus, c, 622.25 * Math.pow(2, -i / 12), i * 0.035, 0.22, 0.26, 'marimba');
+      });
       break;
   }
 }

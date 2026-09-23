@@ -1,11 +1,13 @@
 import { useEffect, useRef } from 'react';
 import { getSocket, emitWithAck } from '../lib/socket';
 import { useGameStore } from '../stores/gameStore';
+import { useTetrisStore } from '../stores/tetrisStore';
 import { useAuthStore } from '../stores/authStore';
 import { showToast } from '../components/common/Toast';
 import { playGameSound } from '../games/sounds';
 import { keyTypeOfEvent } from '../games/v3';
-import type { GameSnapshot } from '../games/types';
+import type { GameId, GameSnapshot } from '../games/types';
+import { TETRIS_MODE_LABEL } from '../games/tetris/types';
 import type {
   AttackEvent, MatchedEvent, PeerSelectEvent, ShuffledEvent, TilesEvent,
 } from '../games/events';
@@ -15,6 +17,39 @@ import type {
  * 새로고침 복구(`game:sync`)와 브로드캐스트(`game:state`)가 **같은 규칙**을 써야
  * "진행 중인 판인데 패널이 안 열림" 같은 차이가 생기지 않는다.
  */
+/** 팩 이름 — 로그/토스트가 같은 규칙을 쓰도록. */
+const GAME_LABEL: Record<GameId, string> = { shisen: '사천성', tetris: '테트리스' };
+
+/** 사천성 전용 설정 diff. `options.*` 는 테트리스 방에서 의미가 없다(§T2). */
+function logShisenOptions(prev: GameSnapshot, next: GameSnapshot, push: (t: string) => void): void {
+  if (prev.mode !== next.mode) push(`대전 방식이 ${next.mode === 'coop' ? '쟁탈전' : '레이스'}(으)로 바뀌었어요`);
+  const a = prev.options; const b = next.options;
+  if (!a || !b) return;
+  if (a.boardSize !== b.boardSize || a.mapShape !== b.mapShape) push('맵 설정이 바뀌었어요');
+  if (a.difficulty !== b.difficulty) push(`난이도가 ${b.difficulty}로 바뀌었어요`);
+  if (JSON.stringify(a.specials) !== JSON.stringify(b.specials)) push('특수 타일 설정이 바뀌었어요');
+  if (a.timeLimitSec !== b.timeLimitSec || a.items !== b.items) push('경기 옵션이 바뀌었어요');
+}
+
+/** 테트리스 설정 diff (설계서 §T7 항목). */
+function logTetrisOptions(prev: GameSnapshot, next: GameSnapshot, push: (t: string) => void): void {
+  const a = prev.tetris; const b = next.tetris;
+  if (!b) return;
+  if (!a) { push(`테트리스 설정: ${TETRIS_MODE_LABEL[b.mode]}`); return; }
+  if (a.mode !== b.mode) push(`대전 방식이 ${TETRIS_MODE_LABEL[b.mode]}(으)로 바뀌었어요`);
+  if (a.sprintLines !== b.sprintLines) push(`목표 줄 수가 ${b.sprintLines}줄로 바뀌었어요`);
+  if (a.startLevel !== b.startLevel) push(`시작 레벨이 ${b.startLevel}로 바뀌었어요`);
+  if (a.levelUpLines !== b.levelUpLines) {
+    push(b.levelUpLines === 0 ? '레벨이 고정으로 바뀌었어요' : `레벨업이 ${b.levelUpLines}줄마다로 바뀌었어요`);
+  }
+  if (a.garbageMul !== b.garbageMul) push(`공격량 배수가 ×${b.garbageMul}로 바뀌었어요`);
+  if (a.riseSec !== b.riseSec) push(b.riseSec === 0 ? '바닥 상승이 꺼졌어요' : `바닥 상승이 ${b.riseSec}초마다로 바뀌었어요`);
+  if (a.hold !== b.hold) push(`홀드가 ${b.hold ? '켜졌어요' : '꺼졌어요'}`);
+  if (a.ghost !== b.ghost) push(`그림자가 ${b.ghost ? '켜졌어요' : '꺼졌어요'}`);
+  if (a.nextCount !== b.nextCount) push(`다음 조각이 ${b.nextCount}개로 바뀌었어요`);
+  if (a.timeLimitSec !== b.timeLimitSec) push('경기 옵션이 바뀌었어요');
+}
+
 /** 스냅샷 차이로 방 로그를 만든다 (v3 §W3 — 서버 이벤트 없이 클라가 생성). */
 function logDiff(prev: GameSnapshot | null, next: GameSnapshot): void {
   const push = useGameStore.getState().pushLog;
@@ -29,12 +64,10 @@ function logDiff(prev: GameSnapshot | null, next: GameSnapshot): void {
     const host = next.players.find((p) => p.userId === next.hostUserId);
     push(`${host?.nickname ?? '새 방장'}님이 방장이 되었어요`);
   }
-  if (prev.mode !== next.mode) push(`대전 방식이 ${next.mode === 'coop' ? '쟁탈전' : '레이스'}(으)로 바뀌었어요`);
-  const a = prev.options; const b = next.options;
-  if (a.boardSize !== b.boardSize || a.mapShape !== b.mapShape) push('맵 설정이 바뀌었어요');
-  if (a.difficulty !== b.difficulty) push(`난이도가 ${b.difficulty}로 바뀌었어요`);
-  if (JSON.stringify(a.specials) !== JSON.stringify(b.specials)) push('특수 타일 설정이 바뀌었어요');
-  if (a.timeLimitSec !== b.timeLimitSec || a.items !== b.items) push('경기 옵션이 바뀌었어요');
+  if (prev.gameId !== next.gameId) push(`${GAME_LABEL[next.gameId] ?? '새 게임'}(으)로 바뀌었어요`);
+  // 팩마다 설정 모양이 완전히 다르다 → gameId 로 갈라야 테트리스 방에서 `options.*` 를 읽다 터지지 않는다.
+  if (next.gameId === 'tetris') logTetrisOptions(prev, next, push);
+  else logShisenOptions(prev, next, push);
   if (prev.phase !== next.phase && next.phase === 'countdown') push('게임을 시작합니다!');
   if (prev.phase !== next.phase && next.phase === 'finished') push('게임이 끝났어요');
 }
@@ -84,6 +117,7 @@ export function useGameSocket(active: boolean) {
       if (!next) {
         if (prev) {
           store.getState().reset();
+          useTetrisStore.getState().reset();
           store.getState().closePanel();
           showToast('게임이 종료되었습니다', 'info');
         }
@@ -97,7 +131,7 @@ export function useGameSocket(active: boolean) {
         notifiedRef.current = key;
         if (!store.getState().isPanelOpen) {
           const host = next.players.find((p) => p.userId === next.hostUserId);
-          showToast(`🎮 ${host?.nickname ?? '누군가'}님이 사천성 방을 열었어요`, 'info');
+          showToast(`🎮 ${host?.nickname ?? '누군가'}님이 ${GAME_LABEL[next.gameId] ?? '게임'} 방을 열었어요`, 'info');
         }
       }
     };
@@ -159,6 +193,7 @@ export function useGameSocket(active: boolean) {
   useEffect(() => {
     if (active) return;
     useGameStore.getState().reset();
+    useTetrisStore.getState().reset();
     useGameStore.getState().closePanel();
   }, [active]);
 }

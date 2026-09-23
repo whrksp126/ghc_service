@@ -6,11 +6,14 @@ import { Button } from '../common/Button';
 import { useAuthStore } from '../../stores/authStore';
 import { useUIStore } from '../../stores/uiStore';
 import { ShisenSettings } from './ShisenSettings';
+import { TetrisSettings } from './TetrisSettings';
 import { MapGuide } from './MapGuide';
+import { TetrisGuide } from './TetrisGuide';
 import { RoomLog } from './RoomLog';
 import { Scoreboard } from './Scoreboard';
 import { ProfileVideo, type GameFeed } from './ProfileVideo';
 import { MAX_PLAYERS, type GameMode, type GameOptions, type GameSnapshot } from '../../games/types';
+import { DEFAULT_TETRIS_OPTIONS, type TetrisOptions } from '../../games/tetris/types';
 
 /**
  * 사천성 방(로비) — 넷마블식 3컬럼 (v3 §W3).
@@ -40,6 +43,11 @@ export function GameLobby({ snapshot, feeds = [] }: { snapshot: GameSnapshot; fe
 
   // options는 서버에서 부분 병합된다.
   const patchOptions = (patch: Partial<GameOptions>) => call('game:updateOptions', { options: patch });
+  // 테트리스 설정은 별도 키로 올라간다(설계서 §T3 — `{ gameId:'tetris', tetris: patch }`).
+  const patchTetris = (patch: Partial<TetrisOptions>) =>
+    call('game:updateOptions', { gameId: 'tetris', tetris: patch });
+  const isTetris = snapshot.gameId === 'tetris';
+  const tetrisOptions = snapshot.tetris ?? DEFAULT_TETRIS_OPTIONS.versus;
   const winsOf = (userId: string) => snapshot.scoreboard.find((r) => r.userId === userId);
   /** 아레나 프로필 카드와 **같은 규칙**으로 그 사람의 첫 카메라 피드를 고른다(attach 1회 보장). */
   const feedFor = (userId: string) => feeds.find((f) => f.userId === userId && !f.isScreen);
@@ -127,24 +135,37 @@ export function GameLobby({ snapshot, feeds = [] }: { snapshot: GameSnapshot; fe
           )}
         </div>
 
-        {/* 중: 설정 */}
+        {/* 중: 설정 — 팩에 따라 패널만 갈아 끼운다(좌측 카메라/관전자/로그는 공용) */}
         <div className="min-w-0 flex-1">
-          <ShisenSettings
-            mode={snapshot.mode}
-            options={snapshot.options}
-            seed={snapshot.seed}
-            canEdit={isHost}
-            busy={busy}
-            canStart={isHost && snapshot.players.length >= 1}
-            onMode={(mode: GameMode) => call('game:updateOptions', { mode })}
-            onOptions={patchOptions}
-            onStart={() => call('game:start')}
-          />
+          {isTetris ? (
+            <TetrisSettings
+              options={tetrisOptions}
+              canEdit={isHost}
+              busy={busy}
+              canStart={isHost && snapshot.players.length >= 1}
+              onOptions={patchTetris}
+              onStart={() => call('game:start')}
+            />
+          ) : (
+            <ShisenSettings
+              mode={snapshot.mode}
+              options={snapshot.options}
+              seed={snapshot.seed}
+              canEdit={isHost}
+              busy={busy}
+              canStart={isHost && snapshot.players.length >= 1}
+              onMode={(mode: GameMode) => call('game:updateOptions', { mode })}
+              onOptions={patchOptions}
+              onStart={() => call('game:start')}
+            />
+          )}
         </div>
 
-        {/* 우: 맵 가이드 */}
+        {/* 우: 가이드 */}
         <div className="shrink-0 lg:w-[220px]">
-          <MapGuide options={snapshot.options} seed={snapshot.seed} />
+          {isTetris
+            ? <TetrisGuide options={tetrisOptions} />
+            : <MapGuide options={snapshot.options} seed={snapshot.seed} />}
         </div>
       </div>
 

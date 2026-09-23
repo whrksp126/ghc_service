@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { JwtPayload } from '../middleware/auth';
 import { Room } from '../models';
 import { gameManager, GameActor, StateResult } from './gameManager';
+import { TETRIS_LIMITS } from './tetris/types';
 
 export interface GameHandlerContext {
   /** 현재 소켓이 들어가 있는 방 슬러그(없으면 null) */
@@ -41,18 +42,68 @@ const optionsSchema = z
   })
   .partial();
 
+// 테트리스 설정 (docs/games/tetris-design.md T2). 범위를 벗어나면 에러 대신 잘라서 받는다 —
+// 목록형(줄 수·배수 등)은 gameManager.mergeTetris 가 허용값으로 스냅한다.
+const clampNum = (min: number, max: number) =>
+  z.number().transform((v) => Math.max(min, Math.min(max, v)));
+const tetrisSchema = z
+  .object({
+    mode: z.enum(['versus', 'sprint', 'survival']),
+    sprintLines: clampNum(TETRIS_LIMITS.sprintLines[0], TETRIS_LIMITS.sprintLines[TETRIS_LIMITS.sprintLines.length - 1]),
+    startLevel: clampNum(TETRIS_LIMITS.startLevel.min, TETRIS_LIMITS.startLevel.max),
+    levelUpLines: clampNum(0, TETRIS_LIMITS.levelUpLines[TETRIS_LIMITS.levelUpLines.length - 1]),
+    hold: z.boolean(),
+    ghost: z.boolean(),
+    nextCount: clampNum(TETRIS_LIMITS.nextCount.min, TETRIS_LIMITS.nextCount.max),
+    garbageMul: clampNum(0, TETRIS_LIMITS.garbageMul[TETRIS_LIMITS.garbageMul.length - 1]),
+    riseSec: clampNum(0, TETRIS_LIMITS.riseSec[TETRIS_LIMITS.riseSec.length - 1]),
+    timeLimitSec: z.number().int().min(0).max(3600),
+  })
+  .partial();
+
 // v2: gameId·mode·options 전부 optional(기본 shisen/race/DEFAULT_OPTIONS.race).
-// gameId는 문자열로 받아서 따로 검사한다 — 'tetris'는 "준비 중"이라고 답해야 하므로.
 const createSchema = z.object({
-  gameId: z.string().optional(),
+  gameId: z.enum(['shisen', 'tetris']).optional(),
   mode: z.enum(['race', 'coop']).optional(),
   options: optionsSchema.optional(),
+  tetris: tetrisSchema.optional(),
 });
 
 const updateOptionsSchema = z.object({
-  gameId: z.string().optional(),
+  gameId: z.enum(['shisen', 'tetris']).optional(),
   mode: z.enum(['race', 'coop']).optional(),
   options: optionsSchema.optional(),
+  tetris: tetrisSchema.optional(),
+});
+
+// --- 테트리스 실시간 (T3) ---
+// cells 는 보이는 20행(200칸)만. 값 = 0 | 1..8 | 9(그림자) | 10+pieceId(현재 조각)
+const tetrisFrameSchema = z.object({
+  cells: z.array(z.number().int().min(0).max(20)).length(200),
+  lines: z.number().int().min(0).max(100000),
+  score: z.number().int().min(0).max(1_000_000_000),
+  level: z.number().int().min(1).max(99),
+  combo: z.number().int().min(0).max(9999),
+  b2b: z.number().int().min(0).max(9999),
+  hold: z.number().int().min(0).max(7),
+  next: z.array(z.number().int().min(1).max(7)).max(8),
+  pending: z.number().int().min(0).max(999),
+  alive: z.boolean(),
+  ko: z.number().int().min(0).max(99),
+  t: z.number(),
+});
+
+const tetrisClearSchema = z.object({
+  kind: z.enum(['single', 'double', 'triple', 'tetris', 'tsm', 'tss', 'tsd', 'tst']),
+  lines: z.number().int().min(1).max(4),
+  combo: z.number().int().min(0).max(9999),
+  b2b: z.boolean(),
+  perfect: z.boolean(),
+});
+
+const tetrisFinishSchema = z.object({
+  timeMs: z.number().int().min(0).max(24 * 3600 * 1000),
+  lines: z.number().int().min(0).max(100000),
 });
 
 const peekSchema = z.object({ idx: z.number().int().min(0).max(4095) });
@@ -68,7 +119,6 @@ const selectSchema = z.object({
 
 const NOT_IN_ROOM = '방에 먼저 입장하세요';
 const BAD_PAYLOAD = '잘못된 요청입니다';
-const NOT_READY_GAME = '아직 준비 중인 게임이에요';
 
 type Ack = ((res: unknown) => void) | undefined;
 
@@ -121,9 +171,7 @@ export function registerGameHandlers(io: Server, socket: Socket, ctx: GameHandle
     withRoom((slug) => {
       const parsed = createSchema.safeParse(payload ?? {});
       if (!parsed.success) return callback?.({ error: BAD_PAYLOAD });
-      const { gameId, ...rest } = parsed.data;
-      if (gameId && gameId !== 'shisen') return callback?.({ error: NOT_READY_GAME });
-      ackState(callback)(gameManager.create(slug, actor, { ...rest, gameId: 'shisen' }));
+      ackState(callback)(gameManager.create(slug, actor, parsed.data));
     }, callback);
   });
 
@@ -139,11 +187,7 @@ export function registerGameHandlers(io: Server, socket: Socket, ctx: GameHandle
     withRoom((slug) => {
       const parsed = updateOptionsSchema.safeParse(payload ?? {});
       if (!parsed.success) return callback?.({ error: BAD_PAYLOAD });
-      const { gameId, ...rest } = parsed.data;
-      if (gameId && gameId !== 'shisen') return callback?.({ error: NOT_READY_GAME });
-      ackState(callback)(
-        gameManager.updateOptions(slug, actor, { ...rest, ...(gameId ? { gameId: 'shisen' as const } : {}) })
-      );
+      ackState(callback)(gameManager.updateOptions(slug, actor, parsed.data));
     }, callback);
   });
 
@@ -156,7 +200,8 @@ export function registerGameHandlers(io: Server, socket: Socket, ctx: GameHandle
       (slug) => {
         const parsed = pickSchema.safeParse(payload);
         if (!parsed.success) return callback?.({ ok: false, reason: 'gone' });
-        callback?.(gameManager.pick(slug, actor, parsed.data.a, parsed.data.b));
+        const res = gameManager.pick(slug, actor, parsed.data.a, parsed.data.b);
+        callback?.(res);
       },
       callback,
       { ok: false, reason: 'phase' }
@@ -178,7 +223,8 @@ export function registerGameHandlers(io: Server, socket: Socket, ctx: GameHandle
       (slug) => {
         const parsed = peekSchema.safeParse(payload);
         if (!parsed.success) return callback?.({ ok: false, reason: 'gone' });
-        callback?.(gameManager.peek(slug, actor, parsed.data.idx));
+        const res = gameManager.peek(slug, actor, parsed.data.idx);
+        callback?.(res);
       },
       callback,
       { ok: false, reason: 'phase' }
@@ -187,14 +233,14 @@ export function registerGameHandlers(io: Server, socket: Socket, ctx: GameHandle
 
   // F2 재배치 / F3 여의봉
   socket.on('game:shuffle', (_payload: unknown, callback: Ack) => {
-    withRoom((slug) => callback?.(gameManager.useShuffle(slug, actor)), callback, {
+    withRoom((slug) => { const res = gameManager.useShuffle(slug, actor); callback?.(res); }, callback, {
       ok: false,
       reason: 'phase',
     });
   });
 
   socket.on('game:wand', (_payload: unknown, callback: Ack) => {
-    withRoom((slug) => callback?.(gameManager.useWand(slug, actor)), callback, {
+    withRoom((slug) => { const res = gameManager.useWand(slug, actor); callback?.(res); }, callback, {
       ok: false,
       reason: 'phase',
     });
@@ -202,9 +248,53 @@ export function registerGameHandlers(io: Server, socket: Socket, ctx: GameHandle
 
   socket.on('game:hint', (_payload: unknown, callback: Ack) => {
     withRoom(
-      (slug) => callback?.(gameManager.hint(slug, actor)),
+      (slug) => { const res = gameManager.hint(slug, actor); callback?.(res); },
       callback,
       { ok: false, reason: 'none' }
+    );
+  });
+
+  // --- 테트리스 (T3). 게임이 테트리스가 아니면 gameManager 가 조용히 무시한다. ---
+
+  // ack 없음. 8Hz 릴레이는 서버 타이머가 한다.
+  socket.on('tetris:frame', (payload: unknown) => {
+    const slug = ctx.getRoomSlug();
+    if (!slug) return;
+    const parsed = tetrisFrameSchema.safeParse(payload);
+    if (!parsed.success) return;
+    gameManager.tetrisFrame(slug, actor, parsed.data);
+  });
+
+  socket.on('tetris:clear', (payload: unknown, callback: Ack) => {
+    withRoom(
+      (slug) => {
+        const parsed = tetrisClearSchema.safeParse(payload);
+        if (!parsed.success) return callback?.({ ok: false, reason: 'bad payload' });
+        const res = gameManager.tetrisClear(slug, actor, parsed.data);
+        callback?.(res);
+      },
+      callback,
+      { ok: false, reason: 'phase' }
+    );
+  });
+
+  socket.on('tetris:topout', (_payload: unknown, callback: Ack) => {
+    withRoom((slug) => { const res = gameManager.tetrisTopout(slug, actor); callback?.(res); }, callback, {
+      ok: false,
+      reason: 'phase',
+    });
+  });
+
+  socket.on('tetris:finish', (payload: unknown, callback: Ack) => {
+    withRoom(
+      (slug) => {
+        const parsed = tetrisFinishSchema.safeParse(payload);
+        if (!parsed.success) return callback?.({ ok: false, reason: 'bad payload' });
+        const res = gameManager.tetrisFinish(slug, actor, parsed.data.timeMs, parsed.data.lines);
+        callback?.(res);
+      },
+      callback,
+      { ok: false, reason: 'phase' }
     );
   });
 
@@ -218,7 +308,8 @@ export function registerGameHandlers(io: Server, socket: Socket, ctx: GameHandle
     try {
       // 게임 개설자가 아니어도 방장이면 닫을 수 있다.
       const room = await Room.findOne({ where: { slug, owner_id: user.userId }, attributes: ['id'] });
-      callback?.(gameManager.close(slug, actor, !!room));
+      const res = gameManager.close(slug, actor, !!room);
+      callback?.(res);
     } catch (err: any) {
       console.error(`[game] close error in room ${slug}:`, err?.message || err);
       callback?.({ error: err?.message || 'game error' });

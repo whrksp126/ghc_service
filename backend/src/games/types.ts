@@ -1,7 +1,9 @@
 // KEEP IN SYNC with ghc_service/frontend/src/games/types.ts
 // 방 안 미니게임 공유 계약 (docs/games/shisen-design.md §2 + v2 §V2). 내용을 바꾸려면 설계서를 먼저 고친다.
 
-export type GameId = 'shisen';                      // 추후 'tetris'
+import type { TetrisOptions } from './tetris/types';
+
+export type GameId = 'shisen' | 'tetris';
 export type GameMode = 'race' | 'coop';
 export type BoardSize = 's' | 'm' | 'l';
 export type GamePhase = 'lobby' | 'countdown' | 'playing' | 'finished';
@@ -77,6 +79,10 @@ export interface PlayerState {
   boardId: string;
   score: number; combo: number; maxCombo: number;
   pairsCleared: number;
+  /** 테트리스: 지운 줄 수 (사천성은 0) */
+  lines: number;
+  /** 테트리스 대전: 내가 떨어뜨린 사람 수 (사천성은 0) */
+  ko: number;
   lastMatchAt: number;   // ms epoch, 0 = 없음
   items: PlayerItems;    // 남은 소모품 (힌트/재배치/여의봉)
   finishedAt: number | null;   // race 완주 시각
@@ -97,8 +103,10 @@ export interface GameSnapshot {
   phase: GamePhase;
   hostUserId: string;
   mode: GameMode;
-  options: GameOptions;
-  seed: number;
+  options: GameOptions;            // 사천성 설정 (gameId==='tetris' 면 무시)
+  /** 테트리스 설정 — gameId==='tetris' 일 때만 non-null */
+  tetris: TetrisOptions | null;
+  seed: number;                   // 테트리스에서는 7-bag 시드로도 쓴다
   startAt: number | null;      // countdown 시작 시 = now + COUNTDOWN_MS. playing 시작 시각
   endedAt: number | null;
   players: PlayerState[];      // 참가 순서

@@ -10,8 +10,12 @@ import { initGameAudio } from '../../games/sounds';
 import { GameLobby } from './GameLobby';
 import { PackSelect } from './PackSelect';
 import { ShisenArena } from './ShisenArena';
+import { TetrisArena } from './TetrisArena';
 import { ProfileVideo, type GameFeed } from './ProfileVideo';
-import { MAX_PLAYERS, type GameSnapshot } from '../../games/types';
+import { MAX_PLAYERS, type GameId, type GameSnapshot } from '../../games/types';
+
+/** 팩 이름 — 헤더/안내 카드가 같은 규칙을 쓰도록 한 곳에서만 정의한다. */
+const GAME_LABEL: Record<GameId, string> = { shisen: '사천성', tetris: '테트리스' };
 
 /** 게임 방이 없을 때 — 버튼 하나로 만든다(만든 사람이 방장). */
 function GameIdle({ snapshot }: { snapshot: GameSnapshot | null }) {
@@ -56,7 +60,7 @@ function GameIdle({ snapshot }: { snapshot: GameSnapshot | null }) {
           {host?.nickname ?? '누군가'}님의 게임 방
         </p>
         <p className="mt-1 text-xs text-white/45">
-          사천성 · 플레이어 {snapshot.players.length}/{MAX_PLAYERS} · {inLobby ? '대기 중' : '진행 중'}
+          {GAME_LABEL[snapshot.gameId] ?? '게임'} · 플레이어 {snapshot.players.length}/{MAX_PLAYERS} · {inLobby ? '대기 중' : '진행 중'}
         </p>
         <div className="mt-3 flex gap-2">
           {inLobby && (
@@ -134,7 +138,9 @@ export function GamePanel({ feeds = [] }: { feeds?: GameFeed[] }) {
     >
       <div className="flex shrink-0 items-center gap-2 border-b border-white/5 px-3 py-2">
         <Gamepad2 size={16} className="text-primary" />
-        <span className="text-sm font-semibold">사천성</span>
+        <span className="text-sm font-semibold">
+          {snapshot ? GAME_LABEL[snapshot.gameId] ?? '게임 방' : '게임 방'}
+        </span>
         <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] text-white/50">
           {phaseLabel(snapshot)}
         </span>
@@ -164,6 +170,8 @@ export function GamePanel({ feeds = [] }: { feeds?: GameFeed[] }) {
           <PackSelect isHost={snapshot.hostUserId === myUserId} snapshot={snapshot} feeds={feeds} />
         ) : snapshot.phase === 'lobby' ? (
           <GameLobby snapshot={snapshot} feeds={feeds} />
+        ) : snapshot.gameId === 'tetris' ? (
+          <TetrisArena snapshot={snapshot} feeds={feeds} />
         ) : (
           <ShisenArena snapshot={snapshot} feeds={feeds} />
         )}

@@ -53,6 +53,16 @@ import {
   pickShape,
   shuffleNormals,
 } from './shisen/engine';
+import {
+  DEFAULT_TETRIS_OPTIONS,
+  TETRIS_LIMITS,
+  TetrisAck,
+  TetrisClearMsg,
+  TetrisFrame,
+  TetrisMode,
+  TetrisOptions,
+} from './tetris/types';
+import * as tetris from './tetris/manager';
 
 export type Broadcast = (roomSlug: string, event: string, payload: unknown) => void;
 
@@ -109,6 +119,10 @@ interface RoomGame {
   hostUserId: string;
   mode: GameMode;
   options: GameOptions;
+  /** 테트리스 설정 — gameId==='tetris' 일 때만 non-null */
+  tetris: TetrisOptions | null;
+  /** 테트리스 진행 상태(시작할 때 만들고 끝나면 타이머만 끈다) */
+  tetrisRun: tetris.TetrisRuntime | null;
   seed: number;
   startAt: number | null;
   endedAt: number | null;
@@ -160,6 +174,8 @@ function makePlayer(game: RoomGame, actor: GameActor): InternalPlayer {
     combo: 0,
     maxCombo: 0,
     pairsCleared: 0,
+    lines: 0,
+    ko: 0,
     lastMatchAt: 0,
     items: { ...(game.mode === 'coop' ? game.sharedItems : game.options.tools) },
     finishedAt: null,
@@ -170,6 +186,21 @@ function makePlayer(game: RoomGame, actor: GameActor): InternalPlayer {
   };
 }
 
+/** 테트리스 런타임 값을 공용 PlayerState 에 옮긴다(스냅샷/등수/결과가 전부 이걸 본다). */
+function syncTetrisPlayers(game: RoomGame): void {
+  const rt = game.tetrisRun;
+  if (!rt) return;
+  for (const p of game.players.values()) {
+    const tp = rt.players.get(p.userId);
+    if (!tp) continue;
+    p.lines = tp.lines;
+    p.ko = tp.ko;
+    p.score = tp.score;
+    p.maxCombo = tp.maxCombo;
+    p.finishedAt = tp.finishedAt;
+  }
+}
+
 /**
  * 실시간 등수 (v4 §X2.5): 완주자 먼저(완주 시각 오름차순) → 레이스는 남은 패 오름차순 /
  * 쟁탈전은 지운 쌍 내림차순 → 점수 내림차순. 동률은 같은 등수를 공유한다.
@@ -178,12 +209,22 @@ function recomputeRanks(game: RoomGame): void {
   const players = [...game.players.values()];
   if (players.length === 0) return;
   const remainingOf = (p: InternalPlayer) => boardOf(game, p)?.remaining ?? 0;
-  const keyOf = (p: InternalPlayer): [number, number, number, number] => [
-    p.finishedAt !== null ? 0 : 1,
-    p.finishedAt ?? 0,
-    game.mode === 'coop' ? -p.pairsCleared : remainingOf(p),
-    -p.score,
-  ];
+  const rt = game.tetrisRun;
+  // 테트리스는 판을 서버가 갖고 있지 않다 — 생존 → 지운 줄 → 점수로만 줄 세운다 (T3.2)
+  const keyOf =
+    game.gameId === 'tetris'
+      ? (p: InternalPlayer): [number, number, number, number] => [
+          rt?.players.get(p.userId)?.alive === false ? 1 : 0,
+          -p.lines,
+          -p.score,
+          0,
+        ]
+      : (p: InternalPlayer): [number, number, number, number] => [
+          p.finishedAt !== null ? 0 : 1,
+          p.finishedAt ?? 0,
+          game.mode === 'coop' ? -p.pairsCleared : remainingOf(p),
+          -p.score,
+        ];
   const sorted = players
     .map((p) => ({ p, key: keyOf(p) }))
     .sort((x, y) => {
@@ -216,6 +257,8 @@ function toPublicPlayer(p: InternalPlayer): PlayerState {
     combo: p.combo,
     maxCombo: p.maxCombo,
     pairsCleared: p.pairsCleared,
+    lines: p.lines,
+    ko: p.ko,
     lastMatchAt: p.lastMatchAt,
     items: { ...p.items },
     finishedAt: p.finishedAt,
@@ -227,6 +270,7 @@ function toPublicPlayer(p: InternalPlayer): PlayerState {
 
 function snapshot(game: RoomGame): GameSnapshot {
   purgeEffects(game, Date.now());
+  syncTetrisPlayers(game);
   recomputeRanks(game);
   const boards: Record<string, Board> = {};
   for (const [id, b] of game.boards) boards[id] = toPublicBoard(b);
@@ -236,6 +280,7 @@ function snapshot(game: RoomGame): GameSnapshot {
     hostUserId: game.hostUserId,
     mode: game.mode,
     options: { ...game.options },
+    tetris: game.tetris ? { ...game.tetris } : null,
     seed: game.seed,
     startAt: game.startAt,
     endedAt: game.endedAt,
@@ -264,6 +309,7 @@ function buildScoreboard(slug: string): ScoreboardRow[] {
 }
 
 function clearTimers(game: RoomGame): void {
+  tetris.stopTetris(game.tetrisRun); // 8Hz 프레임·서바이벌 상승 타이머도 같이 끈다
   if (game.countdownTimer) clearTimeout(game.countdownTimer);
   if (game.limitTimer) clearTimeout(game.limitTimer);
   game.countdownTimer = null;
@@ -457,6 +503,27 @@ function buildResults(game: RoomGame): ResultRow[] {
   const players = [...game.players.values()];
   const remainingOf = (p: InternalPlayer) => boardOf(game, p)?.remaining ?? 0;
 
+  if (game.gameId === 'tetris' && game.tetrisRun) {
+    // 테트리스에는 "남은 패"가 없다 — ResultRow.remaining 자리에는 **지운 줄 수**를 넣는다.
+    const rt = game.tetrisRun;
+    return tetris
+      .sortForResults(rt)
+      .map((tp, i) => {
+        const p = game.players.get(tp.userId);
+        return {
+          rank: i + 1,
+          userId: tp.userId,
+          nickname: p?.nickname ?? tp.userId,
+          color: p?.color ?? PLAYER_COLORS[i % PLAYER_COLORS.length],
+          score: tp.score,
+          timeMs: tp.finishTimeMs,
+          remaining: tp.lines,
+          maxCombo: tp.maxCombo,
+          pairsCleared: tp.lines,
+        };
+      });
+  }
+
   if (game.mode === 'coop') {
     const shared = game.boards.get(SHARED_BOARD_ID);
     const cleared = !!shared && shared.remaining === 0;
@@ -517,7 +584,8 @@ function updateScoreboard(game: RoomGame, results: ResultRow[]): void {
     };
     prev.nickname = row.nickname;
     prev.games += 1;
-    if (game.mode === 'race') {
+    // 사천성 협동만 승패가 없다. 테트리스는 3종 모두 등수가 나오므로 승수를 센다.
+    if (game.gameId === 'tetris' || game.mode === 'race') {
       if (row.rank === 1) prev.wins += 1;
       if (row.timeMs !== null && (prev.bestTimeMs === null || row.timeMs < prev.bestTimeMs)) {
         prev.bestTimeMs = row.timeMs;
@@ -542,6 +610,10 @@ function maybeEndByExhaustion(game: RoomGame): void {
   if (game.phase !== 'playing') return;
   const players = [...game.players.values()];
   if (players.length === 0) return;
+  if (game.gameId === 'tetris') {
+    if (game.tetrisRun) tetris.checkEnd(game.tetrisRun);
+    return;
+  }
   if (game.mode === 'coop') {
     const board = game.boards.get(SHARED_BOARD_ID);
     if (board && board.remaining === 0) endGame(game, 'board cleared');
@@ -634,6 +706,70 @@ function mergeOptions(base: GameOptions, patch: OptionsPatch | undefined, mode: 
   }
   if (mode === 'coop') next.items = false; // 협동에는 방해 아이템 없음
   return next;
+}
+
+// --- 테트리스 옵션 (T2) -----------------------------------------------------
+
+export type TetrisPatch = Partial<TetrisOptions>;
+
+/** 허용 목록에서 가장 가까운 값으로 스냅한다 — 프론트가 이상한 값을 보내도 에러 대신 보정. */
+function snapTo(list: readonly number[], v: number): number {
+  let best = list[0];
+  for (const x of list) if (Math.abs(x - v) < Math.abs(best - v)) best = x;
+  return best;
+}
+
+function clampRange(v: number, range: { min: number; max: number }): number {
+  return Math.max(range.min, Math.min(range.max, Math.round(v) || range.min));
+}
+
+/**
+ * 부분 병합 + 범위 보정. 대전 방식이 바뀌면 **그 모드 기본값**을 바탕으로 다시 쌓는다 —
+ * 레이스에 쓰레기 배수가, 서바이벌에 상승 주기 0이 남아 있으면 모드가 무의미해지기 때문.
+ */
+function mergeTetris(base: TetrisOptions, patch: TetrisPatch | undefined): TetrisOptions {
+  let next: TetrisOptions = { ...base };
+  if (patch?.mode && patch.mode !== base.mode) next = { ...DEFAULT_TETRIS_OPTIONS[patch.mode] };
+  if (patch) {
+    if (typeof patch.sprintLines === 'number') next.sprintLines = snapTo(TETRIS_LIMITS.sprintLines, patch.sprintLines);
+    if (typeof patch.startLevel === 'number') next.startLevel = clampRange(patch.startLevel, TETRIS_LIMITS.startLevel);
+    if (typeof patch.levelUpLines === 'number') next.levelUpLines = snapTo(TETRIS_LIMITS.levelUpLines, patch.levelUpLines);
+    if (typeof patch.hold === 'boolean') next.hold = patch.hold;
+    if (typeof patch.ghost === 'boolean') next.ghost = patch.ghost;
+    if (typeof patch.nextCount === 'number') next.nextCount = clampRange(patch.nextCount, TETRIS_LIMITS.nextCount);
+    if (typeof patch.garbageMul === 'number') next.garbageMul = snapTo(TETRIS_LIMITS.garbageMul, patch.garbageMul);
+    if (typeof patch.riseSec === 'number') next.riseSec = snapTo(TETRIS_LIMITS.riseSec, patch.riseSec);
+    if (typeof patch.timeLimitSec === 'number') {
+      next.timeLimitSec = Math.max(0, Math.min(3600, Math.round(patch.timeLimitSec) || 0));
+    }
+  }
+  return next;
+}
+
+/** 제한 시간은 게임마다 다른 옵션에 들어 있다. */
+function timeLimitSecOf(game: RoomGame): number {
+  if (game.gameId === 'tetris') return game.tetris?.timeLimitSec ?? 0;
+  return game.options.timeLimitSec;
+}
+
+/**
+ * 테트리스 입력을 받을 수 있는 상태인가. 게임이 없거나 사천성이거나 아직 안 시작했으면 null —
+ * 호출부는 조용히 무시한다(클라가 늦게 보낸 프레임에 에러를 띄울 이유가 없다).
+ */
+function activeTetris(slug: string, userId: string): tetris.TetrisRuntime | null {
+  const game = games.get(slug);
+  if (!game || game.gameId !== 'tetris' || !game.tetrisRun) return null;
+  if (game.phase !== 'playing') return null;
+  if (!game.players.has(userId)) return null;
+  if (game.startAt !== null && Date.now() < game.startAt) return null;
+  return game.tetrisRun;
+}
+
+/** 진행 중 기권(관전 전환·접속 끊김)을 테트리스 쪽에도 알린다. */
+function tetrisForfeit(game: RoomGame, userId: string): void {
+  if (game.gameId !== 'tetris' || !game.tetrisRun) return;
+  if (game.phase !== 'playing' && game.phase !== 'countdown') return;
+  tetris.onForfeit(game.tetrisRun, userId);
 }
 
 // --- 제거 부수효과 (v2 §V3) -------------------------------------------------
@@ -807,6 +943,35 @@ function findBlockerPair(board: ServerBoard): [number, number] | null {
   return null;
 }
 
+/**
+ * 카운트다운 → playing 전환. 사천성/테트리스가 같은 흐름을 쓴다(연출 타이밍이 같아야 하므로).
+ * 제한 시간 타이머는 각 게임의 옵션에서 읽는다.
+ */
+function beginCountdown(game: RoomGame): GameSnapshot {
+  game.phase = 'countdown';
+  game.startAt = Date.now() + COUNTDOWN_MS;
+  game.endedAt = null;
+  game.results = null;
+  const state = emitState(game);
+
+  game.countdownTimer = setTimeout(() => {
+    game.countdownTimer = null;
+    if (game.phase !== 'countdown') return;
+    game.phase = 'playing';
+    if (game.tetrisRun) tetris.beginTetris(game.tetrisRun); // 프레임 릴레이/바닥 상승은 지금부터
+    emitState(game);
+    const limit = timeLimitSecOf(game);
+    if (limit > 0) {
+      game.limitTimer = setTimeout(() => {
+        game.limitTimer = null;
+        endGame(game, 'time limit');
+      }, limit * 1000);
+    }
+  }, COUNTDOWN_MS);
+
+  return state;
+}
+
 // --- 공개 API --------------------------------------------------------------
 
 export const gameManager = {
@@ -820,19 +985,23 @@ export const gameManager = {
   create(
     slug: string,
     actor: GameActor,
-    input: { gameId?: GameId; mode?: GameMode; options?: OptionsPatch }
+    input: { gameId?: GameId; mode?: GameMode; options?: OptionsPatch; tetris?: TetrisPatch }
   ): StateResult {
     if (games.has(slug)) return { error: '이미 게임이 열려 있어요' };
     const mode: GameMode = input.mode ?? 'race';
     const options = mergeOptions(DEFAULT_OPTIONS[mode], input.options, mode);
+    const gameId: GameId = input.gameId ?? 'shisen';
+    const tetrisMode: TetrisMode = input.tetris?.mode ?? 'versus';
 
     const game: RoomGame = {
       slug,
-      gameId: input.gameId ?? 'shisen',
+      gameId,
       phase: 'lobby',
       hostUserId: actor.userId,
       mode,
       options,
+      tetris: gameId === 'tetris' ? mergeTetris(DEFAULT_TETRIS_OPTIONS[tetrisMode], input.tetris) : null,
+      tetrisRun: null,
       seed: newSeed(),
       startAt: null,
       endedAt: null,
@@ -850,7 +1019,7 @@ export const gameManager = {
     };
     game.players.set(actor.userId, makePlayer(game, actor));
     games.set(slug, game);
-    console.log(`[game] ${slug} created by ${actor.userId} (${mode})`);
+    console.log(`[game] ${slug} created by ${actor.userId} (${gameId}/${gameId === 'tetris' ? tetrisMode : mode})`);
     return { state: emitState(game) };
   },
 
@@ -881,6 +1050,7 @@ export const gameManager = {
         player.forfeited = true;
         player.combo = 0;
         console.log(`[game] ${slug} ${actor.userId} forfeited`);
+        tetrisForfeit(game, actor.userId);
       }
       maybeEndByExhaustion(game); // 혼자 하던 판이면 기권으로 바로 끝난다
       if ((game.phase as GamePhase) !== 'finished') emitState(game);
@@ -899,14 +1069,28 @@ export const gameManager = {
   updateOptions(
     slug: string,
     actor: GameActor,
-    input: { gameId?: GameId; mode?: GameMode; options?: OptionsPatch }
+    input: { gameId?: GameId; mode?: GameMode; options?: OptionsPatch; tetris?: TetrisPatch }
   ): StateResult {
     const game = games.get(slug);
     if (!game) return { error: '게임이 없어요' };
     if (game.hostUserId !== actor.userId) return { error: '게임 개설자만 바꿀 수 있어요' };
     if (game.phase !== 'lobby') return { error: '로비에서만 바꿀 수 있어요' };
 
-    if (input.gameId) game.gameId = input.gameId;
+    if (input.gameId && input.gameId !== game.gameId) {
+      // 게임을 갈아타면 그 게임의 기본 설정으로 시작한다(사천성으로 돌아가면 테트리스 설정은 버린다)
+      game.gameId = input.gameId;
+      game.tetris =
+        input.gameId === 'tetris' ? { ...DEFAULT_TETRIS_OPTIONS[input.tetris?.mode ?? 'versus'] } : null;
+      game.tetrisRun = null;
+      for (const p of game.players.values()) {
+        p.lines = 0;
+        p.ko = 0;
+        p.score = 0;
+      }
+    }
+    if (game.gameId === 'tetris') {
+      game.tetris = mergeTetris(game.tetris ?? DEFAULT_TETRIS_OPTIONS.versus, input.tetris);
+    }
     // 대전 방식이 바뀌어도 맵 모양·특수 타일은 그대로 두고, 판 크기/제한 시간만 새 모드 기본값으로
     // 되돌린다(coop은 mergeOptions에서 items=false 강제). — A6
     let base = game.options;
@@ -933,11 +1117,43 @@ export const gameManager = {
     const players = [...game.players.values()];
     if (players.length === 0) return { error: '플레이어가 최소 1명 필요해요' };
 
-    const { cols, rows } = BOARD_DIMS[game.options.boardSize];
-    const specials = game.options.specials;
     game.seed = newSeed();
     game.rng = mulberry32(game.seed);
     game.boards.clear();
+
+    if (game.gameId === 'tetris') {
+      // 테트리스 판은 클라가 seed 로 직접 만든다(T1) — 서버는 보드를 갖지 않는다.
+      const options = game.tetris ?? { ...DEFAULT_TETRIS_OPTIONS.versus };
+      game.tetris = options;
+      tetris.stopTetris(game.tetrisRun);
+      game.tetrisRun = tetris.createTetris(options, [...game.players.keys()], {
+        broadcast: (event, payload) => broadcast(game.slug, event, payload),
+        onPlayerUpdate: () => emitState(game),
+        onEnd: (reason) => endGame(game, reason),
+        rng: () => game.rng(),
+        isPlaying: () => game.phase === 'playing',
+      });
+      for (const p of players) {
+        p.score = 0;
+        p.combo = 0;
+        p.maxCombo = 0;
+        p.pairsCleared = 0;
+        p.lines = 0;
+        p.ko = 0;
+        p.lastMatchAt = 0;
+        p.finishedAt = null;
+        p.forfeited = false;
+        p.hintBreak = false;
+      }
+      console.log(
+        `[game] ${slug} tetris ${options.mode} lv${options.startLevel} mul${options.garbageMul} ` +
+          `rise${options.riseSec} (seed ${game.seed})`
+      );
+      return { state: beginCountdown(game) };
+    }
+
+    const { cols, rows } = BOARD_DIMS[game.options.boardSize];
+    const specials = game.options.specials;
 
     const t0 = Date.now();
     const shape: Shape = game.options.mapShape === 'random' ? pickShape(game.rng) : game.options.mapShape;
@@ -995,6 +1211,8 @@ export const gameManager = {
       p.combo = 0;
       p.maxCombo = 0;
       p.pairsCleared = 0;
+      p.lines = 0; // 테트리스 전용 필드 — 게임을 갈아탄 방에 지난 판 값이 남지 않게 한다
+      p.ko = 0;
       p.lastMatchAt = 0;
       p.items = { ...(game.mode === 'coop' ? game.sharedItems : game.options.tools) };
       p.finishedAt = null;
@@ -1002,26 +1220,7 @@ export const gameManager = {
       p.hintBreak = false;
     }
 
-    game.phase = 'countdown';
-    game.startAt = Date.now() + COUNTDOWN_MS;
-    game.endedAt = null;
-    game.results = null;
-    const state = emitState(game);
-
-    game.countdownTimer = setTimeout(() => {
-      game.countdownTimer = null;
-      if (game.phase !== 'countdown') return;
-      game.phase = 'playing';
-      emitState(game);
-      if (game.options.timeLimitSec > 0) {
-        game.limitTimer = setTimeout(() => {
-          game.limitTimer = null;
-          endGame(game, 'time limit');
-        }, game.options.timeLimitSec * 1000);
-      }
-    }, COUNTDOWN_MS);
-
-    return { state };
+    return { state: beginCountdown(game) };
   },
 
   pick(slug: string, actor: GameActor, a: number, b: number): PickAck {
@@ -1219,6 +1418,39 @@ export const gameManager = {
     return { ok: true, pair };
   },
 
+  // --- 테트리스 (docs/games/tetris-design.md T3) ---
+
+  /** 내 판 스냅샷. ack 없음 — 레이트 리밋에 걸리면 조용히 버린다. */
+  tetrisFrame(slug: string, actor: GameActor, frame: Omit<TetrisFrame, 'userId'>): void {
+    const rt = activeTetris(slug, actor.userId);
+    if (!rt) return;
+    tetris.onFrame(rt, actor.userId, frame);
+  },
+
+  /** 줄을 지웠다 → 공격량 계산·상쇄·대상 전달 */
+  tetrisClear(slug: string, actor: GameActor, msg: TetrisClearMsg): TetrisAck {
+    const rt = activeTetris(slug, actor.userId);
+    if (!rt) return { ok: false, reason: 'phase' };
+    tetris.onClear(rt, actor.userId, msg);
+    return { ok: true };
+  },
+
+  /** 내가 죽었다 → 등수 부여 + 종료 검사 */
+  tetrisTopout(slug: string, actor: GameActor): TetrisAck {
+    const rt = activeTetris(slug, actor.userId);
+    if (!rt) return { ok: false, reason: 'phase' };
+    tetris.onTopout(rt, actor.userId);
+    return { ok: true };
+  },
+
+  /** 레이스 목표 달성 */
+  tetrisFinish(slug: string, actor: GameActor, timeMs: number, lines: number): TetrisAck {
+    const rt = activeTetris(slug, actor.userId);
+    if (!rt) return { ok: false, reason: 'phase' };
+    tetris.onFinish(rt, actor.userId, timeMs, lines);
+    return { ok: true };
+  },
+
   rematch(slug: string, actor: GameActor): StateResult {
     const game = games.get(slug);
     if (!game) return { error: '게임이 없어요' };
@@ -1232,12 +1464,15 @@ export const gameManager = {
     game.endedAt = null;
     game.results = null;
     game.boards.clear();
+    game.tetrisRun = null; // 타이머는 위 clearTimers 에서 이미 껐다
     game.sharedItems = { ...game.options.tools };
     for (const p of game.players.values()) {
       p.score = 0;
       p.combo = 0;
       p.maxCombo = 0;
       p.pairsCleared = 0;
+      p.lines = 0;
+      p.ko = 0;
       p.lastMatchAt = 0;
       p.items = { ...(game.mode === 'coop' ? game.sharedItems : game.options.tools) };
       p.finishedAt = null;
@@ -1303,6 +1538,7 @@ export const gameManager = {
         p.forfeited = true;
         p.combo = 0;
         console.log(`[game] ${slug} ${userId} forfeited (disconnected ${DISCONNECT_FORFEIT_MS}ms)`);
+        tetrisForfeit(game, userId);
         emitState(game);
         maybeEndByExhaustion(game);
       }, DISCONNECT_FORFEIT_MS);

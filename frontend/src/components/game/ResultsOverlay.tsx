@@ -22,7 +22,10 @@ export function ResultsOverlay({ snapshot }: { snapshot: GameSnapshot }) {
   const closePanel = useGameStore((s) => s.closePanel);
   const [busy, setBusy] = useState(false);
   const isHost = snapshot.hostUserId === myUserId;
-  const isCoop = snapshot.mode === 'coop';
+  const isCoop = snapshot.gameId !== 'tetris' && snapshot.mode === 'coop';
+  // 테트리스는 ResultRow.remaining 자리에 **지운 줄 수**가 들어온다(설계서 §T3.2) —
+  // 사천성 문구('N개 남음')를 그대로 쓰면 정반대 의미로 읽힌다.
+  const isTetris = snapshot.gameId === 'tetris';
   // 쟁탈전 순위 = 지운 쌍 → 점수 (v2.1). 서버 rank가 같은 규칙이어도 표시를 확정적으로 맞춘다.
   const results = isCoop
     ? [...(snapshot.results ?? [])].sort((a, b) => b.pairsCleared - a.pairsCleared || b.score - a.score)
@@ -106,11 +109,13 @@ export function ResultsOverlay({ snapshot }: { snapshot: GameSnapshot }) {
               ) : (
                 <>
                   <span className="shrink-0 font-display text-xs tabular-nums text-white/60">
-                    {r.timeMs !== null
-                      ? formatMs(r.timeMs)
-                      : isForfeited(snapshot.players.find((p) => p.userId === r.userId))
-                        ? '기권'
-                        : `${r.remaining}개 남음`}
+                    {isForfeited(snapshot.players.find((p) => p.userId === r.userId))
+                      ? '기권'
+                      : isTetris
+                        ? `${r.remaining}줄${r.timeMs !== null ? ` · ${formatMs(r.timeMs)}` : ''}`
+                        : r.timeMs !== null
+                          ? formatMs(r.timeMs)
+                          : `${r.remaining}개 남음`}
                   </span>
                   <span className="shrink-0 font-display text-xs tabular-nums text-white/40">{r.score}점</span>
                 </>

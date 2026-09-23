@@ -37,6 +37,30 @@ import {
   isNormalSymbol,
 } from './types';
 import { gameManager } from './gameManager';
+import {
+  B2B_BONUS,
+  COLS,
+  COMBO_TABLE,
+  DEFAULT_TETRIS_OPTIONS,
+  PERFECT_CLEAR_BONUS,
+  TetrisClearMsg,
+  TetrisFrame,
+  TetrisOptions,
+} from './tetris/types';
+import {
+  TetrisRuntime,
+  beginTetris,
+  computeGarbage,
+  createTetris,
+  makeHoles,
+  onClear,
+  onFinish,
+  onFrame,
+  onTopout,
+  pickTarget,
+  sortForResults,
+  stopTetris,
+} from './tetris/manager';
 
 let failures = 0;
 
@@ -665,6 +689,405 @@ check('canPick — 벽/자물쇠/물음표/열쇠/숫자 순서 사유', () => {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// --- 6. 테트리스 (docs/games/tetris-design.md T3) ----------------------------
+
+/** 빈 프레임 하나 (cells 200칸). 서버는 내용을 안 보지만 형태는 계약대로 채운다. */
+function tframe(over: Partial<Omit<TetrisFrame, 'userId'>> = {}): Omit<TetrisFrame, 'userId'> {
+  return {
+    cells: new Array(200).fill(0),
+    lines: 0,
+    score: 0,
+    level: 1,
+    combo: 0,
+    b2b: 0,
+    hold: 0,
+    next: [1, 2, 3],
+    pending: 0,
+    alive: true,
+    ko: 0,
+    t: 0,
+    ...over,
+  };
+}
+
+function tclear(over: Partial<TetrisClearMsg> = {}): TetrisClearMsg {
+  return { kind: 'tetris', lines: 4, combo: 0, b2b: false, perfect: false, ...over };
+}
+
+interface TetrisHarness {
+  rt: TetrisRuntime;
+  events: { event: string; payload: any }[];
+  ended: string[];
+  setPlaying: (v: boolean) => void;
+}
+
+function harness(ids: string[], opts: Partial<TetrisOptions> = {}, seed = 12345): TetrisHarness {
+  const events: { event: string; payload: any }[] = [];
+  const ended: string[] = [];
+  let playing = true;
+  const rng = mulberry32(seed);
+  const rt = createTetris({ ...DEFAULT_TETRIS_OPTIONS.versus, ...opts }, ids, {
+    broadcast: (event, payload) => events.push({ event, payload: payload as any }),
+    onPlayerUpdate: () => {},
+    onEnd: (reason) => {
+      ended.push(reason);
+      playing = false;
+    },
+    rng,
+    isPlaying: () => playing,
+  });
+  return { rt, events, ended, setPlaying: (v) => (playing = v) };
+}
+
+check('테트리스 공격량 — 기본표(줄 지움 4종) × 배수', () => {
+  assert(computeGarbage(tclear({ kind: 'single', lines: 1 }), 1) === 0, 'single = 0줄');
+  assert(computeGarbage(tclear({ kind: 'double', lines: 2 }), 1) === 1, 'double = 1줄');
+  assert(computeGarbage(tclear({ kind: 'triple', lines: 3 }), 1) === 2, 'triple = 2줄');
+  assert(computeGarbage(tclear(), 1) === 4, 'tetris = 4줄');
+  // floor 는 곱한 다음에 — 2 * 1.5 = 3, 2 * 0.5 = 1
+  assert(computeGarbage(tclear({ kind: 'triple' }), 1.5) === 3, 'triple × 1.5 = 3');
+  assert(computeGarbage(tclear({ kind: 'triple' }), 0.5) === 1, 'triple × 0.5 = 1');
+  assert(computeGarbage(tclear(), 2) === 8, 'tetris × 2 = 8');
+  assert(computeGarbage(tclear(), 0) === 0, '배수 0(레이스)이면 공격 없음');
+  return '8 cases';
+});
+
+check('테트리스 공격량 — T스핀 4종 + B2B + 퍼펙트클리어', () => {
+  assert(computeGarbage(tclear({ kind: 'tsm', lines: 1 }), 1) === 0, 'T스핀 미니 = 0');
+  assert(computeGarbage(tclear({ kind: 'tss', lines: 1 }), 1) === 2, 'TSS = 2');
+  assert(computeGarbage(tclear({ kind: 'tsd', lines: 2 }), 1) === 4, 'TSD = 4');
+  assert(computeGarbage(tclear({ kind: 'tst', lines: 3 }), 1) === 6, 'TST = 6');
+  assert(computeGarbage(tclear({ kind: 'tsd', b2b: true }), 1) === 4 + B2B_BONUS, 'B2B 보너스');
+  assert(
+    computeGarbage(tclear({ perfect: true }), 1) === 4 + PERFECT_CLEAR_BONUS,
+    '퍼펙트클리어 보너스'
+  );
+  // 전부 겹친 최대치: tst + b2b + pc + combo
+  const all = computeGarbage(tclear({ kind: 'tst', b2b: true, perfect: true, combo: 4 }), 1);
+  assert(all === 6 + B2B_BONUS + PERFECT_CLEAR_BONUS + COMBO_TABLE[4], `합산 ${all}`);
+  return '7 cases';
+});
+
+check('테트리스 공격량 — 콤보표(인덱스=콤보, 표를 넘으면 마지막 값)', () => {
+  for (let c = 0; c < COMBO_TABLE.length; c++) {
+    const got = computeGarbage(tclear({ kind: 'double', combo: c }), 1);
+    assert(got === 1 + COMBO_TABLE[c], `combo ${c} → ${got}`);
+  }
+  const last = COMBO_TABLE[COMBO_TABLE.length - 1];
+  assert(computeGarbage(tclear({ kind: 'double', combo: 99 }), 1) === 1 + last, '표 초과는 마지막 값');
+  assert(computeGarbage(tclear({ kind: 'double', combo: -3 }), 1) === 1 + COMBO_TABLE[0], '음수 콤보 방어');
+  return `${COMBO_TABLE.length + 2} cases`;
+});
+
+check('테트리스 구멍 열 — 길이 일치 + 4줄마다만 열이 바뀐다', () => {
+  const rng = mulberry32(99);
+  for (const amount of [1, 2, 4, 5, 8, 9, 12, 20]) {
+    const holes = makeHoles(rng, amount);
+    assert(holes.length === amount, `holes ${holes.length} ≠ ${amount}`);
+    assert(holes.every((c) => c >= 0 && c < COLS), `열 범위 밖: ${holes}`);
+    for (let i = 1; i < holes.length; i++) {
+      if (i % 4 === 0) assert(holes[i] !== holes[i - 1], `${amount}줄: ${i}번째에서 열이 안 바뀌었다`);
+      else assert(holes[i] === holes[i - 1], `${amount}줄: ${i}번째 열이 묶음 안에서 바뀌었다`);
+    }
+  }
+  assert(makeHoles(rng, 0).length === 0, '0줄이면 빈 배열');
+  return '9 cases';
+});
+
+check('테트리스 대상 선택 — 2인은 상대, 3인은 선두(지운 줄 최대), 죽은 사람 제외', () => {
+  const rng = mulberry32(7);
+  const two = harness(['a', 'b']);
+  assert(pickTarget([...two.rt.players.values()], 'a', rng)!.userId === 'b', '2인은 무조건 상대');
+  assert(pickTarget([...two.rt.players.values()], 'b', rng)!.userId === 'a', '2인 반대 방향');
+
+  const three = harness(['a', 'b', 'c']);
+  three.rt.players.get('b')!.lines = 12;
+  three.rt.players.get('c')!.lines = 30;
+  for (let i = 0; i < 20; i++) {
+    assert(pickTarget([...three.rt.players.values()], 'a', rng)!.userId === 'c', '선두(c)를 쳐야 한다');
+  }
+  three.rt.players.get('c')!.alive = false;
+  assert(pickTarget([...three.rt.players.values()], 'a', rng)!.userId === 'b', '죽은 선두는 제외');
+
+  const solo = harness(['a']);
+  assert(pickTarget([...solo.rt.players.values()], 'a', rng) === null, '1인은 대상 없음');
+
+  // 동률이면 랜덤 — 여러 번 뽑으면 두 명 다 나와야 한다
+  const tie = harness(['a', 'b', 'c']);
+  tie.rt.players.get('b')!.lines = 5;
+  tie.rt.players.get('c')!.lines = 5;
+  const seen = new Set<string>();
+  for (let i = 0; i < 60; i++) seen.add(pickTarget([...tie.rt.players.values()], 'a', rng)!.userId);
+  assert(seen.size === 2, `동률 랜덤이 아니다: ${[...seen]}`);
+  return '6 cases';
+});
+
+check('테트리스 상쇄 — 내 pending 을 먼저 깎고 남은 만큼만 보낸다', () => {
+  const h = harness(['a', 'b']);
+  const a = h.rt.players.get('a')!;
+  const b = h.rt.players.get('b')!;
+
+  // b 가 4줄 → a 에게 4줄
+  const first = onClear(h.rt, 'b', tclear());
+  assert(first !== null && first.to === 'a' && first.amount === 4, `첫 공격 ${JSON.stringify(first)}`);
+  assert(a.pending === 4, `a.pending ${a.pending}`);
+  assert(h.events.filter((e) => e.event === 'tetris:garbage').length === 1, 'garbage 1건');
+  assert(h.events.filter((e) => e.event === 'tetris:sent').length === 1, 'sent 1건');
+  const g = h.events.find((e) => e.event === 'tetris:garbage')!.payload;
+  assert(g.to === 'a' && g.from === 'b' && g.holes.length === 4, `garbage payload ${JSON.stringify(g)}`);
+
+  // a 가 triple(2줄) → 전부 상쇄, 아무것도 안 나간다
+  const canceled = onClear(h.rt, 'a', tclear({ kind: 'triple', lines: 3 }));
+  assert(canceled === null, '전부 상쇄면 null');
+  assert(a.pending === 2, `상쇄 후 a.pending ${a.pending}`);
+  assert(b.pending === 0, 'b 는 아직 안 맞았다');
+  assert(h.events.filter((e) => e.event === 'tetris:sent').length === 1, '상쇄는 sent 를 만들면 안 된다');
+
+  // a 가 4줄 → 2줄 상쇄 + 2줄 전달
+  const partial = onClear(h.rt, 'a', tclear());
+  assert(partial !== null && partial.amount === 2, `부분 상쇄 ${JSON.stringify(partial)}`);
+  assert(a.pending === 0 && b.pending === 2, `원장 a=${a.pending} b=${b.pending}`);
+  assert(partial!.holes.length === 2, '구멍 열도 남은 양만큼');
+  return '11 cases';
+});
+
+check('테트리스 프레임 — 초당 15회 상한을 넘으면 조용히 버린다', () => {
+  const h = harness(['a', 'b']);
+  let accepted = 0;
+  for (let i = 0; i < 40; i++) if (onFrame(h.rt, 'a', tframe({ t: i }), 1000)) accepted++;
+  assert(accepted === 15, `같은 창에서 ${accepted}개 통과 (15여야 함)`);
+  // 창이 지나면 다시 받는다
+  assert(onFrame(h.rt, 'a', tframe(), 2001) === true, '다음 창에서는 다시 받아야 한다');
+  assert(onFrame(h.rt, 'nobody', tframe(), 2001) === false, '플레이어가 아니면 거부');
+  return '3 cases';
+});
+
+check('테트리스 프레임 — lines/score 단조 증가 + pending 은 서버 원장', () => {
+  const h = harness(['a', 'b']);
+  const a = h.rt.players.get('a')!;
+  onFrame(h.rt, 'a', tframe({ lines: 10, score: 5000 }), 1000);
+  assert(a.lines === 10 && a.score === 5000, '첫 프레임 반영');
+  onFrame(h.rt, 'a', tframe({ lines: 3, score: 100 }), 1100);
+  assert(a.lines === 10 && a.score === 5000, `줄어드는 값은 무시해야 한다 (${a.lines}/${a.score})`);
+  assert(a.frame!.lines === 10 && a.frame!.score === 5000, '릴레이 프레임도 최대값으로 고쳐 나간다');
+  onFrame(h.rt, 'a', tframe({ lines: 11, score: 5100 }), 1200);
+  assert(a.lines === 11 && a.score === 5100, '증가는 반영');
+
+  // 서버가 4줄을 꽂아 넣으면 클라가 뭐라 하든 원장이 우선
+  onClear(h.rt, 'b', tclear());
+  assert(a.pending === 4, 'garbage 원장');
+  onFrame(h.rt, 'a', tframe({ lines: 11, score: 5100, pending: 99 }), 1300);
+  assert(a.pending === 4, '클라가 pending 을 부풀려도 안 늘어난다');
+  assert(a.frame!.pending === 4, '릴레이 프레임의 pending 은 서버 값');
+  onFrame(h.rt, 'a', tframe({ lines: 11, score: 5100, pending: 1 }), 1400);
+  assert(a.pending === 1, '클라가 실제로 받아 내면 원장이 줄어든다');
+  return '8 cases';
+});
+
+check('테트리스 탑아웃 — 3인 대전에서 먼저 죽은 사람이 3등, KO 크레딧', () => {
+  const h = harness(['a', 'b', 'c']);
+  // b 가 c 를 때려 놓는다 → c 가 죽으면 KO 는 b 에게
+  h.rt.players.get('c')!.lines = 50; // c 가 선두라 b 의 공격은 c 로 간다
+  onClear(h.rt, 'b', tclear());
+  assert(h.rt.players.get('c')!.pending === 4, 'c 가 맞았다');
+
+  const rankC = onTopout(h.rt, 'c', 1000);
+  assert(rankC === 3, `먼저 죽은 c 는 3등이어야 한다 (${rankC})`);
+  assert(h.rt.players.get('b')!.ko === 1, 'KO 는 마지막으로 때린 b 에게');
+  assert(h.ended.length === 0, '아직 2명 남았으니 안 끝난다');
+  const down = h.events.filter((e) => e.event === 'tetris:down');
+  assert(down.length === 1 && down[0].payload.by === 'b' && down[0].payload.rank === 3, 'down 이벤트');
+
+  const rankB = onTopout(h.rt, 'b', 2000);
+  assert(rankB === 2, `두 번째로 죽은 b 는 2등 (${rankB})`);
+  assert(h.ended.length === 1, `마지막 1명이 남으면 끝나야 한다 (${h.ended.length})`);
+  assert(onTopout(h.rt, 'b', 3000) === null, '이미 죽은 사람은 두 번 안 죽는다');
+
+  const order = sortForResults(h.rt).map((p) => p.userId);
+  assert(order.join(',') === 'a,b,c', `결과 정렬 ${order}`);
+
+  // 혼자 하는 판은 그 1명이 죽어야 끝난다
+  const solo = harness(['a']);
+  assert(solo.ended.length === 0, '시작하자마자 끝나면 안 된다');
+  onTopout(solo.rt, 'a', 1000);
+  assert(solo.ended.length === 1, '혼자일 때도 종료 조건이 성립해야 한다');
+  return '10 cases';
+});
+
+check('테트리스 레이스 — 완주 순서 등수 + 정렬(시간 오름차순, 미완주는 줄 내림차순)', () => {
+  const h = harness(['a', 'b', 'c', 'd'], { ...DEFAULT_TETRIS_OPTIONS.sprint });
+  h.rt.players.get('c')!.lines = 31;
+  h.rt.players.get('d')!.lines = 12;
+
+  assert(onFinish(h.rt, 'b', 41000, 40, 1000) === 1, 'b 가 먼저 완주 → 1등');
+  assert(onFinish(h.rt, 'a', 52000, 40, 2000) === 2, 'a 가 두 번째 → 2등');
+  assert(onFinish(h.rt, 'b', 30000, 40, 3000) === null, '두 번 완주는 무시');
+  assert(h.ended.length === 0, '아직 c/d 가 남았다');
+  const fin = h.events.filter((e) => e.event === 'tetris:finished');
+  assert(fin.length === 2 && fin[0].payload.timeMs === 41000, 'finished 이벤트');
+
+  const order = sortForResults(h.rt).map((p) => p.userId);
+  assert(order.join(',') === 'b,a,c,d', `sprint 정렬 ${order}`);
+
+  onTopout(h.rt, 'd', 4000);
+  assert(h.ended.length === 0, 'c 가 아직 살아 있다');
+  onTopout(h.rt, 'c', 5000);
+  assert(h.ended.length === 1, '전원 완주/탈락이면 끝난다');
+  return '8 cases';
+});
+
+check('테트리스 타이머 — begin/stop 으로 반드시 정리된다', () => {
+  const h = harness(['a', 'b'], { riseSec: 15 });
+  beginTetris(h.rt);
+  assert(h.rt.frameTimer !== null && h.rt.riseTimer !== null, '타이머가 켜져야 한다');
+  beginTetris(h.rt); // 중복 호출로 타이머가 새면 안 된다
+  assert(h.rt.frameTimer !== null && h.rt.riseTimer !== null, '중복 시작 후에도 1쌍');
+  stopTetris(h.rt);
+  assert(h.rt.frameTimer === null && h.rt.riseTimer === null, '정리 안 됨');
+
+  const noRise = harness(['a'], { riseSec: 0 });
+  beginTetris(noRise.rt);
+  assert(noRise.rt.riseTimer === null, 'riseSec 0 이면 상승 타이머 없음');
+  stopTetris(noRise.rt);
+  return '5 cases';
+});
+
+async function tetrisVersusFlow(): Promise<string> {
+  const slug = `selfcheck-tetris-${Date.now()}`;
+  const events: { event: string; payload: any }[] = [];
+  gameManager.setBroadcast((_slug, event, payload) => events.push({ event, payload: payload as any }));
+  const p1 = { userId: 't1', nickname: '하나' };
+  const p2 = { userId: 't2', nickname: '두울' };
+  const p3 = { userId: 't3', nickname: '세엣' };
+
+  const created = gameManager.create(slug, p1, { gameId: 'tetris', tetris: { mode: 'versus' } });
+  assert('state' in created, 'create failed');
+  gameManager.join(slug, p2);
+  gameManager.join(slug, p3);
+
+  const lobby = gameManager.getSnapshot(slug)!;
+  assert(lobby.gameId === 'tetris', `gameId ${lobby.gameId}`);
+  assert(lobby.tetris !== null && lobby.tetris.mode === 'versus', '테트리스 설정이 비어 있다');
+  assert(lobby.players.every((p) => p.lines === 0 && p.ko === 0), 'lines/ko 기본값');
+
+  // 옵션 병합 + 범위 보정
+  gameManager.updateOptions(slug, p1, { tetris: { startLevel: 99, garbageMul: 1.4, nextCount: 0 } });
+  const opt1 = gameManager.getSnapshot(slug)!.tetris!;
+  assert(opt1.startLevel === 10, `startLevel 클램프 실패 ${opt1.startLevel}`);
+  assert(opt1.garbageMul === 1.5, `garbageMul 스냅 실패 ${opt1.garbageMul}`);
+  assert(opt1.nextCount === 1, `nextCount 클램프 실패 ${opt1.nextCount}`);
+  assert(opt1.mode === 'versus', '모드는 그대로');
+
+  // 사천성으로 갔다 오면 테트리스 설정은 기본값으로 초기화된다
+  gameManager.updateOptions(slug, p1, { gameId: 'shisen' });
+  assert(gameManager.getSnapshot(slug)!.tetris === null, '사천성이면 tetris 는 null');
+  gameManager.updateOptions(slug, p1, { gameId: 'tetris', tetris: { mode: 'versus' } });
+  const opt2 = gameManager.getSnapshot(slug)!.tetris!;
+  assert(opt2.startLevel === DEFAULT_TETRIS_OPTIONS.versus.startLevel, '되돌아오면 기본값');
+  gameManager.updateOptions(slug, p1, { tetris: { garbageMul: 1 } });
+
+  const started = gameManager.start(slug, p1);
+  assert('state' in started, 'tetris start failed');
+  const s0 = (started as { state: GameSnapshot }).state;
+  assert(s0.phase === 'countdown', `phase ${s0.phase}`);
+  assert(Object.keys(s0.boards).length === 0, '테트리스는 서버 보드를 만들지 않는다');
+  assert(s0.seed > 0, '7-bag 시드가 필요하다');
+
+  // 시작 전 입력은 무시
+  assert(gameManager.tetrisClear(slug, p1, tclear()).ok === false, '카운트다운 중 공격은 거부');
+  await sleep(3200);
+  assert(gameManager.getSnapshot(slug)!.phase === 'playing', 'playing 으로 못 넘어감');
+
+  // 프레임 릴레이(8Hz)
+  gameManager.tetrisFrame(slug, p1, tframe({ lines: 8, score: 900 }));
+  gameManager.tetrisFrame(slug, p2, tframe({ lines: 2, score: 100 }));
+  gameManager.tetrisFrame(slug, p3, tframe({ lines: 20, score: 4000 }));
+  await sleep(300);
+  const relay = events.filter((e) => e.event === 'tetris:frames');
+  assert(relay.length >= 1, `8Hz 릴레이가 없다 (${relay.length})`);
+  assert(relay[relay.length - 1].payload.frames.length === 3, '세 명 프레임이 묶여야 한다');
+  const live = gameManager.getSnapshot(slug)!;
+  assert(live.players.find((p) => p.userId === 't3')!.lines === 20, '스냅샷에 lines 반영');
+  assert(live.players.find((p) => p.userId === 't3')!.rank === 1, '지운 줄이 제일 많은 t3 가 1등');
+
+  // t1 의 공격은 선두 t3 로 간다
+  assert(gameManager.tetrisClear(slug, p1, tclear()).ok === true, 'clear ack');
+  const sent = events.filter((e) => e.event === 'tetris:sent');
+  assert(sent.length === 1 && sent[0].payload.to === 't3', `선두 타격 실패 ${JSON.stringify(sent[0]?.payload)}`);
+  assert(sent[0].payload.amount === 4 && sent[0].payload.kind === 'tetris', '공격량 4줄');
+
+  // t3 탈락 → 3등, KO 는 t1
+  assert(gameManager.tetrisTopout(slug, p3).ok === true, 'topout ack');
+  const afterKo = gameManager.getSnapshot(slug)!;
+  assert(afterKo.players.find((p) => p.userId === 't1')!.ko === 1, 'KO 가 t1 에게 안 갔다');
+  assert(afterKo.phase === 'playing', '아직 2명 남았다');
+
+  gameManager.tetrisTopout(slug, p2);
+  const done = gameManager.getSnapshot(slug)!;
+  assert(done.phase === 'finished', `phase ${done.phase}`);
+  const results = done.results!;
+  assert(results.map((r) => r.userId).join(',') === 't1,t2,t3', `등수 ${results.map((r) => r.userId)}`);
+  assert(results[0].rank === 1 && results[2].rank === 3, '등수 번호');
+  assert(results[0].remaining === results[0].pairsCleared, 'remaining 자리에는 지운 줄 수');
+  assert(results[2].remaining === 20, `t3 의 지운 줄 ${results[2].remaining}`);
+  assert(done.scoreboard.find((r) => r.userId === 't1')!.wins === 1, '테트리스도 승수를 센다');
+
+  // 끝난 뒤에는 타이머가 전부 꺼져서 프레임이 더 안 나가야 한다
+  const framesAtEnd = events.filter((e) => e.event === 'tetris:frames').length;
+  await sleep(300);
+  assert(
+    events.filter((e) => e.event === 'tetris:frames').length === framesAtEnd,
+    '종료 후에도 프레임 타이머가 돌고 있다'
+  );
+
+  const again = gameManager.rematch(slug, p1);
+  assert('state' in again && (again as any).state.phase === 'lobby', 'rematch 실패');
+  const relobby = gameManager.getSnapshot(slug)!;
+  assert(relobby.players.every((p) => p.lines === 0 && p.ko === 0), '리매치는 줄/KO 도 리셋');
+  assert(relobby.tetris !== null, '리매치 후에도 테트리스 설정은 남는다');
+  gameManager.destroy(slug);
+  return `${sent.length} attack, ${relay.length} frame relays`;
+}
+
+async function tetrisSprintFlow(): Promise<string> {
+  const slug = `selfcheck-tetris-sprint-${Date.now()}`;
+  const events: { event: string; payload: any }[] = [];
+  gameManager.setBroadcast((_slug, event, payload) => events.push({ event, payload: payload as any }));
+  const p1 = { userId: 's1', nickname: '하나' };
+  const p2 = { userId: 's2', nickname: '두울' };
+
+  gameManager.create(slug, p1, { gameId: 'tetris', tetris: { mode: 'sprint', sprintLines: 40 } });
+  gameManager.join(slug, p2);
+  const opts = gameManager.getSnapshot(slug)!.tetris!;
+  assert(opts.mode === 'sprint' && opts.garbageMul === 0, '레이스는 공격이 없다');
+  assert(opts.timeLimitSec === DEFAULT_TETRIS_OPTIONS.sprint.timeLimitSec, '레이스 기본 제한 시간');
+
+  gameManager.start(slug, p1);
+  await sleep(3200);
+  gameManager.tetrisFrame(slug, p1, tframe({ lines: 40, score: 8000 }));
+  gameManager.tetrisFrame(slug, p2, tframe({ lines: 18, score: 2000 }));
+
+  // s2 가 먼저(빠른 기록), s1 이 나중 — 등수는 완주 시간 오름차순
+  assert(gameManager.tetrisFinish(slug, p2, 38000, 40).ok === true, 's2 finish');
+  assert(gameManager.getSnapshot(slug)!.phase === 'playing', '한 명 남았으면 계속');
+  assert(gameManager.tetrisFinish(slug, p1, 45000, 40).ok === true, 's1 finish');
+
+  const done = gameManager.getSnapshot(slug)!;
+  assert(done.phase === 'finished', `phase ${done.phase}`);
+  const rows = done.results!;
+  assert(rows[0].userId === 's2' && rows[0].timeMs === 38000, `1등 ${rows[0].userId} ${rows[0].timeMs}`);
+  assert(rows[1].userId === 's1' && rows[1].timeMs === 45000, '2등은 느린 기록');
+  assert(rows[0].remaining === 40, '지운 줄 수가 remaining 자리에');
+  assert(
+    done.scoreboard.find((r) => r.userId === 's2')!.bestTimeMs === 38000,
+    '레이스 기록이 전적에 남아야 한다'
+  );
+  assert(events.some((e) => e.event === 'tetris:finished'), 'tetris:finished 브로드캐스트');
+  gameManager.destroy(slug);
+  return `${rows[0].timeMs}ms vs ${rows[1].timeMs}ms`;
+}
+
+
 async function managerFlow(): Promise<string> {
   const slug = `selfcheck-${Date.now()}`;
   const events: { event: string; payload: any }[] = [];
@@ -983,6 +1406,8 @@ async function coopFlow(): Promise<string> {
 async function main(): Promise<void> {
   await checkAsync('gameManager — 레이스 2인(옵션 부분병합·특수타일·reveal·unlock·결과)', managerFlow);
   await checkAsync('gameManager — 협동 한 판(공유 보드·숫자 순서·벽·팀 기록)', coopFlow);
+  await checkAsync('테트리스 — 3인 대전 한 판(옵션·프레임 릴레이·선두 타격·KO·등수)', tetrisVersusFlow);
+  await checkAsync('테트리스 — 2인 레이스 한 판(완주 시간 정렬·전적 기록)', tetrisSprintFlow);
 
   console.log('');
   if (failures > 0) {
