@@ -2,8 +2,8 @@ import { useEffect, useRef } from 'react';
 import { setTetrisPainter, type BoardFx } from '../../hooks/useTetrisGame';
 import { COLS, PIECE_COLORS, ROWS } from '../../games/tetris/types';
 import {
-  CLEAR_PHASE, DANGER_ROW_INDEX, FX_MS, PIECE_SHAPE,
-  colorOfCell, drawGhost, drawTile, isActiveCell, isGhostCell,
+  CLEAR_PHASE, DANGER_ROW_INDEX, FX_MS, PIECE_SHAPE, WIPE_STAGE_MS,
+  colorOfCell, drawGhost, drawTile, isActiveCell, isGhostCell, wipeStageOfCol,
 } from '../../games/tetris/ui';
 import { clamp01, comboGlow, easeOutCubic, easeOutQuad } from '../../games/tetris/fx';
 
@@ -12,6 +12,13 @@ import { clamp01, comboGlow, easeOutCubic, easeOutQuad } from '../../games/tetri
  * 200칸을 DOM 으로 60fps 리렌더하면 버벅이므로 캔버스로 그리고, React 는 여기서 **한 번도**
  * 렌더되지 않는다(`setTetrisPainter` 로 루프가 직접 호출).
  */
+/**
+ * 한 칸의 최소 px (설계서 §Z1 불변식).
+ * 6px × 10칸 = 60px → 상대 미니보드(좁은 창에서 50px, 넓은 창에서 90px)보다 절대 작아지지 않는다.
+ * 아레나가 판 행에 최소 높이를 보장하므로 이 하한에 걸려 판이 상자 밖으로 넘치는 일은 없다.
+ */
+const MIN_CELL = 6;
+
 export function TetrisCanvas({ className = '' }: { className?: string }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const cvRef = useRef<HTMLCanvasElement>(null);
@@ -68,12 +75,12 @@ export function TetrisCanvas({ className = '' }: { className?: string }) {
       ctx.stroke();
       ctx.restore();
 
-      // --- 줄 지움 타임라인 (번쩍 → 수축 → 낙하) --------------------------------
+      // --- 줄 지움 타임라인 (§Z4: 가운데→바깥 와이프 → 위 블록 낙하) ---------------
       let clearT = -1;
       let fallT = 1;
       if (fx.clear) {
         clearT = clamp01((fx.now - fx.clear.start) / fx.clear.ms);
-        fallT = easeOutCubic(clamp01((clearT - CLEAR_PHASE.shrink) / (1 - CLEAR_PHASE.shrink)));
+        fallT = easeOutCubic(clamp01((clearT - CLEAR_PHASE.fall) / (1 - CLEAR_PHASE.fall)));
       }
       /** 위 블록은 "접기 전 위치"에서 시작해 제자리로 내려앉는다(음수 = 위쪽). */
       const rowShift = (row: number) =>
@@ -106,6 +113,32 @@ export function TetrisCanvas({ className = '' }: { className?: string }) {
         ctx.restore();
       }
 
+      /* --- 지워지는 줄: NES 식 가운데→바깥 5단계 와이프 (§Z4-1) --------------------
+         엔진은 락 즉시 줄을 접으므로 `cells` 에는 이 줄이 이미 없다. 여기서 **직전 프레임에
+         읽어 둔 원래 색**으로 다시 그려 주는 게 연출의 전부다.
+         셀 루프보다 **먼저** 그려야 위에서 내려앉는 블록이 자연스럽게 이 줄을 덮는다. */
+      if (fx.clear) {
+        const cl = fx.clear;
+        const el = fx.now - cl.start;
+        for (let i = 0; i < cl.rows.length; i++) {
+          const y = oy + cl.rows[i] * cell;
+          for (let c = 0; c < COLS; c++) {
+            const t = (el - wipeStageOfCol(c) * WIPE_STAGE_MS) / WIPE_STAGE_MS;
+            if (t >= 1) continue;                    // 이 열은 이미 사라졌다
+            const x = ox + c * cell;
+            const color = cl.colors[i * COLS + c] || cl.color;
+            if (t <= 0) { drawTile(ctx, x, y, cell, color); continue; }
+            // 사라지는 순간: 칸이 가운데로 오므라들면서 하얗게 달아오른다
+            const k = 1 - t;
+            const inset = (cell * (1 - k)) / 2;
+            drawTile(ctx, x + inset, y + inset, cell * k, color, { bright: true, alpha: 0.4 + 0.6 * k });
+            // 섬광은 **칸 하나 크기**로만. 여기서 세게 때리면 4줄일 때 판 전체가 하얗게 날아간다.
+            ctx.fillStyle = `rgba(255,255,255,${(Math.sin(t * Math.PI) * 0.5).toFixed(3)})`;
+            ctx.fillRect(x, y, cell, cell);
+          }
+        }
+      }
+
       // 락 대기 중이면 조각이 깜빡인다 — 락 딜레이가 눈에 보여야 컨트롤이 는다(§T6.1).
       const blink = fx.lockDelay > 0
         ? 0.62 + 0.38 * Math.cos(fx.now * (0.02 + 0.05 * fx.lockDelay))
@@ -135,37 +168,40 @@ export function TetrisCanvas({ className = '' }: { className?: string }) {
       // 줄 파편 + 착지 먼지 (풀 재사용 — 매 프레임 배열을 만들지 않는다)
       fx.particles.draw(ctx, ox, oy, cell);
 
-      // 줄 지움: ① 흰 번쩍 → ② 가운데로 수축
-      if (fx.clear && clearT < CLEAR_PHASE.shrink) {
-        const sT = easeOutQuad(
-          clamp01((clearT - CLEAR_PHASE.flash) / (CLEAR_PHASE.shrink - CLEAR_PHASE.flash)),
-        );
-        const width = bw * (1 - sT);
-        const left = ox + (bw - width) / 2;
-        for (const r of fx.clear.rows) {
-          const y = oy + r * cell;
-          ctx.fillStyle = `rgba(255,255,255,${0.95 - 0.2 * sT})`;
-          ctx.fillRect(left, y, width, cell);
-          // 지운 조각 색 테두리 — 흰색만이면 어떤 블록이 터졌는지 안 읽힌다.
-          ctx.fillStyle = fx.clear.color;
-          ctx.globalAlpha = 0.55 * (1 - sT);
-          ctx.fillRect(left, y, width, Math.max(1, cell * 0.14));
-          ctx.fillRect(left, y + cell - Math.max(1, cell * 0.14), width, Math.max(1, cell * 0.14));
-          ctx.globalAlpha = 1;
-        }
+      // 4줄 = Tetris Effect 식 바닥 폭발: 지워진 밴드가 하얗게 달아오르며 위아래로 번진다.
+      // (reduced-motion 이면 생략 — 와이프만 남긴다)
+      if (fx.clear && fx.clear.big && !fx.reduced) {
+        let top = ROWS;
+        let bot = 0;
+        for (const r of fx.clear.rows) { if (r < top) top = r; if (r + 1 > bot) bot = r + 1; }
+        // 빠르게 꺼지는 감쇠(3제곱) — 밴드가 오래 빛나면 판이 하얗게 날아가 조각이 안 보인다.
+        const a = (1 - clearT) * (1 - clearT) * (1 - clearT);
+        const grow = cell * 4 * easeOutCubic(clearT);
+        const y0 = oy + top * cell;
+        const y1 = oy + bot * cell;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = `rgba(255,255,255,${(0.3 * a).toFixed(3)})`;
+        ctx.fillRect(ox, y0, bw, y1 - y0);
+        ctx.fillStyle = `rgba(165,243,252,${(0.16 * a).toFixed(3)})`;
+        ctx.fillRect(ox, y0 - grow, bw, grow);
+        ctx.fillRect(ox, y1, bw, grow);
+        ctx.restore();
       }
 
       // 4줄 = 판 전체 시안 플래시 + 세로 광선
       if (fx.beam) {
+        // 세로 광선은 **가운데→바깥 와이프를 가리면 안 된다** — 판 전체를 덮는 시안 막은
+        // 얇게(0.2 → 0.1), 광선도 절반 세기로. 4줄 "번쩍"은 아레나 screen 플래시가 따로 담당한다.
         const t = clamp01((fx.now - fx.beam.start) / FX_MS.beam);
-        const a = 1 - t;
+        const a = (1 - t) * (1 - t);
         ctx.save();
         ctx.globalCompositeOperation = 'lighter';
-        ctx.fillStyle = `rgba(37,244,238,${0.2 * a})`;
+        ctx.fillStyle = `rgba(37,244,238,${0.1 * a})`;
         ctx.fillRect(ox, oy, bw, bh);
         const beam = ctx.createLinearGradient(0, oy, 0, oy + bh);
-        beam.addColorStop(0, `rgba(165,243,252,${0.5 * a})`);
-        beam.addColorStop(0.5, `rgba(37,244,238,${0.32 * a})`);
+        beam.addColorStop(0, `rgba(165,243,252,${0.28 * a})`);
+        beam.addColorStop(0.5, `rgba(37,244,238,${0.18 * a})`);
         beam.addColorStop(1, 'rgba(37,244,238,0)');
         ctx.fillStyle = beam;
         const bwidth = cell * (0.18 + 0.5 * t);
@@ -195,6 +231,28 @@ export function TetrisCanvas({ className = '' }: { className?: string }) {
       }
 
       ctx.restore();  // 보드 클립 해제
+
+      /* 가로 광선 (§Z4-4) — 지워진 줄에서 좌우 **판 밖으로** 빛이 빠져나간다.
+         클립 밖에서 그려야 판을 넘어갈 수 있다. 그라디언트 객체를 매 프레임 만들지 않으려고
+         밝기가 다른 사각형 3장을 겹쳐 같은 감쇠를 낸다. */
+      if (fx.clear) {
+        const cl = fx.clear;
+        const a = (1 - clearT) * (1 - clearT);
+        const reach = bw * (0.28 + 0.62 * easeOutCubic(clearT));
+        const th = Math.max(1, cell * (0.9 - 0.45 * clearT));
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (const r of cl.rows) {
+          const yc = oy + r * cell + cell / 2 - th / 2;
+          for (let k = 0; k < 3; k++) {
+            const len = (reach * (k + 1)) / 3;
+            ctx.fillStyle = `rgba(255,255,255,${(a * 0.3 * (1 - k / 3)).toFixed(3)})`;
+            ctx.fillRect(ox - len, yc, len, th);
+            ctx.fillRect(ox + bw, yc, len, th);
+          }
+        }
+        ctx.restore();
+      }
 
       // 락 직후 1프레임 화이트 플래시 — "붙었다"는 촉감
       if (lockT > 0) {
@@ -249,22 +307,31 @@ export function TetrisCanvas({ className = '' }: { className?: string }) {
     const resize = () => {
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       const rect = box.getBoundingClientRect();
-      const w = Math.max(40, Math.floor(rect.width));
-      const h = Math.max(40, Math.floor(rect.height));
-      // 10:20 비율을 유지하면서 컨테이너에 꽉 채운다.
-      const cell = Math.max(4, Math.floor(Math.min(w / COLS, h / ROWS)));
+      const availW = Math.max(40, Math.floor(rect.width));
+      const availH = Math.max(40, Math.floor(rect.height));
+      /**
+       * **캔버스가 상자를 그대로 채우지 않는다** (설계서 §Z1).
+       * 예전에는 상자 크기를 그대로 캔버스로 써서, 창이 좁아 상자가 818×79 로 눌리면
+       * 칸이 3px 이 돼 플레이가 불가능했다. 이제는 상자 안에서 `min(w, h/2)` 로
+       * **1:2 판**을 만들고 남는 자리는 비워 둔다 — 어떤 폭에서도 비율이 깨지지 않는다.
+       */
+      const cell = Math.max(MIN_CELL, Math.floor(Math.min(availW / COLS, availH / ROWS)));
+      const bw = cell * COLS;
+      const bh = cell * ROWS;
+      // 좌우 여백 — 가로 광선(§Z4-4)이 판 밖으로 빠져나갈 자리. 없으면 잘려서 안 보인다.
+      const pad = Math.round(cell * 0.6);
+      const w = bw + pad * 2;
+      const h = bh;
       cv.width = Math.floor(w * dpr);
       cv.height = Math.floor(h * dpr);
       cv.style.width = `${w}px`;
       cv.style.height = `${h}px`;
       const ctx = cv.getContext('2d');
       ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
-      geomRef.current = {
-        cell,
-        ox: Math.floor((w - cell * COLS) / 2),
-        oy: Math.floor((h - cell * ROWS) / 2),
-        w, h,
-      };
+      geomRef.current = { cell, ox: pad, oy: 0, w, h };
+      // 검증(E2E)이 "실제로 그려진 판"을 잴 수 있게 — 캔버스에는 광선 여백이 섞여 있다.
+      box.dataset.ghcBoardW = String(bw);
+      box.dataset.ghcBoardH = String(bh);
       const last = lastRef.current;
       if (last) paint(last.cells, { ...last.fx, now: performance.now() });
     };

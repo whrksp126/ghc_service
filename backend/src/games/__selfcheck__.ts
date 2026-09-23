@@ -36,7 +36,7 @@ import {
   isLock,
   isNormalSymbol,
 } from './types';
-import { gameManager } from './gameManager';
+import { __setLobbyReturnDelayMs, gameManager } from './gameManager';
 import {
   B2B_BONUS,
   COLS,
@@ -990,6 +990,8 @@ async function tetrisVersusFlow(): Promise<string> {
   assert(opt2.startLevel === DEFAULT_TETRIS_OPTIONS.versus.startLevel, '되돌아오면 기본값');
   gameManager.updateOptions(slug, p1, { tetris: { garbageMul: 1 } });
 
+  gameManager.setReady(slug, p2, true); // §Z3
+  gameManager.setReady(slug, p3, true);
   const started = gameManager.start(slug, p1);
   assert('state' in started, 'tetris start failed');
   const s0 = (started as { state: GameSnapshot }).state;
@@ -1066,6 +1068,7 @@ async function tetrisSprintFlow(): Promise<string> {
   assert(opts.mode === 'sprint' && opts.garbageMul === 0, '레이스는 공격이 없다');
   assert(opts.timeLimitSec === DEFAULT_TETRIS_OPTIONS.sprint.timeLimitSec, '레이스 기본 제한 시간');
 
+  gameManager.setReady(slug, p2, true); // §Z3
   gameManager.start(slug, p1);
   await sleep(3200);
   // s2 가 먼저 40줄을 채우고, s1 은 18줄에서 멈춰 있는 상황
@@ -1154,6 +1157,9 @@ async function managerFlow(): Promise<string> {
     '난이도만 바꿨는데 다른 옵션이 날아갔다'
   );
   assert('error' in gameManager.start(slug, p2), 'non-host start must fail');
+  // §Z3: 방장이 아닌 사람이 준비를 눌러야 시작할 수 있다
+  assert('error' in gameManager.start(slug, p1), '미준비자가 있으면 시작이 거절돼야 한다');
+  assert('state' in gameManager.setReady(slug, p2, true), 'p2 준비 실패');
 
   const started = gameManager.start(slug, p1);
   assert('state' in started, 'start failed');
@@ -1351,6 +1357,7 @@ async function coopFlow(): Promise<string> {
   assert(lobby.options.items === false, '협동에는 아이템이 없어야 한다');
   assert(lobby.players.every((p) => p.boardId === 'shared'), 'coop players must share one board');
 
+  gameManager.setReady(slug, p2, true); // §Z3
   gameManager.start(slug, p1);
   await sleep(3200);
   const playing = gameManager.getSnapshot(slug)!;
@@ -1408,11 +1415,231 @@ async function coopFlow(): Promise<string> {
   return `team ${r1.timeMs}ms, ${r1.pairsCleared}+${r2.pairsCleared} pairs`;
 }
 
+// --- §Z3 준비(레디) 시스템 -------------------------------------------------
+
+const RHOST = { userId: 'r1', nickname: '방장' };
+const RP2 = { userId: 'r2', nickname: '두울' };
+const RP3 = { userId: 'r3', nickname: '세엣' };
+let readySeq = 0;
+
+/** 준비 검사용 테트리스 대전 로비 하나. 쓰고 나면 반드시 destroy(타이머 정리). */
+function readyLobby(joiners: { userId: string; nickname: string }[] = [RP2]): string {
+  const slug = `selfcheck-ready-${Date.now()}-${++readySeq}`;
+  gameManager.create(slug, RHOST, { gameId: 'tetris', tetris: { mode: 'versus' } });
+  for (const j of joiners) gameManager.join(slug, j);
+  return slug;
+}
+
+const readyOf = (slug: string, userId: string) =>
+  gameManager.getSnapshot(slug)!.players.find((p) => p.userId === userId)?.ready;
+
+/** 로비 하나를 만들어 fn 을 돌리고 무조건 치운다. */
+function withLobby(fn: (slug: string) => string | void, joiners = [RP2]): string | void {
+  const slug = readyLobby(joiners);
+  try {
+    return fn(slug);
+  } finally {
+    gameManager.destroy(slug);
+  }
+}
+
+function checkReadyRules(): void {
+  check('§Z3 — 미준비자가 있으면 시작 거절, 전원 준비하면 허용', () =>
+    withLobby((slug) => {
+      assert(gameManager.getSnapshot(slug)!.players.every((p) => p.ready === false), '기본값은 미준비');
+      const blocked = gameManager.start(slug, RHOST);
+      assert(
+        'error' in blocked && blocked.error === '아직 준비하지 않은 사람이 있어요',
+        `거절 메시지가 다르다: ${JSON.stringify(blocked)}`
+      );
+      assert('state' in gameManager.setReady(slug, RP2, true), '준비 실패');
+      assert(readyOf(slug, 'r2') === true, '스냅샷에 ready 가 실려야 한다');
+      const ok = gameManager.start(slug, RHOST);
+      assert('state' in ok && ok.state.phase === 'countdown', `전원 준비 후 시작 실패: ${JSON.stringify(ok)}`);
+    })
+  );
+
+  check('§Z3 — 방장 혼자면 준비 없이 시작 (시작 버튼이 곧 동의)', () =>
+    withLobby((slug) => {
+      const ok = gameManager.start(slug, RHOST);
+      assert('state' in ok && ok.state.phase === 'countdown', `혼자 시작 실패: ${JSON.stringify(ok)}`);
+    }, [])
+  );
+
+  check('§Z3 — 시작하면 준비가 전부 풀린다', () =>
+    withLobby((slug) => {
+      gameManager.setReady(slug, RP2, true);
+      gameManager.start(slug, RHOST);
+      assert(
+        gameManager.getSnapshot(slug)!.players.every((p) => !p.ready),
+        '시작 후에도 ready 가 남아 있다'
+      );
+    })
+  );
+
+  check('§Z3 — 플레이어 입장 시 준비 해제', () =>
+    withLobby((slug) => {
+      gameManager.setReady(slug, RP2, true);
+      gameManager.join(slug, RP3);
+      assert(readyOf(slug, 'r2') === false, '입장하면 전원 준비가 풀려야 한다');
+      assert(readyOf(slug, 'r3') === false, '새로 들어온 사람도 미준비');
+    })
+  );
+
+  check('§Z3 — 퇴장 시 준비 해제', () =>
+    withLobby((slug) => {
+      gameManager.setReady(slug, RP2, true);
+      gameManager.setReady(slug, RP3, true);
+      gameManager.onParticipantLeft(slug, 'r3', false);
+      assert(gameManager.getSnapshot(slug)!.players.length === 2, '퇴장이 반영되지 않았다');
+      assert(readyOf(slug, 'r2') === false, '누가 나가면 준비가 풀려야 한다');
+    }, [RP2, RP3])
+  );
+
+  check('§Z3 — 관전 전환 시 준비 해제', () =>
+    withLobby((slug) => {
+      gameManager.setReady(slug, RP2, true);
+      gameManager.setReady(slug, RP3, true);
+      gameManager.spectate(slug, RP3);
+      assert(gameManager.getSnapshot(slug)!.spectators.length === 1, '관전자로 안 내려갔다');
+      assert(readyOf(slug, 'r2') === false, '관전 전환에도 준비가 풀려야 한다');
+    }, [RP2, RP3])
+  );
+
+  check('§Z3 — 옵션·모드·게임 변경 시 준비 해제', () =>
+    withLobby((slug) => {
+      gameManager.setReady(slug, RP2, true);
+      gameManager.updateOptions(slug, RHOST, { tetris: { startLevel: 5 } });
+      assert(readyOf(slug, 'r2') === false, '테트리스 옵션 변경에 안 풀렸다');
+      gameManager.setReady(slug, RP2, true);
+      gameManager.updateOptions(slug, RHOST, { gameId: 'shisen' });
+      assert(readyOf(slug, 'r2') === false, '게임 변경에 안 풀렸다');
+      gameManager.setReady(slug, RP2, true);
+      gameManager.updateOptions(slug, RHOST, { mode: 'coop' });
+      assert(readyOf(slug, 'r2') === false, '모드 변경에 안 풀렸다');
+      gameManager.setReady(slug, RP2, true);
+      gameManager.updateOptions(slug, RHOST, { options: { difficulty: 5 } });
+      assert(readyOf(slug, 'r2') === false, '사천성 옵션 변경에 안 풀렸다');
+    })
+  );
+
+  check('§Z3 — 값이 실제로 안 바뀌면 준비는 유지된다', () =>
+    withLobby((slug) => {
+      gameManager.updateOptions(slug, RHOST, { tetris: { startLevel: 5, ghost: false } });
+      gameManager.setReady(slug, RP2, true);
+      gameManager.updateOptions(slug, RHOST, { tetris: { startLevel: 5, ghost: false } });
+      assert(readyOf(slug, 'r2') === true, '같은 값 재전송으로 준비가 풀리면 안 된다');
+      gameManager.updateOptions(slug, RHOST, {}); // 빈 패치
+      assert(readyOf(slug, 'r2') === true, '빈 패치로도 풀리면 안 된다');
+      gameManager.updateOptions(slug, RHOST, { gameId: 'tetris' }); // 이미 테트리스
+      assert(readyOf(slug, 'r2') === true, '같은 게임을 다시 골라도 풀리면 안 된다');
+      // 클램프로 같은 값이 되는 경우도 변경이 아니다 (startLevel 최대 10)
+      gameManager.updateOptions(slug, RHOST, { tetris: { startLevel: 5.4 } });
+      assert(readyOf(slug, 'r2') === true, '보정 결과가 같으면 변경이 아니다');
+    })
+  );
+
+  check('§Z3 — 로비가 아니면 setReady 거절', () =>
+    withLobby((slug) => {
+      gameManager.setReady(slug, RP2, true);
+      gameManager.start(slug, RHOST); // countdown
+      const res = gameManager.setReady(slug, RP2, true);
+      assert('error' in res, `카운트다운 중 준비는 거절해야 한다: ${JSON.stringify(res)}`);
+    })
+  );
+
+  check('§Z3 — 플레이어가 아닌 사람(관전자)의 setReady 거절', () =>
+    withLobby((slug) => {
+      gameManager.spectate(slug, RP3); // 참가한 적 없는 사람 → 관전자
+      assert('error' in gameManager.setReady(slug, RP3, true), '관전자는 준비할 수 없다');
+      assert('error' in gameManager.setReady(slug, { userId: 'nobody', nickname: '외부인' }, true), '외부인도 거절');
+    })
+  );
+}
+
+/**
+ * 종료 후 자동 로비 복귀 (§Z3). 12초를 그대로 기다리지 않도록 지연을 주입한다
+ * (__setLobbyReturnDelayMs — 셀프체크 전용, 0 을 주면 기본 12초로 복귀).
+ */
+async function autoLobbyFlow(): Promise<string> {
+  const AUTO_MS = 400;
+  __setLobbyReturnDelayMs(AUTO_MS);
+  const slug = readyLobby();
+  try {
+    const snap = () => gameManager.getSnapshot(slug)!;
+    gameManager.setReady(slug, RP2, true);
+    gameManager.start(slug, RHOST);
+    await sleep(3200);
+    assert(snap().phase === 'playing', 'playing 으로 못 넘어감');
+    gameManager.tetrisFrame(slug, RP2, tframe({ lines: 5, score: 300 }));
+    gameManager.tetrisTopout(slug, RP2); // 2인 대전이라 한 명 탈락 = 종료
+    const fin = snap();
+    assert(fin.phase === 'finished', `phase ${fin.phase}`);
+    assert(fin.results !== null && fin.results.length === 2, '결과가 있어야 한다');
+    assert('error' in gameManager.setReady(slug, RHOST, true), '종료 화면에서도 준비는 거절');
+    const wins = fin.scoreboard.find((r) => r.userId === 'r1')?.wins ?? 0;
+    assert(wins === 1, `승수 집계 ${wins}`);
+
+    await sleep(AUTO_MS + 400);
+    const back = snap();
+    assert(back.phase === 'lobby', `자동 복귀 실패 (phase ${back.phase})`);
+    assert(back.results === null, '로비로 돌아오면 결과는 비워야 한다');
+    assert(back.endedAt === null && back.startAt === null, '복귀 시 시각도 비운다');
+    assert(Object.keys(back.boards).length === 0, '복귀 시 보드도 정리해야 한다');
+    assert(back.players.every((p) => !p.ready), '복귀 시 준비 전원 해제');
+    assert(back.players.every((p) => p.score === 0 && p.lines === 0 && !p.forfeited), '복귀 시 점수/줄/기권 리셋');
+    assert(back.scoreboard.find((r) => r.userId === 'r1')?.wins === wins, '누적 전적은 복귀해도 유지돼야 한다');
+    // 복귀했으니 다시 준비를 받아야 시작된다
+    assert('error' in gameManager.start(slug, RHOST), '복귀 직후에는 미준비라 시작 거절');
+    return `auto return in ${AUTO_MS}ms (운영 12s)`;
+  } finally {
+    __setLobbyReturnDelayMs(0);
+    gameManager.destroy(slug);
+  }
+}
+
+/** rematch = 즉시 재시작이 아니라 로비 복귀, 누구나 호출 가능 (§Z3). */
+async function manualLobbyFlow(): Promise<string> {
+  const AUTO_MS = 400;
+  __setLobbyReturnDelayMs(AUTO_MS);
+  const events: { event: string; payload: any }[] = [];
+  gameManager.setBroadcast((_slug, event, payload) => events.push({ event, payload }));
+  const slug = readyLobby();
+  try {
+    const snap = () => gameManager.getSnapshot(slug)!;
+    gameManager.setReady(slug, RP2, true);
+    gameManager.start(slug, RHOST);
+    await sleep(3200);
+    gameManager.tetrisTopout(slug, RP2);
+    assert(snap().phase === 'finished', '판이 안 끝났다');
+
+    const rm = gameManager.rematch(slug, RP2); // 방장이 아닌 사람
+    assert('state' in rm, `비방장도 로비로 보낼 수 있어야 한다: ${JSON.stringify(rm)}`);
+    assert((rm as any).state.phase === 'lobby', 'rematch 는 즉시 재시작이 아니라 로비 복귀');
+    assert((rm as any).state.results === null, 'rematch 후 결과는 비어야 한다');
+    assert(snap().players.every((p) => !p.ready), 'rematch 후 준비 해제');
+    assert('error' in gameManager.rematch(slug, RHOST), '로비에서 또 부르면 거절');
+
+    // 수동 복귀했으면 자동 복귀 타이머는 취소돼 있어야 한다(추가 방송이 없어야 한다)
+    const n = events.length;
+    await sleep(AUTO_MS + 400);
+    assert(events.length === n, `수동 복귀 후에도 자동 타이머가 살아 있다 (+${events.length - n})`);
+    assert(snap().phase === 'lobby', '여전히 로비여야 한다');
+    return `${events.filter((e) => e.event === 'game:state').length} state broadcasts`;
+  } finally {
+    __setLobbyReturnDelayMs(0);
+    gameManager.destroy(slug);
+  }
+}
+
 async function main(): Promise<void> {
   await checkAsync('gameManager — 레이스 2인(옵션 부분병합·특수타일·reveal·unlock·결과)', managerFlow);
   await checkAsync('gameManager — 협동 한 판(공유 보드·숫자 순서·벽·팀 기록)', coopFlow);
   await checkAsync('테트리스 — 3인 대전 한 판(옵션·프레임 릴레이·선두 타격·KO·등수)', tetrisVersusFlow);
   await checkAsync('테트리스 — 2인 레이스 한 판(완주 시간 정렬·전적 기록)', tetrisSprintFlow);
+  checkReadyRules();
+  await checkAsync('§Z3 — 종료 12초 뒤 자동 로비 복귀(결과 비움·전적 유지·준비 해제)', autoLobbyFlow);
+  await checkAsync('§Z3 — rematch 는 로비 복귀(누구나)·자동 타이머 취소', manualLobbyFlow);
 
   console.log('');
   if (failures > 0) {

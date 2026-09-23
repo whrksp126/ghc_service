@@ -86,6 +86,19 @@ const SHARED_BOARD_ID = 'shared';
 /** 숫자 순서 타일 쌍 수 (v2 §V3) */
 const NUMBERS_PER_SIZE: Record<BoardSize, number> = { s: 3, m: 4, l: 5 };
 const SYSTEM_USER = 'system';
+/**
+ * 종료 후 자동으로 로비로 돌아가기까지 (tetris-design.md §Z3).
+ * 결과 화면에서 방장이 바로 다시 시작해 버리는 걸 막고, 항상 로비(=준비 단계)를 거치게 한다.
+ */
+const LOBBY_RETURN_MS = 12000;
+let lobbyReturnDelayMs = LOBBY_RETURN_MS;
+/**
+ * 셀프체크 전용 — 12초를 실제로 기다리지 않으려고 지연만 줄인다.
+ * 0 이하를 주면 기본값(LOBBY_RETURN_MS)으로 되돌린다. 운영 코드에서는 호출하지 말 것.
+ */
+export function __setLobbyReturnDelayMs(ms: number): void {
+  lobbyReturnDelayMs = ms > 0 ? ms : LOBBY_RETURN_MS;
+}
 
 interface InternalPlayer extends PlayerState {
   /** playing 중 기권(게임에는 남아 결과 최하위 그룹으로 집계) */
@@ -135,6 +148,8 @@ interface RoomGame {
   sharedItems: PlayerItems;   // 쟁탈전 공유 카운트
   countdownTimer: ReturnType<typeof setTimeout> | null;
   limitTimer: ReturnType<typeof setTimeout> | null;
+  /** finished → lobby 자동 복귀 타이머 (§Z3). 수동 복귀·종료 시 반드시 끈다. */
+  lobbyTimer: ReturnType<typeof setTimeout> | null;
   forfeitTimers: Map<string, ReturnType<typeof setTimeout>>;
   effectTimers: Set<ReturnType<typeof setTimeout>>;
 }
@@ -182,6 +197,7 @@ function makePlayer(game: RoomGame, actor: GameActor): InternalPlayer {
     connected: true,
     forfeited: false,
     rank: 1,
+    ready: false,   // 들어오면 항상 미준비부터 (§Z3)
     hintBreak: false,
   };
 }
@@ -265,6 +281,7 @@ function toPublicPlayer(p: InternalPlayer): PlayerState {
     connected: p.connected,
     forfeited: p.forfeited,
     rank: p.rank,
+    ready: p.ready,
   };
 }
 
@@ -312,12 +329,56 @@ function clearTimers(game: RoomGame): void {
   tetris.stopTetris(game.tetrisRun); // 8Hz 프레임·서바이벌 상승 타이머도 같이 끈다
   if (game.countdownTimer) clearTimeout(game.countdownTimer);
   if (game.limitTimer) clearTimeout(game.limitTimer);
+  if (game.lobbyTimer) clearTimeout(game.lobbyTimer);
   game.countdownTimer = null;
   game.limitTimer = null;
+  game.lobbyTimer = null;
   for (const t of game.forfeitTimers.values()) clearTimeout(t);
   game.forfeitTimers.clear();
   for (const t of game.effectTimers) clearTimeout(t);
   game.effectTimers.clear();
+}
+
+/**
+ * 준비 전원 해제 (§Z3). 시작 / 로비 복귀 / 입퇴장·관전 전환 / 설정 변경이 호출한다.
+ * 바뀐 게 없으면 false — 호출부가 쓸데없는 방송을 하지 않게 한다.
+ */
+function clearReady(game: RoomGame): boolean {
+  let changed = false;
+  for (const p of game.players.values()) {
+    if (!p.ready) continue;
+    p.ready = false;
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * 설정 지문. 옵션 변경으로 준비를 풀 때 **값이 실제로 바뀐 경우에만** 풀려고 비교용으로 쓴다
+ * (같은 값을 다시 보내는 프론트 스테퍼/토글에 준비가 풀리면 로비가 못 쓰게 된다).
+ */
+function settingsFingerprint(game: RoomGame): string {
+  const o = game.options;
+  const t = game.tetris;
+  return [
+    game.gameId,
+    game.mode,
+    o.boardSize,
+    o.mapShape,
+    o.difficulty,
+    o.items,
+    o.timeLimitSec,
+    o.specials.mystery,
+    o.specials.numbers,
+    o.specials.keys,
+    o.specials.walls,
+    o.tools.hint,
+    o.tools.shuffle,
+    o.tools.wand,
+    t
+      ? [t.mode, t.sprintLines, t.startLevel, t.levelUpLines, t.hold, t.ghost, t.nextCount, t.garbageMul, t.riseSec, t.timeLimitSec].join(':')
+      : '-',
+  ].join('|');
 }
 
 function isPlayable(game: RoomGame, p: InternalPlayer, now: number): boolean {
@@ -595,6 +656,39 @@ function updateScoreboard(game: RoomGame, results: ResultRow[]): void {
   }
 }
 
+/**
+ * finished → lobby 복귀 (§Z3). 자동 타이머와 수동 `rematch` 가 같은 길을 쓴다.
+ * 결과(results)는 비운다 — 로비 화면에 지난 판 결과가 남으면 안 된다.
+ * 누적 전적(scoreboard)은 방 단위라 여기서 건드리지 않는다.
+ */
+function returnToLobby(game: RoomGame, reason: string): GameSnapshot {
+  clearTimers(game); // 자동 복귀 타이머 포함해서 전부 정리
+  // 기권했던 사람도 다음 판 기본 참가(아래 루프에서 forfeited 까지 리셋된다). 빠지려면 game:spectate.
+  game.phase = 'lobby';
+  game.startAt = null;
+  game.endedAt = null;
+  game.results = null;
+  game.boards.clear();
+  game.tetrisRun = null; // 타이머는 위 clearTimers 에서 이미 껐다
+  game.sharedItems = { ...game.options.tools };
+  for (const p of game.players.values()) {
+    p.score = 0;
+    p.combo = 0;
+    p.maxCombo = 0;
+    p.pairsCleared = 0;
+    p.lines = 0;
+    p.ko = 0;
+    p.lastMatchAt = 0;
+    p.items = { ...(game.mode === 'coop' ? game.sharedItems : game.options.tools) };
+    p.finishedAt = null;
+    p.forfeited = false;
+    p.hintBreak = false;
+    p.ready = false; // 로비로 왔으면 다시 준비를 받아야 한다
+  }
+  console.log(`[game] ${game.slug} back to lobby (${reason})`);
+  return emitState(game);
+}
+
 function endGame(game: RoomGame, reason: string): void {
   if (game.phase === 'finished') return;
   clearTimers(game);
@@ -604,6 +698,14 @@ function endGame(game: RoomGame, reason: string): void {
   updateScoreboard(game, game.results);
   console.log(`[game] ${game.slug} finished (${game.mode}, ${reason})`);
   emitState(game);
+
+  // 결과를 잠깐 보여준 뒤 자동으로 로비(=준비 단계)로. 그 사이에 수동 복귀하면 clearTimers 가 끈다.
+  game.lobbyTimer = setTimeout(() => {
+    game.lobbyTimer = null;
+    if (games.get(game.slug) !== game) return; // 이미 닫힌 게임
+    if (game.phase !== 'finished') return;
+    returnToLobby(game, 'auto');
+  }, lobbyReturnDelayMs);
 }
 
 function maybeEndByExhaustion(game: RoomGame): void {
@@ -1014,6 +1116,7 @@ export const gameManager = {
       sharedItems: { ...options.tools },
       countdownTimer: null,
       limitTimer: null,
+      lobbyTimer: null,
       forfeitTimers: new Map(),
       effectTimers: new Set(),
     };
@@ -1036,6 +1139,7 @@ export const gameManager = {
     if (game.players.size >= MAX_PLAYERS) return { error: `플레이어가 가득 찼어요 (최대 ${MAX_PLAYERS}명)` };
     game.spectators.delete(actor.userId);
     game.players.set(actor.userId, makePlayer(game, actor));
+    clearReady(game); // 사람이 늘었으면 전원 다시 준비 (§Z3)
     return { state: emitState(game) };
   },
 
@@ -1061,6 +1165,7 @@ export const gameManager = {
       // 로비/종료 상태에서의 관전 전환. host는 관전자가 되어도 그대로 host다(이양은 이탈 때만).
       game.players.delete(actor.userId);
       if (game.mode === 'race') game.boards.delete(player.boardId);
+      clearReady(game); // 구성이 바뀌었으니 전원 다시 준비 (§Z3)
     }
     game.spectators.set(actor.userId, { userId: actor.userId, nickname: actor.nickname });
     return { state: emitState(game) };
@@ -1075,6 +1180,7 @@ export const gameManager = {
     if (!game) return { error: '게임이 없어요' };
     if (game.hostUserId !== actor.userId) return { error: '게임 개설자만 바꿀 수 있어요' };
     if (game.phase !== 'lobby') return { error: '로비에서만 바꿀 수 있어요' };
+    const before = settingsFingerprint(game);
 
     if (input.gameId && input.gameId !== game.gameId) {
       // 게임을 갈아타면 그 게임의 기본 설정으로 시작한다(사천성으로 돌아가면 테트리스 설정은 버린다)
@@ -1106,6 +1212,20 @@ export const gameManager = {
       for (const p of game.players.values()) p.boardId = boardIdFor(game.mode, p.userId);
     }
     game.options = mergeOptions(base, input.options, game.mode);
+    // 설정을 바꿔 놓고 바로 시작하는 걸 막는다. 단, 같은 값을 다시 보낸 경우엔 풀지 않는다 (§Z3).
+    if (settingsFingerprint(game) !== before) clearReady(game);
+    return { state: emitState(game) };
+  },
+
+  /** 로비 준비 토글 (§Z3). 로비에서, 플레이어만. */
+  setReady(slug: string, actor: GameActor, ready: boolean): StateResult {
+    const game = games.get(slug);
+    if (!game) return { error: '게임이 없어요' };
+    if (game.phase !== 'lobby') return { error: '로비에서만 준비할 수 있어요' };
+    const player = game.players.get(actor.userId);
+    if (!player) return { error: '참가한 사람만 준비할 수 있어요' };
+    if (player.ready === ready) return { state: snapshot(game) }; // 변화 없으면 방송하지 않는다
+    player.ready = ready;
     return { state: emitState(game) };
   },
 
@@ -1116,6 +1236,12 @@ export const gameManager = {
     if (game.phase !== 'lobby') return { error: '로비에서만 시작할 수 있어요' };
     const players = [...game.players.values()];
     if (players.length === 0) return { error: '플레이어가 최소 1명 필요해요' };
+    // 방장 본인의 준비는 보지 않는다 — 시작 버튼을 누르는 것이 곧 동의다 (§Z3).
+    // 방장 혼자면(플레이어 1명) 준비 없이 바로 시작.
+    if (players.some((p) => p.userId !== game.hostUserId && !p.ready)) {
+      return { error: '아직 준비하지 않은 사람이 있어요' };
+    }
+    for (const p of players) p.ready = false; // 다음 로비에서 다시 받는다
 
     game.seed = newSeed();
     game.rng = mulberry32(game.seed);
@@ -1451,35 +1577,15 @@ export const gameManager = {
     return { ok: true };
   },
 
+  /**
+   * 결과 화면의 `로비로` (§Z3). 즉시 재시작이 아니라 **로비 복귀**이고, 방장이 아니어도 누를 수 있다.
+   * 자동 복귀 타이머가 남아 있으면 returnToLobby 안의 clearTimers 가 취소한다.
+   */
   rematch(slug: string, actor: GameActor): StateResult {
     const game = games.get(slug);
     if (!game) return { error: '게임이 없어요' };
-    if (game.hostUserId !== actor.userId) return { error: '게임 개설자만 다시 시작할 수 있어요' };
-    if (game.phase !== 'finished') return { error: '끝난 뒤에만 다시 할 수 있어요' };
-
-    clearTimers(game);
-    // 기권했던 사람도 다음 판 기본 참가(아래 루프에서 forfeited 까지 리셋된다). 빠지려면 game:spectate.
-    game.phase = 'lobby';
-    game.startAt = null;
-    game.endedAt = null;
-    game.results = null;
-    game.boards.clear();
-    game.tetrisRun = null; // 타이머는 위 clearTimers 에서 이미 껐다
-    game.sharedItems = { ...game.options.tools };
-    for (const p of game.players.values()) {
-      p.score = 0;
-      p.combo = 0;
-      p.maxCombo = 0;
-      p.pairsCleared = 0;
-      p.lines = 0;
-      p.ko = 0;
-      p.lastMatchAt = 0;
-      p.items = { ...(game.mode === 'coop' ? game.sharedItems : game.options.tools) };
-      p.finishedAt = null;
-      p.forfeited = false;
-      p.hintBreak = false;
-    }
-    return { state: emitState(game) };
+    if (game.phase !== 'finished') return { error: '끝난 뒤에만 로비로 갈 수 있어요' };
+    return { state: returnToLobby(game, `manual by ${actor.userId}`) };
   },
 
   close(slug: string, actor: GameActor, isRoomOwner: boolean): { error: string } | { ok: true } {
@@ -1552,6 +1658,7 @@ export const gameManager = {
     // lobby / finished: 바로 제거
     game.players.delete(userId);
     if (game.mode === 'race') game.boards.delete(player.boardId);
+    clearReady(game); // 구성이 바뀌었으니 전원 다시 준비 (§Z3)
     transferHostIfNeeded(game, userId);
     if (game.players.size === 0) {
       console.log(`[game] ${slug} deleted (no players left)`);

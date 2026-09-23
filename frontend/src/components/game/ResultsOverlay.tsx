@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Crown, RotateCcw, Users, X } from 'lucide-react';
+import { Crown, Users, X } from 'lucide-react';
 import { emitWithAck } from '../../lib/socket';
 import { showToast } from '../common/Toast';
 import { Button } from '../common/Button';
-import { useGameStore } from '../../stores/gameStore';
 import { useAuthStore } from '../../stores/authStore';
 import { formatMs } from './Scoreboard';
 import { isForfeited } from '../../games/events';
@@ -14,12 +13,17 @@ import { prefersReducedMotion } from '../../games/motion';
 import type { GameSnapshot } from '../../games/types';
 
 /**
+ * 종료 후 서버가 자동으로 로비로 되돌리기까지의 시간(§Z3).
+ * **서버 값의 거울**이다 — 서버가 바뀌면 여기도 같이 고친다.
+ */
+const LOBBY_RETURN_MS = 12000;
+
+/**
  * 결과 오버레이. race=순위 카드, coop=팀 기록 + 기여도.
  * B2에서 4위→1위 순차 슬라이드업 + 컨페티가 들어온다.
  */
 export function ResultsOverlay({ snapshot }: { snapshot: GameSnapshot }) {
   const myUserId = useAuthStore((s) => s.userId);
-  const closePanel = useGameStore((s) => s.closePanel);
   const [busy, setBusy] = useState(false);
   const isHost = snapshot.hostUserId === myUserId;
   const isCoop = snapshot.gameId !== 'tetris' && snapshot.mode === 'coop';
@@ -51,6 +55,17 @@ export function ResultsOverlay({ snapshot }: { snapshot: GameSnapshot }) {
   const revealMs = reduced ? 0 : Math.max(0, results.length - 1) * 200;
 
   const [burst, setBurst] = useState(false);
+  // 서버가 자동으로 로비로 되돌리기까지 남은 초 — 사용자가 "왜 안 넘어가지?" 하지 않도록 보여 준다.
+  const [autoSec, setAutoSec] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!snapshot.endedAt) { setAutoSec(null); return; }
+    const deadline = snapshot.endedAt + LOBBY_RETURN_MS;
+    const tick = () => setAutoSec(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [snapshot.endedAt]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -132,28 +147,24 @@ export function ResultsOverlay({ snapshot }: { snapshot: GameSnapshot }) {
           ))}
         </div>
 
-        <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
-          {isHost ? (
-            <>
-              <Button
-                size="sm"
-                loading={busy}
-                onClick={() => run('game:rematch', '다시 하기', () => { void emitWithAck('game:start', {}).catch(() => {}); })}
-              >
-                <RotateCcw size={14} /> 다시 하기
-              </Button>
-              <Button size="sm" variant="secondary" loading={busy} onClick={() => run('game:rematch', '로비로')}>
-                <Users size={14} /> 로비로
-              </Button>
-              <Button size="sm" variant="ghost" loading={busy} onClick={() => run('game:close', '게임 닫기')}>
+        <div className="mt-5 flex flex-col items-center gap-2">
+          {/* 즉시 재시작은 없앴다(§Z3) — 끝나면 무조건 대기방으로 돌아가 전원이 다시 준비해야 한다 */}
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Button size="sm" variant="secondary" loading={busy} data-ghc-lobby="" onClick={() => run('game:rematch', '로비로')}>
+              <Users size={14} /> 로비로
+            </Button>
+            {isHost && (
+              <Button size="sm" variant="ghost" loading={busy} data-ghc-close-room="" onClick={() => run('game:close', '게임 닫기')}>
                 <X size={14} /> 게임 닫기
               </Button>
-            </>
-          ) : (
-            <>
-              <p className="w-full text-center text-xs text-white/40">호스트가 다시 시작하길 기다리는 중…</p>
-              <Button size="sm" variant="secondary" onClick={closePanel}>닫기</Button>
-            </>
+            )}
+          </div>
+          {autoSec !== null && (
+            <p className="text-[11px] text-white/35">
+              {autoSec > 0
+                ? <><span className="font-display tabular-nums text-white/60">{autoSec}</span>초 뒤 대기방으로</>
+                : '곧 대기방으로 돌아가요'}
+            </p>
           )}
         </div>
       </motion.div>

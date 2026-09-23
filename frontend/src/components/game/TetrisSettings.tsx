@@ -14,13 +14,15 @@ interface TetrisSettingsProps {
   canEdit: boolean;
   busy?: boolean;
   canStart: boolean;
+  /** 시작이 잠긴 이유(예: `준비 대기 중 (1/2)`) — 있으면 SPACE BAR 힌트 대신 보여 준다 (§Z3) */
+  startHint?: string;
   onOptions: (patch: Partial<TetrisOptions>) => void;
   onStart: () => void;
 }
 
 /** 테트리스 상세 설정 (설계서 §T7) — 사천성 `ShisenSettings` 의 칩/스테퍼 톤을 그대로 쓴다. */
 export function TetrisSettings({
-  options, canEdit, busy, canStart, onOptions, onStart,
+  options, canEdit, busy, canStart, startHint, onOptions, onStart,
 }: TetrisSettingsProps) {
   const locked = !canEdit || !!busy;
 
@@ -167,16 +169,21 @@ export function TetrisSettings({
       {canEdit && (
         <motion.button
           whileTap={{ scale: 0.98 }}
+          data-ghc-start=""
           disabled={!canStart}
           onClick={onStart}
-          className={`mt-1 flex w-full flex-col items-center gap-0.5 rounded-feed py-3 transition-colors ${
-            canStart ? 'bg-primary hover:bg-primary-hover' : 'bg-dark-700 opacity-50'
+          /* 설정이 길어 패널이 스크롤될 때도 시작 버튼은 바닥에 붙어 항상 보인다(§Z2 같은 취지) */
+          className={`sticky bottom-0 z-10 mt-1 flex w-full flex-col items-center gap-0.5 rounded-feed py-3 transition-colors shadow-[0_-10px_18px_-10px_rgba(0,0,0,0.75)] ${
+            canStart ? 'bg-primary text-white hover:bg-primary-hover' : 'cursor-not-allowed bg-dark-700 text-white/40'
           }`}
         >
-          <span className="flex items-center gap-2 font-display text-xl font-black text-white">
+          <span className="flex items-center gap-2 font-display text-xl font-black">
             <Play size={20} /> 게임시작!
           </span>
-          <span className="rounded bg-black/25 px-2 py-0.5 text-[10px] tracking-widest text-white/70">SPACE BAR</span>
+          {/* 전원이 준비돼야 시작할 수 있다 — 잠긴 이유를 버튼 안에서 바로 알려 준다 (§Z3) */}
+          <span className={`rounded bg-black/25 px-2 py-0.5 text-[10px] ${startHint ? 'text-warning' : 'tracking-widest text-white/70'}`}>
+            {startHint ?? 'SPACE BAR'}
+          </span>
         </motion.button>
       )}
     </div>

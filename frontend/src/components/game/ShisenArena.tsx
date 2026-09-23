@@ -63,7 +63,9 @@ function ArenaBottomBar({
 }) {
   const mapName = (MAP_GUIDE[snapshot.options.mapShape] ?? MAP_GUIDE.rect).name;
   return (
-    <div className="relative flex shrink-0 items-center gap-2 px-1 text-[11px] text-white/45">
+    // 테트리스 아레나와 **같은 보장**(설계서 §Z2): 어떤 폭·높이에서도 패널 바닥에 붙어 있다.
+    // `mt-auto`(위가 모자라도 바닥) + `shrink-0`(위가 넘쳐도 이 줄은 안 줄어든다) + `z-20`.
+    <div className="relative z-20 mt-auto flex shrink-0 items-center gap-2 px-1 text-[11px] text-white/45">
       <span className="hidden shrink-0 sm:inline">{MODE_TEXT[snapshot.mode]}</span>
       <span className="shrink-0 rounded bg-black/35 px-1.5 py-0.5">{mapName}</span>
       <ArenaClock snapshot={snapshot} />
@@ -97,6 +99,7 @@ function ArenaBottomBar({
           </button>
         )}
         <button
+          data-ghc-exit="1"
           onClick={onLeave}
           className="flex items-center gap-1 rounded-full bg-danger/80 px-2.5 py-1 text-white transition-colors hover:bg-danger"
         >
@@ -234,7 +237,8 @@ export function ShisenArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
       ref={arenaRef}
       animate={shakeControls}
       // isolate: 배경(-z-10)이 게임 패널 밖으로 빠지지 않도록 스태킹 컨텍스트를 만든다.
-      className="relative isolate flex h-full min-h-0 flex-col gap-2 p-2"
+      // overflow-hidden: 내용이 넘쳐도 하단 바(기권·나가기)가 화면 밖으로 밀려나지 않게 한다.
+      className="relative isolate flex h-full min-h-0 flex-col gap-2 overflow-hidden p-2"
     >
       <ThemeBackdrop theme={theme} seed={snapshot.seed} />
 

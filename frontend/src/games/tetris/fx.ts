@@ -178,20 +178,25 @@ export class ParticleField {
     this.size[i] = size; this.col[i] = color;
   }
 
-  /** 줄 지움 — 그 줄에서 좌우로 튀는 파편. */
-  burstRow(row: number, cols: number, color: string, strength = 1): void {
-    const count = Math.min(18, 10 + Math.round(strength * 4));
+  /**
+   * 줄 지움 파편 (설계서 §Z4-3) — **사라지는 칸 하나**에서 2~4 조각이 좌우·위로 튀고
+   * 중력에 떨어진다. 색은 그 칸에 실제로 있던 블록 색이어야 "무엇이 터졌는지"가 읽힌다.
+   *
+   * 줄 단위가 아니라 칸 단위인 이유: 와이프가 가운데→바깥 5단계로 진행되므로 파편도
+   * 그 단계에 맞춰 나눠 뿌려야 한다. 한 번에 다 뿌리면 첫 프레임에 상한(120)을 다 써 버려
+   * 정작 마지막 단계에서 아무것도 안 튄다.
+   */
+  shatterCell(col: number, row: number, color: string, count: number): void {
     for (let i = 0; i < count; i++) {
-      const fromLeft = i % 2 === 0;
-      const x = fromLeft ? cols * 0.5 - Math.random() * cols * 0.5 : cols * 0.5 + Math.random() * cols * 0.5;
-      const sp = (4 + Math.random() * 10) * strength;
+      const side = i % 2 === 0 ? -1 : 1;
       this.spawn(
-        x, row + 0.5,
-        fromLeft ? -sp : sp,
-        -2 - Math.random() * 4,
-        260 + Math.random() * 220,
-        0.16 + Math.random() * 0.2,
-        Math.random() < 0.45 ? '#FFFFFF' : color,
+        col + 0.2 + Math.random() * 0.6,
+        row + 0.2 + Math.random() * 0.6,
+        side * (2 + Math.random() * 8),
+        -3 - Math.random() * 5,
+        220 + Math.random() * 180,
+        0.13 + Math.random() * 0.16,
+        Math.random() < 0.22 ? '#FFFFFF' : color,
       );
     }
   }

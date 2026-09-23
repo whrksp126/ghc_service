@@ -89,6 +89,11 @@ export interface PlayerState {
   connected: boolean;    // 소켓 끊김(10s 유예 중) 표시용
   forfeited: boolean;    // playing 중 기권(보드는 남지만 순위는 최하위 그룹)
   rank: number;          // 서버가 계산한 실시간 등수(동률은 같은 등수)
+  /**
+   * 로비 준비 완료 (tetris-design.md §Z3). 방장을 뺀 전원이 true 여야 시작할 수 있다.
+   * 시작 / 종료 후 로비 복귀 / 입장·퇴장·관전 전환 / 설정 변경 때 전원 해제된다.
+   */
+  ready: boolean;
 }
 
 export interface ResultRow {

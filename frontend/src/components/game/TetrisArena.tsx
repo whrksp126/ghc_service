@@ -65,15 +65,19 @@ function Cell({ label, value, tone }: { label: string; value: string | number; t
  * 예전에는 14px 짜리 실선이라 **거의 보이지 않았다** — 굵은 튜브 + 눈금 + 현재 높이 마커 +
  * 숫자로 "지금 얼마나 위험한지"가 한눈에 읽히게 한다.
  */
-function DangerGauge({ value }: { value: number }) {
+function DangerGauge({ value, compact }: { value: number; compact?: boolean }) {
   const hot = value >= 0.8;
   const pct = Math.round(value * 100);
   return (
-    <div className="relative hidden w-[46px] shrink-0 flex-col items-center gap-1 lg:flex">
+    // 좁은 창에서도 **절대 사라지지 않는다**(§Z1) — 폭만 줄인다.
+    <div
+      data-ghc-danger={pct}
+      className={`relative flex shrink-0 flex-col items-center gap-1 ${compact ? 'w-[30px]' : 'w-[46px]'}`}
+    >
       <span className={`font-display text-[10px] font-black leading-none tabular-nums ${hot ? 'text-danger' : 'text-white/45'}`}>
         {pct}%
       </span>
-      <div className="relative min-h-0 w-[26px] flex-1 overflow-hidden rounded-full bg-black/70 shadow-[inset_0_2px_10px_rgba(0,0,0,0.85)] ring-1 ring-white/15">
+      <div className={`relative min-h-0 flex-1 overflow-hidden rounded-full bg-black/70 shadow-[inset_0_2px_10px_rgba(0,0,0,0.85)] ring-1 ring-white/15 ${compact ? 'w-[16px]' : 'w-[26px]'}`}>
         {/* 눈금 — 25% 마다. 절반/끝은 더 진하게 */}
         {[25, 50, 75].map((t) => (
           <span key={t} className={`absolute inset-x-1 h-px ${t === 50 ? 'bg-white/25' : 'bg-white/12'}`} style={{ bottom: `${t}%` }} />
@@ -109,21 +113,83 @@ function DangerGauge({ value }: { value: number }) {
 const TETRIS_CHROME = 54;
 
 /**
+ * 아레나 반응형 치수 (설계서 §Z1).
+ *
+ * **폭으로 "플레이 가능 여부"를 판단하지 않는다.** 창을 좁힌 데스크탑 사용자가 관전
+ * 레이아웃으로 떨어져 보드가 79px 로 눌리는 버그(§Z0)의 원인이 그것이었다.
+ * 판단 기준은 입력 장치(`hover: none` + `pointer: coarse`)이고, 폭은 **크기만** 정한다.
+ */
+interface ArenaMetrics {
+  /** 좌우 2단 배치를 쓸 만큼 넓은가(1024px~) — 프로필이 좌측 세로 컬럼이 된다 */
+  wide: boolean;
+  /**
+   * 프로필은 가로 스트립이지만 **미니보드는 판 옆**에 세울 만큼은 넓은가(560px~).
+   * 미니 스트립을 판 아래에 깔면 세로를 130px 먹어 판이 그만큼 작아지는데,
+   * 이 폭대에서는 좌우가 300px 넘게 남아돈다 — 옆으로 옮기면 같은 창에서 판이 1.7배가 된다.
+   */
+  side: boolean;
+  /** 아주 좁은 창(480px 미만) — 같은 구성으로 한 단계 더 작게 */
+  tight: boolean;
+  /** 터치 전용 기기 = 키보드가 없다 → 이때만 관전 안내를 띄운다 */
+  touchOnly: boolean;
+}
+
+const WIDE_MQ = '(min-width: 1024px)';
+const SIDE_MQ = '(min-width: 560px)';
+const TIGHT_MQ = '(max-width: 479px)';
+/** 설계서 §Z1 — **폭이 아니라 입력 장치**로 플레이 가능 여부를 판단한다 */
+const TOUCH_MQ = '(hover: none) and (pointer: coarse)';
+
+function useArenaMetrics(): ArenaMetrics {
+  const [m, setM] = useState<ArenaMetrics>(() => readMetrics());
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mqs = [WIDE_MQ, SIDE_MQ, TIGHT_MQ, TOUCH_MQ].map((q) => window.matchMedia(q));
+    // 리사이즈뿐 아니라 **기기 변경**(도킹/외장 키보드 연결)에도 반응해야 한다.
+    const onChange = () => setM((prev) => {
+      const next = readMetrics();
+      return prev.wide === next.wide && prev.side === next.side
+        && prev.tight === next.tight && prev.touchOnly === next.touchOnly ? prev : next;
+    });
+    for (const mq of mqs) mq.addEventListener('change', onChange);
+    onChange();
+    return () => { for (const mq of mqs) mq.removeEventListener('change', onChange); };
+  }, []);
+  return m;
+}
+
+function readMetrics(): ArenaMetrics {
+  const has = typeof window !== 'undefined' && typeof window.matchMedia === 'function';
+  const hit = (q: string) => (has ? window.matchMedia(q).matches : false);
+  return {
+    wide: has ? hit(WIDE_MQ) : true,
+    side: has ? hit(SIDE_MQ) : true,
+    tight: hit(TIGHT_MQ),
+    touchOnly: hit(TOUCH_MQ),
+  };
+}
+
+/**
  * 좌측 프로필 카드 — 카메라 + 닉네임 + 왕관/나 + 지운 줄 + KO (사천성 ProfileVideo 재사용).
  * 폭은 항상 컬럼을 꽉 채우고, 세로만 인원수에 맞춰 줄어든다(`useProfileFit`).
  */
 function TetrisProfile({
-  player, feed, isMe, isHost, lines, ko, alive, camH,
+  player, feed, isMe, isHost, lines, ko, alive, camH, width,
 }: {
   player: PlayerState; feed?: GameFeed; isMe: boolean; isHost: boolean;
   lines: number; ko: number; alive: boolean; camH: number | null;
+  /** 좁은 창 가로 스트립에서의 카드 폭(px). null 이면 컬럼 폭을 꽉 채운다 */
+  width: number | null;
 }) {
   return (
     <div
       data-ghc-player={player.userId}
       data-ghc-profile={player.userId}
       className={`${PROFILE_CARD_CLASS} ${isMe ? 'bg-white/10' : 'bg-white/5'} ${alive ? '' : 'opacity-50'}`}
-      style={{ boxShadow: `inset 0 0 0 ${isMe ? 2 : 1}px ${isMe ? player.color : `${player.color}44`}` }}
+      style={{
+        boxShadow: `inset 0 0 0 ${isMe ? 2 : 1}px ${isMe ? player.color : `${player.color}44`}`,
+        ...(width == null ? null : { width }),
+      }}
     >
       <div
         className={`relative w-full overflow-hidden rounded-lg bg-black/40 ${camH == null ? 'aspect-video' : ''}`}
@@ -159,9 +225,10 @@ function TetrisProfile({
 }
 
 /**
- * 테트리스 인게임 화면 (설계서 §T6).
- * 좌 프로필 · 가운데 내 보드(HOLD/NEXT) · 우 상대 미니보드 + 위험도 게이지 · 하단 관전자 스트립.
- * `lg` 미만(모바일)은 **조작 UI 없이 관전 레이아웃**으로 떨어진다(사용자 결정 사항).
+ * 테트리스 인게임 화면 (설계서 §T6/§Z1).
+ * 넓은 창: 좌 프로필 · 가운데 내 보드(HOLD/NEXT) · 우 미니보드+위험도 · 하단 바.
+ * 좁은 창: [상단 바] [프로필 가로 스트립] [HOLD│보드│NEXT] [미니 스트립] [하단 바]
+ *   — **작아질 뿐 아무것도 사라지지 않는다.** 키보드만 있으면 폭과 무관하게 플레이할 수 있다.
  */
 export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; feeds?: GameFeed[] }) {
   const myUserId = useAuthStore((s) => s.userId);
@@ -180,6 +247,9 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
   const profileRef = useRef<HTMLDivElement>(null);
 
   const fit = useProfileFit(profileRef, snapshot.players.length, TETRIS_CHROME);
+  const { wide, side, tight, touchOnly } = useArenaMetrics();
+  /** 미니보드가 판 **옆**에 서는가(=세로 컬럼). 아니면 판 **아래** 가로 스트립. */
+  const miniColumn = wide || side;
 
   const opts = snapshot.tetris ?? DEFAULT_TETRIS_OPTIONS.versus;
   const theme = themeOf(snapshot.seed);
@@ -255,7 +325,25 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
     closePanel();
   };
 
-  const nextList = hud.next.slice(0, Math.max(1, opts.nextCount));
+  /**
+   * 좁은 창 치수 (§Z1) — **불변식: 내 보드 ≥ 상대 미니보드.**
+   * 좁을수록 미니보드를 먼저 줄인다. 미니 40px(=칸 4px, 판 40×80)이면 내 보드의 하한
+   * (칸 6px, 판 60×120)이 어떤 경우에도 그보다 크다.
+   */
+  // 미니가 판 **아래**로 내려가는 배치에서는 세로가 유일한 병목이다 → 그때는 폭이 넉넉해도
+  // 미니/프로필을 가장 작게 유지한다(미니를 크게 키워 봐야 판만 납작해진다).
+  const miniW = wide ? (others.length > 2 ? 70 : 90)
+    : side ? (others.length > 2 ? 52 : 66)
+      : 40;
+  /** HOLD/NEXT 곁기둥 폭 — 좁으면 얇아질 뿐 사라지지 않는다 */
+  const sideW = wide ? 64 : (tight ? 38 : 46);
+  /** 좁은 창 프로필 카드 폭/카메라 높이(16:9) — 가로 스트립이 세로를 다 먹지 않게 고정한다 */
+  const cardW = miniColumn ? 108 : 92;
+  const cardCam = Math.round((cardW - 12) * 9 / 16);
+  /** 미리보기 칸 크기 */
+  const previewBox = sideW - 8;
+  /** 좁은 창에서는 NEXT 를 3개까지만 — 판 높이를 미리보기가 잡아먹으면 안 된다 */
+  const nextList = hud.next.slice(0, Math.max(1, wide ? opts.nextCount : Math.min(3, opts.nextCount)));
   const goalText = opts.mode === 'sprint' ? `${hud.lines} / ${opts.sprintLines}` : `${hud.lines}`;
 
   const minis = others.map((p) => (
@@ -266,14 +354,15 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
       color={p.color}
       frame={frames[p.userId]}
       dead={deadIds.has(p.userId)}
-      width={others.length > 2 ? 70 : 90}
+      width={miniW}
     />
   ));
 
   return (
     <motion.div
       ref={arenaRef}
-      className="relative isolate flex h-full min-h-0 flex-col gap-2 p-2"
+      // overflow-hidden: 좁은 창에서 내용이 넘치더라도 **하단 바를 밀어내지 않고** 판 쪽이 잘린다.
+      className="relative isolate flex h-full min-h-0 flex-col gap-2 overflow-hidden p-2"
     >
       <ThemeBackdrop theme={theme} seed={snapshot.seed} />
 
@@ -316,10 +405,11 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
       </div>
 
       {/* DOM 에 같은 카드를 두 벌 그리지 않는다(= `data-ghc-*` 중복 매칭 방지).
-          모바일은 가로 스트립, lg 부터 좌측 세로 컬럼으로 **같은 노드**가 재배치된다. */}
+          좁은 창은 가로 스트립, lg 부터 좌측 세로 컬럼으로 **같은 노드**가 재배치된다. */}
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row">
-        {/* 좌(모바일=상단): 프로필 — 한 줄에 한 사람, 카드가 컬럼 폭을 꽉 채운다.
-            카메라는 컬럼 폭 16:9, 인원이 많으면 세로만 줄어든다(사천성과 같은 규칙). */}
+        {/* 좌(좁은 창=상단): 프로필 — 한 줄에 한 사람, 카드가 컬럼 폭을 꽉 채운다.
+            카메라는 컬럼 폭 16:9, 인원이 많으면 세로만 줄어든다(사천성과 같은 규칙).
+            좁은 창에서는 **고정 높이 가로 스트립**이라 판이 쓸 세로를 잠식하지 않는다. */}
         <div className={`min-h-0 shrink-0 ${PROFILE_COL_CLASS}`}>
           <div ref={profileRef} className={PROFILE_LIST_CLASS}>
             {snapshot.players.map((p) => (
@@ -332,7 +422,8 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
                 lines={linesOf(p)}
                 ko={koOf(p)}
                 alive={aliveOf(p)}
-                camH={fit.cam}
+                camH={wide ? fit.cam : cardCam}
+                width={wide ? null : cardW}
               />
             ))}
           </div>
@@ -344,7 +435,9 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
           ref={playRef}
           data-ghc-shake="1"
           data-ghc-shake-power="0"
-          className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 will-change-transform lg:flex-row"
+          className={`flex min-h-0 min-w-0 flex-1 gap-2 will-change-transform ${
+            miniColumn ? 'flex-row' : 'flex-col'
+          }`}
         >
         {/* 중앙: HOLD · 내 보드 · NEXT (관전자는 모든 판을 나란히) */}
         <div className="flex min-h-0 min-w-0 flex-1 justify-center gap-2">
@@ -367,10 +460,14 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
             </div>
           ) : (
           <>
-          <div className="hidden w-[64px] shrink-0 flex-col gap-1 lg:flex">
+          {/* HOLD 기둥 — 좁아지면 얇아질 뿐, **어떤 폭에서도 사라지지 않는다**(§Z1) */}
+          <div className="flex shrink-0 flex-col gap-1" style={{ width: sideW }}>
             <p className="text-center text-[10px] tracking-widest text-white/40">HOLD</p>
-            <div className="flex h-[34px] items-center justify-center rounded-lg bg-black/40">
-              {hud.hold ? <PiecePreview id={hud.hold} box={56} dim={!opts.hold} /> : null}
+            <div
+              className="flex items-center justify-center rounded-lg bg-black/40"
+              style={{ height: previewBox / 2 + 6 }}
+            >
+              {hud.hold ? <PiecePreview id={hud.hold} box={previewBox} dim={!opts.hold} /> : null}
             </div>
             {/* 받을 줄 경고 바 — 보드 왼쪽에서 빨갛게 차오른다 */}
             <div className="relative mt-1 min-h-0 flex-1 overflow-hidden rounded-full bg-black/50">
@@ -391,20 +488,26 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
             </div>
           </div>
 
-          {/* data-ghc-board: AttackFxLayer 가 "나에게 날아오는" 투사체의 착탄점을 여기로 잡는다 */}
+          {/* data-ghc-board: AttackFxLayer 가 "나에게 날아오는" 투사체의 착탄점을 여기로 잡는다.
+              캔버스는 이 상자 안에서 스스로 1:2 로 맞춘다(§Z1) — 상자가 납작해도 판은 안 눌린다. */}
           <div
             data-ghc-board={myUserId ?? undefined}
-            className="relative flex min-h-0 min-w-0 flex-1 justify-center lg:max-w-[min(46vh,320px)]"
+            className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden lg:max-w-[min(46vh,320px)]"
           >
             <TetrisCanvas className="h-full w-full" />
           </div>
 
-          <div className="hidden w-[64px] shrink-0 flex-col gap-1 lg:flex">
-            <p className="text-center text-[10px] tracking-widest text-white/40">NEXT</p>
-            <div className="flex flex-col gap-1 overflow-hidden">
+          {/* NEXT 기둥 — HOLD 와 같은 규칙(작아지되 사라지지 않는다) */}
+          <div className="flex min-h-0 shrink-0 flex-col gap-1" style={{ width: sideW }}>
+            <p className="shrink-0 text-center text-[10px] tracking-widest text-white/40">NEXT</p>
+            <div className="flex min-h-0 flex-col gap-1 overflow-hidden">
               {nextList.map((id, i) => (
-                <div key={`${id}-${i}`} className="flex h-[30px] items-center justify-center rounded-lg bg-black/35">
-                  <PiecePreview id={id} box={52} dim={i > 0} />
+                <div
+                  key={`${id}-${i}`}
+                  className="flex shrink-0 items-center justify-center rounded-lg bg-black/35"
+                  style={{ height: previewBox / 2 + 4 }}
+                >
+                  <PiecePreview id={id} box={previewBox - 4} dim={i > 0} />
                 </div>
               ))}
             </div>
@@ -413,42 +516,65 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
           )}
         </div>
 
-        {/* 우(모바일=하단): 상대 미니보드 + 위험도 게이지.
-            **클릭해도 확대되지 않는다** — 내 판이 항상 가장 크다(사천성 v2.1 결정 계승). */}
+        {/* 우(좁은 창=하단): 상대 미니보드 + 위험도 게이지.
+            **클릭해도 확대되지 않는다** — 내 판이 항상 가장 크다(사천성 v2.1 결정 계승).
+            위험도 게이지는 좁은 창에서도 같은 줄에 남는다(작아질 뿐 사라지지 않는다). */}
         {!spectating && (
-          <div className="flex shrink-0 items-stretch gap-1.5 overflow-x-auto scrollbar-none lg:overflow-visible">
-            <div className="flex gap-1.5 lg:flex-col lg:overflow-y-auto">{minis}</div>
-            <DangerGauge value={hud.danger} />
+          <div
+            className={`flex shrink-0 items-stretch gap-1.5 ${
+              miniColumn ? 'overflow-visible' : 'overflow-x-auto scrollbar-none'
+            }`}
+          >
+            <div className={`flex gap-1.5 ${miniColumn ? 'flex-col overflow-y-auto scrollbar-none' : ''}`}>
+              {minis}
+            </div>
+            <DangerGauge value={hud.danger} compact={!wide} />
           </div>
         )}
         </div>
       </div>
 
-      {/* 모바일: 조작 UI 없이 관전 레이아웃(사용자 결정 사항) */}
-      {!spectating && (
-        <p className="flex shrink-0 items-center justify-center gap-1 rounded-full bg-black/40 px-2 py-1 text-[11px] text-white/55 lg:hidden">
+      {/* 관전 안내는 **터치 전용 기기에서만** 띄운다 (§Z1).
+          예전에는 폭(lg 미만)으로 판단해서, 창을 좁힌 PC 사용자가 플레이 가능한데도
+          "구경만 할 수 있어요"를 보고 조작 UI까지 잃었다. */}
+      {!spectating && touchOnly && (
+        <p
+          data-ghc-spectate-notice="1"
+          className="flex shrink-0 items-center justify-center gap-1 rounded-full bg-black/40 px-2 py-1 text-[11px] text-white/55"
+        >
           <Keyboard size={12} /> PC에서 플레이할 수 있어요 — 지금은 구경만 할 수 있어요
         </p>
       )}
 
-      {/* 하단: 관전자 카메라 스트립 + 우하단 고정 나가기 */}
-      <div className="relative flex shrink-0 items-center gap-2 px-1 text-[11px] text-white/45">
+      {/* 하단 바 — 관전자 카메라 스트립 + 기권/나가기.
+          **어떤 폭·높이에서도 패널 바닥에 붙어 항상 보인다**(§Z2): `mt-auto`(위 내용이 모자라도
+          바닥) + `shrink-0`(내용이 넘쳐도 이 줄만은 줄어들지 않는다) + `z-20`(연출 레이어 위).
+          관전자 스트립만 좁은 창에서 접힌다 — 나가기 버튼은 마지막까지 남는다. */}
+      <div className="relative z-20 mt-auto flex shrink-0 items-center gap-2 px-1 text-[11px] text-white/45">
         <span className="hidden shrink-0 sm:inline">{TETRIS_MODE_DESC[opts.mode]}</span>
-        <div className="mx-1 flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scrollbar-none">
-          {snapshot.spectators.length > 0 && <Eye size={12} className="shrink-0 text-white/35" />}
-          {snapshot.spectators.map((s) => (
-            <span key={s.userId} className="flex shrink-0 items-center gap-1 rounded-lg bg-white/5 px-1 py-1">
-              <ProfileVideo
-                feed={feedFor(s.userId)}
-                color="#9CA3AF"
-                label={s.nickname}
-                rounded="rounded"
-                className="h-9 w-16"
-              />
-              <span className="max-w-[70px] truncate text-[10px] text-white/55">{s.nickname}</span>
-            </span>
-          ))}
-        </div>
+        {wide && (
+          <div className="mx-1 flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scrollbar-none">
+            {snapshot.spectators.length > 0 && <Eye size={12} className="shrink-0 text-white/35" />}
+            {snapshot.spectators.map((s) => (
+              <span key={s.userId} className="flex shrink-0 items-center gap-1 rounded-lg bg-white/5 px-1 py-1">
+                <ProfileVideo
+                  feed={feedFor(s.userId)}
+                  color="#9CA3AF"
+                  label={s.nickname}
+                  rounded="rounded"
+                  className="h-9 w-16"
+                />
+                <span className="max-w-[70px] truncate text-[10px] text-white/55">{s.nickname}</span>
+              </span>
+            ))}
+          </div>
+        )}
+        {!wide && snapshot.spectators.length > 0 && (
+          // 좁은 창: 카메라 스트립을 펼치면 판이 쓸 세로를 먹는다 → 인원수만 알린다.
+          <span className="flex shrink-0 items-center gap-1">
+            <Eye size={12} className="text-white/35" /> {snapshot.spectators.length}
+          </span>
+        )}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {playing && amPlayer && hud.alive && (
             <button
@@ -459,6 +585,7 @@ export function TetrisArena({ snapshot, feeds = [] }: { snapshot: GameSnapshot; 
             </button>
           )}
           <button
+            data-ghc-exit="1"
             onClick={() => { void leave(); }}
             className="flex items-center gap-1 rounded-full bg-danger/80 px-2.5 py-1 text-white transition-colors hover:bg-danger"
           >

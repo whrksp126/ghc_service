@@ -4,7 +4,7 @@
  * 색/라벨/연출 길이만 둔다. 엔진(`engine.ts`, `srs.ts`)은 절대 참조하지 않는다.
  */
 import {
-  B2B_BONUS, COMBO_TABLE, GARBAGE_BASE, PERFECT_CLEAR_BONUS, PIECE_COLORS,
+  B2B_BONUS, COLS, COMBO_TABLE, GARBAGE_BASE, PERFECT_CLEAR_BONUS, PIECE_COLORS,
   CELL_ACTIVE_BASE, CELL_GARBAGE, CELL_GHOST, ROWS,
   type ClearKind, type PieceId, type TetrisMode,
 } from './types';
@@ -17,13 +17,8 @@ export const DANGER_ROWS = 16;
 /** 캔버스에 그리는 위험선의 **보이는 행 인덱스**(위에서부터). 20행 중 16줄 높이 = 위에서 4번째. */
 export const DANGER_ROW_INDEX = ROWS - DANGER_ROWS;
 
-/**
- * 연출 길이(ms). 배지/숫자는 v4 "떴다가 즉시 사라진다" 결정대로 짧게 유지하고,
- * **줄 지움만** 3단계(번쩍 → 수축 → 낙하)를 담아야 해서 조금 길다.
- */
+/** 연출 길이(ms). 배지/숫자는 v4 "떴다가 즉시 사라진다" 결정대로 짧게 유지한다. */
 export const FX_MS = {
-  clear: 240,     // 1~3줄: 번쩍 → 수축 → 위 블록 낙하
-  clearBig: 340,  // 4줄/퍼펙트: 같은 3단계를 더 길게 보여 준다
   trail: 160,     // 하드드롭 잔상
   lock: 70,       // 락 화이트 플래시
   rise: 200,      // 쓰레기 줄 밀려 올라옴
@@ -35,8 +30,36 @@ export const FX_MS = {
   flash: 400,     // 퍼펙트 클리어 화이트 플래시
 } as const;
 
-/** 줄 지움 연출의 3단계 경계(0..1). 수축이 끝나야 위 블록이 내려앉는다. */
-export const CLEAR_PHASE = { flash: 0.3, shrink: 0.55 } as const;
+/**
+ * 줄 지움 연출 길이(ms) — 지운 줄 수 1·2·3·4 순 (설계서 §Z4-6).
+ *
+ * **시뮬레이션은 TETR.IO 처럼 락 즉시 줄을 접는다.** 이 값은 순전히 "보이는 시간"이라
+ * 다음 조각/하드드롭 반응을 단 1ms 도 늦추지 않는다 — 연출은 이미 접힌 판 위에 덧그린다.
+ */
+export const CLEAR_MS = [160, 200, 240, 320] as const;
+export function clearMsOf(lines: number): number {
+  return CLEAR_MS[Math.min(CLEAR_MS.length, Math.max(1, lines)) - 1];
+}
+
+/**
+ * NES 테트리스 오마주 — 지워지는 줄이 **가운데(열 4·5)에서 바깥(열 0·9)으로** 단계적으로
+ * 사라진다. 단계당 28ms × 5단계 = 140ms 로, 가장 짧은 1줄(160ms) 안에도 다 들어간다.
+ */
+export const WIPE_STAGE_MS = 28;
+export const WIPE_STAGES = COLS >> 1;
+
+/** 열 → 와이프 단계. 가운데 두 열이 0(가장 먼저), 양 끝이 4(가장 나중). */
+export function wipeStageOfCol(col: number): number {
+  const half = COLS >> 1;
+  return col < half ? half - 1 - col : col - half;
+}
+
+/**
+ * 위 블록이 내려앉기 시작하는 지점(0..1).
+ * 와이프가 다 끝난 뒤에 떨어뜨리면 1줄(160ms)에서 낙하가 20ms 밖에 안 남아 툭 끊긴다 →
+ * 와이프 중반에 이어받아 "지워지면서 곧바로 내려앉는" 한 동작으로 보이게 한다.
+ */
+export const CLEAR_PHASE = { fall: 0.42 } as const;
 
 /** 셀 값 → 색. `toCells` 오버레이(9=그림자, 11..17=현재 조각)까지 한 곳에서 해석한다. */
 export function colorOfCell(v: number): string | null {

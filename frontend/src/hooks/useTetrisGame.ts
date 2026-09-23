@@ -11,7 +11,9 @@ import {
   type ClearKind, type TetrisDownEvent, type TetrisFinishEvent, type TetrisFramesEvent,
   type TetrisGarbageEvent, type TetrisOptions, type TetrisRiseEvent, type TetrisSentEvent,
 } from '../games/tetris/types';
-import { CLEAR_BADGE, FX_MS, toneOfClear } from '../games/tetris/ui';
+import {
+  CLEAR_BADGE, FX_MS, WIPE_STAGES, WIPE_STAGE_MS, clearMsOf, colorOfCell, toneOfClear,
+} from '../games/tetris/ui';
 import {
   ParticleField, comboShakePower, emitShakeFrame, shakeAt, shakeEventOfLines, strongerShake,
   type ShakeOut, type ShakeState,
@@ -36,12 +38,28 @@ export interface BoardFx {
   /** 직전 프레임과의 간격(ms) — 파티클 적분용 */
   dt: number;
   /**
-   * 줄 지움 3단계(번쩍 → 수축 → 낙하).
+   * 줄 지움 (설계서 §Z4 — 가운데→바깥 5단계 와이프 + 파편 + 가로 광선).
    * `shift[r]` = 그 행이 몇 칸 내려앉아야 하는지(= 자기보다 아래에서 지워진 줄 수).
    * 엔진은 락 즉시 줄을 접어 버리므로, 낙하를 보여주려면 위 블록을 **접기 전 위치**에서
    * 시작해 제자리로 내려오게 그려야 한다.
    */
-  clear: { rows: number[]; start: number; ms: number; shift: number[]; color: string } | null;
+  clear: {
+    rows: number[];
+    start: number;
+    ms: number;
+    shift: number[];
+    /** 락한 조각 색 — 색을 못 읽은 칸의 대체값 */
+    color: string;
+    /**
+     * 지워진 칸의 **원래 색**. `rows[i]` 행 `c` 열 = `colors[i * COLS + c]`.
+     * 이게 없으면 흰 섬광으로밖에 못 그린다(= 무슨 블록이 터졌는지 안 읽힌다).
+     */
+    colors: string[];
+    /** 이미 파편을 뿌린 와이프 단계(0..5). 루프가 단계가 넘어갈 때마다 하나씩 올린다. */
+    shattered: number;
+    /** 4줄/퍼펙트 — 바닥 폭발(밴드에서 빛이 번짐)까지 얹는다 */
+    big: boolean;
+  } | null;
   /** 하드드롭 잔상 */
   trail: { cols: number[]; fromRow: number; toRow: number; color: string; start: number } | null;
   /** 락 화이트 플래시 */
@@ -62,6 +80,8 @@ export interface BoardFx {
   combo: number;
   /** 0..1 위험도 — 테두리 빨간 맥박 + 미세 상시 떨림 */
   danger: number;
+  /** `prefers-reduced-motion` — 와이프만 남기고 파편·폭발은 생략한다(§Z4) */
+  reduced: boolean;
   /** 줄 파편/착지 먼지. 풀이라서 배열이 새로 생기지 않는다 */
   particles: ParticleField;
   alive: boolean;
@@ -152,16 +172,25 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
     let toppedOut = false;
 
     // 흔들림을 1/4 로 줄인다(끄지 않는 이유: 0 이면 "맞았다/지웠다"가 아예 전달되지 않는다).
-    const shakeScale = prefersReducedMotion() ? 0.25 : 1;
+    const reduced = prefersReducedMotion();
+    const shakeScale = reduced ? 0.25 : 1;
     const particles = new ParticleField();
     const shakeOut: ShakeOut = { x: 0, y: 0, rot: 0, power: 0 };
     /** 낙하 연출용 행 이동량 버퍼 — 줄 지울 때마다 새 배열을 만들지 않는다 */
     const clearShift: number[] = new Array(ROWS).fill(0);
+    /** 지워진 줄의 원래 색 버퍼(최대 4행 × 10칸). 락마다 덮어쓰기만 한다 */
+    const clearColors: string[] = new Array(4 * COLS).fill('#FFFFFF');
+    /**
+     * 화면에 그릴 셀 버퍼. **길이를 미리 맞춰 둬야** `engine.toCells` 가 이 배열을 재사용한다
+     * (빈 배열로 두면 길이 검사에 걸려 매 프레임 200칸 배열을 새로 만든다 = GC 폭탄).
+     * 줄 지움 색도 여기(= 접히기 직전 프레임)에서 읽는다.
+     */
+    const renderCells: number[] = new Array(ROWS * COLS).fill(0);
 
     const fx: BoardFx = {
       now: performance.now(), dt: 16, clear: null, trail: null, lock: null, rise: null,
       shake: null, beam: null, ring: null, flash: null,
-      lockDelay: 0, combo: 0, danger: 0, particles, alive: true,
+      lockDelay: 0, combo: 0, danger: 0, reduced, particles, alive: true,
     };
 
     /** 사건별 세기로 흔든다 — 약한 사건이 강한 사건을 덮어쓰지 않는다(fx.ts strongerShake). */
@@ -229,13 +258,23 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
           for (const cr of rows) if (cr > r) n++;
           clearShift[r] = n;
         }
-        fx.clear = {
-          rows, start: t0, ms: big ? FX_MS.clearBig : FX_MS.clear,
-          shift: clearShift, color: pieceColor,
-        };
+        // 접히기 직전 프레임(renderCells)에서 그 줄의 **원래 색**을 읽어 둔다 (§Z4-2).
+        // 엔진은 락 즉시 줄을 접으므로 이 순간이 지나면 무슨 색이 터졌는지 알 방법이 없다.
+        // 복사는 락당 1회, 최대 4행 × 10칸.
+        for (let i = 0; i < rows.length && i < 4; i++) {
+          const base = rows[i] * COLS;
+          for (let c = 0; c < COLS; c++) {
+            // 빈 칸/그림자 = 방금 놓은 조각이 메운 자리(직전 프레임엔 아직 없었다) → 조각 색.
+            clearColors[i * COLS + c] = colorOfCell(renderCells[base + c] ?? 0) ?? pieceColor;
+          }
+        }
 
-        // 파티클은 지워진 줄에서 좌우로 튄다. 상한(120)은 풀이 알아서 지킨다.
-        for (const r of rows) particles.burstRow(r, COLS, pieceColor, big ? 1.35 : 1);
+        fx.clear = {
+          rows, start: t0, ms: clearMsOf(lock.cleared),
+          shift: clearShift, color: pieceColor, colors: clearColors,
+          shattered: 0, big,
+        };
+        // 파편은 루프가 **와이프 단계에 맞춰** 나눠 뿌린다(여기서 몰아 뿌리면 상한을 다 쓴다).
 
         // 흔들림 — 줄 수 → 세기. T-스핀/퍼펙트가 더 세므로 뒤에서 덮어쓴다.
         bump(shakeEventOfLines(lock.cleared));
@@ -433,7 +472,6 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
     // ---------------------------------------------------------------- 루프
     let raf = 0;
     let lastT = performance.now();
-    const renderCells: number[] = [];
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
       const dt = Math.min(MAX_DT, now - lastT);
@@ -470,6 +508,24 @@ export function useTetrisGame(snapshot: GameSnapshot): void {
       fx.lockDelay = state.piece && state.lockTimer > 0
         ? Math.min(1, state.lockTimer / engine.LOCK_DELAY_MS)
         : 0;
+      // 줄 지움 파편 — 와이프 단계(가운데→바깥)가 넘어갈 때마다 **그 단계의 두 열**에서만
+      // 뿌린다. 한 번에 다 뿌리면 첫 프레임에 상한(120)을 다 써서 바깥 열이 조용해진다.
+      if (fx.clear && !reduced && fx.clear.shattered < WIPE_STAGES) {
+        const cl = fx.clear;
+        const reach = Math.min(WIPE_STAGES, Math.floor((now - cl.start) / WIPE_STAGE_MS) + 1);
+        const per = cl.rows.length >= 3 ? 2 : 3;   // 4줄은 칸이 많으니 칸당 조각을 줄인다
+        const half = COLS >> 1;
+        while (cl.shattered < reach) {
+          const s = cl.shattered++;
+          const left = half - 1 - s;
+          const right = half + s;
+          for (let i = 0; i < cl.rows.length; i++) {
+            const r = cl.rows[i];
+            particles.shatterCell(left, r, cl.colors[i * COLS + left], per);
+            particles.shatterCell(right, r, cl.colors[i * COLS + right], per);
+          }
+        }
+      }
       if (fx.clear && now - fx.clear.start > fx.clear.ms) fx.clear = null;
       if (fx.trail && now - fx.trail.start > FX_MS.trail) fx.trail = null;
       if (fx.lock && now - fx.lock.start > FX_MS.lock) fx.lock = null;

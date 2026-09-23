@@ -106,6 +106,9 @@ const tetrisFinishSchema = z.object({
   lines: z.number().int().min(0).max(100000),
 });
 
+// 로비 준비 토글 (docs/games/tetris-design.md §Z3)
+const readySchema = z.object({ ready: z.boolean() });
+
 const peekSchema = z.object({ idx: z.number().int().min(0).max(4095) });
 
 const pickSchema = z.object({
@@ -188,6 +191,17 @@ export function registerGameHandlers(io: Server, socket: Socket, ctx: GameHandle
       const parsed = updateOptionsSchema.safeParse(payload ?? {});
       if (!parsed.success) return callback?.({ error: BAD_PAYLOAD });
       ackState(callback)(gameManager.updateOptions(slug, actor, parsed.data));
+    }, callback);
+  });
+
+  // 준비 토글 (§Z3). ack 가 없어도 반드시 실행되도록 "먼저 실행 → 그다음 ack" 순서를 지킨다
+  // (`callback?.(gameManager.setReady(...))` 로 쓰면 ack 없이 emit 했을 때 단락 평가로 아예 실행되지 않는다).
+  socket.on('game:ready', (payload: unknown, callback: Ack) => {
+    withRoom((slug) => {
+      const parsed = readySchema.safeParse(payload ?? {});
+      if (!parsed.success) return callback?.({ error: BAD_PAYLOAD });
+      const res = gameManager.setReady(slug, actor, parsed.data.ready);
+      callback?.('error' in res ? res : { ok: true });
     }, callback);
   });
 
